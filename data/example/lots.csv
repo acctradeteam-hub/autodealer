@@ -1,0 +1,7 @@
+lot_id,vin,year,make,model,trim,mileage,condition_grade,title_status,auction,auction_location,destination,distance_miles,recon_override_usd,notes
+TEST-001,TESTVIN0000000001,2019,Toyota,Camry,LE,62000,B,clean,Copart,Copart Sacramento,Riverside Yard,,,тестовый лот
+TEST-002,TESTVIN0000000002,2018,Honda,Accord,Sport,71000,B,salvage,IAA,IAA Fresno,Riverside Yard,265,,тестовый лот
+TEST-003,TESTVIN0000000003,2015,BMW,328i,,142000,C,clean,Copart,Copart Sacramento,Riverside Yard,470,,тестовый лот
+TEST-004,TESTVIN0000000004,2020,Nissan,Rogue,SV,48000,B,clean,Manheim,Manheim Riverside,Riverside Yard,,,тестовый лот
+TEST-005,TESTVIN0000000005,2021,Ford,F-150,XLT,39000,A,clean,Copart,Copart Sacramento,Riverside Yard,470,,тестовый лот
+TEST-006,TESTVIN0000000006,2017,Chevrolet,Malibu,LT,88000,C,clean,Copart,Copart Bakersfield,Riverside Yard,,,тестовый лот

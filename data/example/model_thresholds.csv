@@ -1,0 +1,8 @@
+make,model,max_mileage,max_age_years,notes
+Toyota,Camry,150000,10,
+Honda,Accord,150000,10,
+Ford,F-150,160000,10,
+Nissan,Rogue,130000,9,
+Chevrolet,Malibu,130000,10,
+BMW,*,90000,8,дорогой ремонт — пороги ниже
+*,*,140000,12,правило по умолчанию

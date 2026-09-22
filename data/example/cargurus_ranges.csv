@@ -1,0 +1,5 @@
+make,model,year_from,year_to,great_deal_max,good_deal_max,fair_deal_max,source,captured_at
+Toyota,Camry,2018,2020,17400,18600,19800,CarGurus dealer dashboard (ручная выгрузка),2026-09-20
+Ford,F-150,2020,2022,33900,35800,37600,CarGurus dealer dashboard (ручная выгрузка),2026-09-20
+Nissan,Rogue,2019,2021,20900,22200,23500,CarGurus dealer dashboard (ручная выгрузка),2026-09-20
+Chevrolet,Malibu,2016,2018,13200,14100,15000,CarGurus dealer dashboard (ручная выгрузка),2026-09-20

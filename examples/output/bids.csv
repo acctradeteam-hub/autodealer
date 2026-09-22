@@ -1,0 +1,7 @@
+﻿lot_id,vin,year,make,model,mileage,condition_grade,title_status,decision,max_bid_usd,market_price_usd,buyer_fee_usd,transport_usd,recon_usd,other_fees_usd,selling_costs_usd,holdback_usd,holdback_basis,comps_found,comps_used,supply_label,price_range_p25_p75,avg_days_on_market,carrier,carrier_contact,reasons
+TEST-001,TESTVIN0000000001,2019,Toyota,Camry,62000,B,clean,ТОРГОВАТЬСЯ,12525.0,18042.0,1000.0,540.5,1175.0,259.0,360.0,2165.04,12.0% от цены продажи,7,6,MEDIUM,"18,300–19,050",36.5,,,
+TEST-002,TESTVIN0000000002,2018,Honda,Accord,71000,B,salvage,ОТКАЗ,,,,,,,,,,0,0,,,,,,титул 'salvage' вне списка разрешённых
+TEST-003,TESTVIN0000000003,2015,BMW,328i,142000,C,clean,ОТКАЗ,,,,,,,,,,0,0,,,,,,"пробег 142,000 миль выше порога 90,000 для модели; возраст 11 лет выше порога 8 для модели"
+TEST-004,TESTVIN0000000004,2020,Nissan,Rogue,48000,B,clean,РУЧНАЯ ПРОВЕРКА,,,,180.0,1175.0,,,,,2,2,LOW,"21,825–22,675",27.5,Valley Auto Haul (ТЕСТ),+1-555-0142,"конкурентов взято 2 из 2 найденных, нужно минимум 3"
+TEST-005,TESTVIN0000000005,2021,Ford,F-150,39000,A,clean,ТОРГОВАТЬСЯ,27350.0,34726.0,1250.0,540.5,775.0,259.0,360.0,4167.12,12.0% от цены продажи,6,6,MEDIUM,"36,525–38,200",27.2,,,
+TEST-006,TESTVIN0000000006,2017,Chevrolet,Malibu,88000,C,clean,РУЧНАЯ ПРОВЕРКА,,12587.69,,,1925.0,,,,,5,5,MEDIUM,"13,300–14,200",54.4,,,не удалось рассчитать доставку

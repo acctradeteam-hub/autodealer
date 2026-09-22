@@ -1,0 +1,115 @@
+{
+  "_placeholder_notice": "ВНИМАНИЕ: это ТЕСТОВЫЕ цифры-плейсхолдеры, а не ставки вашего дилершипа. Замените сборы аукциона, тариф за милю, подготовку и блок margin на свои значения до использования в реальных торгах.",
+  "currency": "USD",
+  "market": {
+    "year_window": 2,
+    "max_comp_distance_miles": 150,
+    "min_comps_required": 3,
+    "outlier_mad_k": 2.5,
+    "outlier_min_sample": 5,
+    "mileage_adjustment_per_mile_usd": 0.06,
+    "mileage_adjustment_cap_pct": 12.0,
+    "condition_multipliers": {
+      "A": 1.03,
+      "B": 1.0,
+      "C": 0.95,
+      "D": 0.88
+    },
+    "target_deal_rating": "good",
+    "quick_sale_discount_pct": 3.0,
+    "supply_thresholds": {
+      "high_supply_min_listings": 12,
+      "low_supply_max_listings": 4
+    },
+    "supply_price_adjustment_pct": {
+      "HIGH": 0.0,
+      "MEDIUM": 0.0,
+      "LOW": 0.0
+    }
+  },
+  "auction_fees": {
+    "buyer_fee_tiers": [
+      {
+        "up_to_usd": 1000,
+        "fee_usd": 200
+      },
+      {
+        "up_to_usd": 5000,
+        "fee_usd": 500
+      },
+      {
+        "up_to_usd": 10000,
+        "fee_usd": 750
+      },
+      {
+        "up_to_usd": 20000,
+        "fee_usd": 1000
+      },
+      {
+        "up_to_usd": null,
+        "fee_usd": 1250
+      }
+    ],
+    "gate_fee_usd": 79.0,
+    "internet_bid_fee_usd": 85.0,
+    "doc_fee_usd": 95.0
+  },
+  "transport": {
+    "rate_tiers_usd_per_mile": [
+      {
+        "up_to_miles": 100,
+        "rate_usd": 2.2
+      },
+      {
+        "up_to_miles": 500,
+        "rate_usd": 1.15
+      },
+      {
+        "up_to_miles": null,
+        "rate_usd": 0.85
+      }
+    ],
+    "minimum_charge_usd": 225.0,
+    "prefer_carrier_quote": true
+  },
+  "recon": {
+    "base_by_condition": {
+      "A": 350.0,
+      "B": 750.0,
+      "C": 1500.0,
+      "D": 2600.0
+    },
+    "always_included": {
+      "detail": 150.0,
+      "safety_inspection": 90.0
+    },
+    "title_and_registration_usd": 185.0
+  },
+  "selling": {
+    "marketplace_listing_usd": 120.0,
+    "floorplan_usd_per_day": 8.0,
+    "expected_days_to_sell": 30
+  },
+  "margin": {
+    "min_profit_usd": 2000.0,
+    "profit_pct_of_market_price": 12.0
+  },
+  "rules": {
+    "allowed_titles": [
+      "clean"
+    ],
+    "min_bid_floor_usd": 500.0,
+    "bid_rounding_usd": 25.0
+  },
+  "column_aliases": {
+    "lots": {
+      "Odometer": "mileage",
+      "Lot #": "lot_id",
+      "Sale Location": "auction_location"
+    },
+    "comps": {
+      "Listing Price": "price",
+      "Miles": "mileage"
+    }
+  }
+}

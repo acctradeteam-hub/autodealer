@@ -1,0 +1,21 @@
+comp_id,make,model,year,trim,mileage,price,condition,city,distance_miles,days_on_market,source,captured_at
+C-001,Toyota,Camry,2019,LE,58000,18900,good,Riverside,12,34,marketplace,2026-09-20
+C-002,Toyota,Camry,2019,LE,64000,18200,good,Corona,22,41,marketplace,2026-09-20
+C-003,Toyota,Camry,2018,SE,71000,17400,fair,San Bernardino,28,55,marketplace,2026-09-20
+C-004,Toyota,Camry,2020,LE,49000,19800,good,Ontario,31,22,marketplace,2026-09-20
+C-005,Toyota,Camry,2019,SE,60000,19100,good,Anaheim,45,29,marketplace,2026-09-20
+C-006,Toyota,Camry,2019,LE,66000,18600,good,Fontana,19,38,marketplace,2026-09-20
+C-007,Toyota,Camry,2019,XSE,55000,26900,excellent,Irvine,55,12,marketplace,2026-09-20
+C-010,Ford,F-150,2021,XLT,41000,37200,good,Riverside,10,27,marketplace,2026-09-20
+C-011,Ford,F-150,2021,XLT,36000,38400,good,Corona,24,19,marketplace,2026-09-20
+C-012,Ford,F-150,2020,XLT,52000,35100,good,Ontario,33,44,marketplace,2026-09-20
+C-013,Ford,F-150,2022,XL,28000,39900,good,Anaheim,48,16,marketplace,2026-09-20
+C-014,Ford,F-150,2021,XL,44000,36300,fair,San Bernardino,26,36,marketplace,2026-09-20
+C-015,Ford,F-150,2021,XLT,39000,37600,good,Moreno Valley,14,21,marketplace,2026-09-20
+C-020,Nissan,Rogue,2020,SV,52000,21400,good,Riverside,11,31,marketplace,2026-09-20
+C-021,Nissan,Rogue,2021,SV,38000,23100,good,Corona,25,24,marketplace,2026-09-20
+C-030,Chevrolet,Malibu,2017,LT,84000,14200,good,Riverside,9,48,marketplace,2026-09-20
+C-031,Chevrolet,Malibu,2017,LT,91000,13600,fair,Ontario,30,62,marketplace,2026-09-20
+C-032,Chevrolet,Malibu,2018,LT,76000,15100,good,Corona,23,39,marketplace,2026-09-20
+C-033,Chevrolet,Malibu,2016,LT,98000,12400,fair,Fontana,20,71,marketplace,2026-09-20
+C-034,Chevrolet,Malibu,2017,LS,89000,13300,good,Anaheim,44,52,marketplace,2026-09-20
