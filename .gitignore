@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Сохранённые страницы лотов не попадают в git: в них бывают данные вашего
+# аккаунта аукциона (имя, member ID). Если хотите хранить их в репозитории —
+# удалите эти три строки.
+samples/*.html
+samples/*.htm
+samples/*.mhtml
+samples/*.mht
+samples/*_files/
