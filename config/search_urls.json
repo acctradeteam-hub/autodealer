@@ -1,0 +1,11 @@
+{
+  "_about": "Ссылки поиска для «одного окна». template — адрес с подстановками {make} {model} {query} {query_plus} {year_from} {year_to}; home — страница поиска, если шаблона нет. Свои сохранённые поиски по конкретной машине запоминаются в окне (data/search_links.json) и открываются вместо шаблона.",
+  "CarMax": {"home": "https://www.carmaxauctions.com/"},
+  "ACV": {"home": "https://app.acvauctions.com/marketplace"},
+  "Manheim": {"home": "https://search.manheim.com/results"},
+  "ADESA": {
+    "template": "https://marketplace.adesa.com/browse?make-model-trim={make}%3A{model}&year={year_from}-{year_to}&q={query_plus}&sort-by=Closest+to",
+    "home": "https://marketplace.adesa.com/browse",
+    "_source": "формат взят из адреса сохранённой страницы ADESA (29.09.2026)"
+  }
+}

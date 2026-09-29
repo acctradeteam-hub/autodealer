@@ -195,6 +195,21 @@ class TestCalculate(unittest.TestCase):
         self.assertTrue(3500 <= result.max_bid <= 6000, result.max_bid)
 
 
+class TestStrategySettings(unittest.TestCase):
+    def test_kbb_minus_500_and_far_transport(self) -> None:
+        from lot_analyzer.bid import transport_cost
+
+        costs = load_costs(COSTS_PATH)
+        result = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean"), costs)
+        self.assertEqual(result.sale_price, 10000 * costs["kbb_private_party_factor"] + costs["kbb_private_party_offset_usd"])
+        self.assertEqual(transport_cost("CarMax Vegas Auction Center", costs), costs["transport_by_location"]["Vegas"])
+        self.assertEqual(transport_cost("Chino, CA", costs), costs["transport_usd"])
+        self.assertEqual(transport_cost("Boise, ID", costs), costs["transport_out_of_state_usd"])
+        far = calculate(BidInput(auction="CarMax", location="Fresno, CA", kbb_private_party=10000, history_text="clean"), dict(costs, budget_max_bid_usd=0))
+        near = calculate(BidInput(auction="CarMax", location="Chino, CA", kbb_private_party=10000, history_text="clean"), dict(costs, budget_max_bid_usd=0))
+        self.assertLess(far.max_bid, near.max_bid)
+
+
 class TestRows(unittest.TestCase):
     def test_apply_to_rows_fills_calc_columns(self) -> None:
         row = empty_row()

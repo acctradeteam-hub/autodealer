@@ -138,7 +138,11 @@ class TestCarMaxVocabulary(unittest.TestCase):
         self.assertTrue(assess_history("Not actual miles", COSTS).skip)
         self.assertIn("был в угоне", assess_history("Prior theft history", COSTS).discounts)
         self.assertIn("аренда/флит", assess_history("Prior police", COSTS).discounts)
-        self.assertTrue(any("227" in n for n in assess_history("Possible 227", COSTS).notes))
+        relaxed = dict(COSTS, title_required=False)
+        self.assertTrue(any("227" in n for n in assess_history("Possible 227", relaxed).notes))
+        self.assertTrue(assess_history("App 227", COSTS).skip)            # «только с титулом»
+        self.assertTrue(assess_history("Title absent", COSTS).skip)
+        self.assertFalse(assess_history("No Title Issues", COSTS).skip)
 
 
 if __name__ == "__main__":

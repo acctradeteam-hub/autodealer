@@ -129,9 +129,12 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
         flags.discounts["аренда/флит"] = rates.get("rental_fleet", 0.03)
     if _positive_hits(text, r"recovered theft|theft recovery|theft history|stolen vehicle|угон"):
         flags.discounts["был в угоне"] = rates.get("theft_recovery", 0.10)
-    if _positive_hits(text, _TITLE_ABSENT):
+    title_problem = _positive_hits(text, _TITLE_ABSENT) or _positive_hits(text, _POSSIBLE_227)
+    if title_problem and costs.get("title_required"):
+        flags.skip.append("нет титула / REG 227 — стратегия «только с титулом»")
+    elif _positive_hits(text, _TITLE_ABSENT):
         flags.notes.append("нет титула на руках — продать нельзя, пока его не пришлют")
-    if _positive_hits(text, _POSSIBLE_227):
+    if not costs.get("title_required") and _positive_hits(text, _POSSIBLE_227):
         flags.notes.append("Possible 227 — титул через дубликат (REG 227), оформление затянется")
     if _positive_hits(text, _NON_RUNNER):
         flags.notes.append("продавец пишет «не на ходу» — заложен резерв, проверьте на месте")
@@ -218,6 +221,18 @@ def estimate_recon(text: str, costs: dict) -> tuple[float, list[str]]:
     return total, found
 
 
+def transport_cost(location: str, costs: dict) -> float:
+    """Доставка: по площадке из transport_by_location (дальние аукционы), иначе transport_usd."""
+    lowered = (location or "").lower()
+    for place, amount in (costs.get("transport_by_location") or {}).items():
+        if place.lower() in lowered:
+            return float(amount)
+    state = re.search(r",\s*([A-Z]{2})\b", location or "")
+    if state and state.group(1) != costs.get("home_state", "CA"):
+        return float(costs.get("transport_out_of_state_usd", 0))   # другой штат, цена не задана — оценка
+    return float(costs.get("transport_usd", 0))
+
+
 def dmv_fees(text: str) -> float:
     """Долги DMV из объявлений CarMax: «Dmv $71», «Dmv fee $144» — платит покупатель."""
     amounts = {int(m) for m in re.findall(r"\bdmv(?:\s*fees?)?\s*\$\s?(\d{1,5})", text, re.I)}
@@ -249,6 +264,7 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
 @dataclass
 class BidInput:
     auction: str = ""
+    location: str = ""                   # площадка / город — для стоимости доставки
     sale_price: float | None = None      # своя оценка цены продажи
     kbb_private_party: float | None = None
     auction_retail: float | None = None  # розничная оценка самого аукциона (Manheim, ADESA)
@@ -295,8 +311,9 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         result.sale_price, result.sale_source = data.sale_price, "своя оценка"
     elif data.kbb_private_party:
         factor = float(costs.get("kbb_private_party_factor", 1.0))
-        result.sale_price = data.kbb_private_party * factor
-        result.sale_source = f"KBB PP × {factor:g}"
+        offset = float(costs.get("kbb_private_party_offset_usd", 0))
+        result.sale_price = data.kbb_private_party * factor + offset
+        result.sale_source = f"KBB PP × {factor:g}" + (f" {offset:+,.0f}" if offset else "")
     elif data.auction_retail:
         factor = float(costs.get("auction_retail_factor", 0.9))
         result.sale_price = data.auction_retail * factor
@@ -329,7 +346,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         "ремонт": recon,
         "детейлинг": float(costs.get("detailing_usd", 0)),
         "смог": float(costs.get("smog_usd", 0)),
-        "доставка": float(costs.get("transport_usd", 0)),
+        "доставка": transport_cost(data.location, costs),
         "дилер": float(costs.get("dealer_fee_usd", 0)),
         "реклама": float(costs.get("selling_usd", 0)),
         "содержание": float(costs.get("days_to_sell", 0)) * float(costs.get("holding_per_day_usd", 0)),
@@ -406,6 +423,7 @@ def input_from_row(row: dict[str, str]) -> BidInput:
     )
     return BidInput(
         auction=row.get("auction", ""),
+        location=row.get("location", ""),
         sale_price=parse_money(row.get("retail_estimate_usd")) or parse_money(row.get("cargurus_retail_usd")),
         kbb_private_party=parse_money(row.get("kbb_private_party_usd")),
         mmr=parse_money(row.get("mmr_adjusted_usd")) or parse_money(row.get("wholesale_usd")),

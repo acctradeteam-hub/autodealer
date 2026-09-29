@@ -217,6 +217,40 @@ def parse_all_lanes_csv(path: Path) -> list[Result]:
     return results
 
 
+# ---------------------------------------------------------------- выгрузка Velocicast (JSON / CSV)
+
+def _velocicast_record(v: dict, source: str) -> Result | None:
+    vin = clean_vin(str(v.get("vin") or ""))
+    if not vin:
+        return None
+    status = {"SOLD": "Sold", "NOSALE": "No Sale"}.get(str(v.get("final_status") or "").upper(), "")
+    if not status and str(v.get("has_run", "1")) == "0":
+        status = "Not Run"
+    price = parse_money(str(v.get("final_amount") or "")) if status == "Sold" else None
+    announcements = ", ".join(x.strip().capitalize() for x in re.split(r"[\n,]+", str(v.get("announcement") or "")) if x.strip())
+    location = squeeze(str(v.get("auction_location") or "")).replace("CarMax ", "").replace(" Auction Center", "")
+    return Result(
+        date=str(v.get("event_start_utc") or "")[:10], auction="CarMax", location=location,
+        lane=str(v.get("lane") or ""), run=str(v.get("item_num") or ""), year=str(v.get("year") or ""),
+        vehicle=squeeze(f"{v.get('make', '')} {v.get('model', '')} {v.get('trim') or ''}"), vin=vin,
+        miles=str(v.get("miles") or ""), announcements=announcements, status=status,
+        price=f"{price:.0f}" if price else "", source=source,
+        notes=f"floor ${v['floor_amount']}" if v.get("floor_amount") else "",
+    )
+
+
+def parse_velocicast(path: Path) -> list[Result]:
+    """Выгрузка результатов CarMax / Velocicast: JSON {"vehicles": […]} или CSV с теми же колонками."""
+    if path.suffix.lower() == ".json":
+        import json
+
+        items = json.loads(path.read_text(encoding="utf-8")).get("vehicles") or []
+    else:
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            items = list(csv.DictReader(handle))
+    return [rec for rec in (_velocicast_record(v, path.name) for v in items) if rec]
+
+
 # ---------------------------------------------------------------- таблица результатов с досчитанными оценками
 
 def parse_price_table_csv(path: Path) -> list[Result]:
@@ -256,8 +290,12 @@ def read_results(path: Path) -> list[Result]:
     if path.suffix.lower() == ".pdf":
         text = pdf_text(path)
         return parse_my_list(text, path.name) or parse_run_list(text, path.name)
+    if path.suffix.lower() == ".json":
+        return parse_velocicast(path)
     if path.suffix.lower() == ".csv":
         text = path.read_text(encoding="utf-8-sig")
+        if text.startswith("auction_location,") or "final_amount" in text[:600]:
+            return parse_velocicast(path)
         if "DETAILED RESULTS" in text or "velocicast" in text[:2000]:
             return parse_all_lanes_csv(path)
         if "Цена покупки" in text[:1000] and "VIN" in text[:1000]:
