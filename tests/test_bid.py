@@ -91,6 +91,25 @@ class TestFeesAndRecon(unittest.TestCase):
             with self.subTest(bid=bid):
                 self.assertEqual(auction_fee(bid, "CarMax", costs), fee)
 
+    def test_acv_schedule_from_may_2026(self) -> None:
+        costs = load_costs(COSTS_PATH)
+        for bid, fee in ((400, 100), (3000, 385), (4999, 420), (5000, 425), (6500, 475), (9250, 540), (59999, 695), (80000, 1000)):
+            with self.subTest(bid=bid):
+                self.assertAlmostEqual(auction_fee(bid, "ACV", costs), fee)
+
+    def test_real_purchases_match(self) -> None:
+        # Реальные сборы: Manheim $9,250 -> $535; ADESA, лот $4,900 -> $350.
+        costs = load_costs(COSTS_PATH)
+        self.assertEqual(auction_fee(9250, "Manheim", costs), 535)
+        self.assertEqual(auction_fee(4900, "ADESA", costs), 350)
+
+    def test_copart_and_iaa_add_flat_and_tiered_extras(self) -> None:
+        costs = load_costs(COSTS_PATH)
+        self.assertEqual(auction_fee(5000, "Copart", costs), 750 + 109 + 79)
+        self.assertEqual(auction_fee(5000, "Copart Unsecured", costs), 1000 + 109 + 79)
+        self.assertEqual(auction_fee(5000, "IAA", costs), 775 + 105 + 20)
+        self.assertAlmostEqual(auction_fee(20000, "IAA", costs), 20000 * 0.075 + 125)
+
     def test_dealer_fee_and_profit_target_in_shipped_config(self) -> None:
         costs = load_costs(COSTS_PATH)
         self.assertEqual(costs["dealer_fee_usd"], 300)
@@ -103,7 +122,10 @@ class TestFeesAndRecon(unittest.TestCase):
         self.assertEqual(resolve_auction("CarMax Auctions", costs), "CarMax")
         self.assertEqual(resolve_auction("Manheim Riverside", costs), "Manheim")
         self.assertEqual(resolve_auction("ACV Auctions", costs), "ACV")
-        self.assertEqual(resolve_auction("Copart", costs), "")
+        self.assertEqual(resolve_auction("IAAI", costs), "IAA")
+        self.assertEqual(resolve_auction("Copart", costs), "Copart")
+        self.assertEqual(resolve_auction("Copart Unsecured", costs), "Copart Unsecured")
+        self.assertEqual(resolve_auction("SOCAL Auto Auction", costs), "")
 
     def test_recon_keywords_match_word_start_only(self) -> None:
         total, found = estimate_recon("1 accident reported", simple_costs())

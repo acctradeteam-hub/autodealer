@@ -132,18 +132,34 @@ def resolve_auction(name: str, costs: dict) -> str:
     return ""
 
 
+def _tier_fee(bid: float, tiers: list) -> float:
+    """Сбор по ступенчатой сетке.
+
+    Ступень: [до цены включительно, сбор] или [до, сбор, +за каждую $1000, свыше].
+    Сбор может быть строкой с процентом: "1.25%" — доля от цены.
+    """
+    if not tiers:
+        return 0.0
+    tier = next((t for t in tiers if bid <= t[0]), tiers[-1])
+    raw = tier[1]
+    if isinstance(raw, str) and raw.strip().endswith("%"):
+        fee = bid * float(raw.strip().rstrip("%")) / 100
+    else:
+        fee = float(raw)
+    if len(tier) >= 4 and bid > tier[3]:
+        # «$445 + $10 за каждую $1K свыше $7K». Неполную тысячу считаем целой —
+        # лучше переоценить сбор на $10, чем недооценить.
+        fee += float(tier[2]) * math.ceil((bid - tier[3]) / 1000)
+    return fee
+
+
 def auction_fee(bid: float, auction: str, costs: dict) -> float:
-    """Сборы покупателя при данной ставке: ступень сетки + фиксированные сборы."""
+    """Сборы покупателя при данной ставке: основная сетка + доп. сетки + фиксированные сборы."""
     config = costs.get("auctions", {}).get(auction)
     if not config:
         return 0.0
-    tiers = config.get("fee_tiers") or [[0, 0]]
-    tier = next((t for t in tiers if bid <= t[0]), tiers[-1])
-    fee = float(tier[1])
-    if len(tier) >= 4 and bid > tier[3]:
-        # [до, сбор, +за каждую $1000, свыше]: «$445 + $10 за каждую $1K свыше $7K».
-        # Неполную тысячу считаем целой — лучше переоценить сбор на $10, чем недооценить.
-        fee += float(tier[2]) * math.ceil((bid - tier[3]) / 1000)
+    fee = _tier_fee(bid, config.get("fee_tiers") or [])
+    fee += sum(_tier_fee(bid, tiers) for tiers in config.get("extra_fee_tiers", {}).values())
     return fee + sum(float(v) for v in config.get("extra_fees_usd", {}).values())
 
 
