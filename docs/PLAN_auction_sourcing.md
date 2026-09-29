@@ -40,6 +40,25 @@
 Разумная середина: попробовать Stockwave (демо), а своё строить только если
 его формула/охват не подходят.
 
+## Стоимость для небольшого начинающего дилера (поиск 29.09.2026)
+
+Цены из открытых источников; у большинства сервисов финальная цена — по запросу.
+
+| Инструмент | Цена | Что даёт | Источник цены |
+|---|---|---|---|
+| Manheim: аккаунт + MMR | бесплатно (AuctionACCESS через Manheim — без доплаты, иначе $103/чел./год) | MMR, лоты Manheim, AutoCheck по лотам Manheim бесплатно | manheim.com, пресс-релиз Manheim |
+| **Carbly** | от **$55/мес**, 14 дней бесплатно, помесячно | Run lists Manheim, ADESA/OPENLANE, Edge Pipeline, SmartAuction, EBlock; оценки KBB/MMR/Black Book — дополнения; Live Local Market (конкуренты); подключение своего Carfax/AutoCheck бесплатно | getcarbly.com (цены дополнений не видны — уточнить) |
+| MarketCheck API | Free: $0, 500 запросов/мес, радиус 100 миль; Standard: $299/мес + плата за данные | Лоты аукционов, склады конкурентов, история VIN | marketcheck.com/apis/pricing |
+| Black Book | ~$718–773/год | Оптовые/розничные оценки | blackbook.com/buy-now |
+| AutoCheck | 25 отчётов за $49.99 (розница); по лотам Manheim — бесплатно | История VIN | вторичные источники |
+| Carfax for Dealers | ~$700–1100/мес (по отзывам дилеров; бывают вводные $850/мес на 4 мес.) | История VIN, знак Carfax в объявлениях | вторичные источники, форумы |
+| vAuto Stockwave | цена не публикуется; по отзывам — дорогой | Поиск по 300+ площадкам, бизнес-планы прибыли | форум DealerRefresh |
+| AuctionCalc | 5 VIN за $9, есть подписка | Макс. ставка для Copart/IAA | auctioncalc.app |
+
+Вывод для старта: Manheim (бесплатно) + Carbly (от $55) + AutoCheck вместо
+Carfax на первые месяцы + свой калькулятор ставки (этап 1). Stockwave и
+Carfax for Dealers — когда объём закупок оправдает $1000+/мес.
+
 ## Чего делать не стоит
 
 Парсить сайты Manheim/ACV/Copart/KBB/Carfax роботом под своим логином:
@@ -96,5 +115,9 @@
   https://docs.marketcheck.com/docs/api/cars/vehicle-history/history-by-vin
 - Manheim Developer Portal: https://developer.manheim.com/
 - KBB B2B / Instant Cash Offer: https://b2b.kbb.com/solutions/ico/
+- Carbly: https://getcarbly.com/register/ , https://getcarbly.com/faq/
+- MarketCheck цены: https://www.marketcheck.com/apis/pricing/
+- Black Book: https://www.blackbook.com/buy-now/
+- Manheim AutoCheck: https://site.manheim.com/news/access-autocheck-reports-in-the-manheim-marketplace
 - Калькуляторы: https://auctioncalc.app/ , https://bidmax.app/ ,
   https://www.auctioniq.net/calculator/max-bid
