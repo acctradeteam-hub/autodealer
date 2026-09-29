@@ -236,6 +236,35 @@ class TestTiersAndChance(unittest.TestCase):
         self.assertIn("REG 227", r227.verdict)
 
 
+class TestMajorDefectInspection(unittest.TestCase):
+    def setUp(self) -> None:
+        self.costs = load_costs(COSTS_PATH)
+
+    def test_two_ceilings_and_inspect_flag(self) -> None:
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Engine Defect"), self.costs)
+        clean = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean"), self.costs)
+        self.assertTrue(r.verdict.startswith("ОСМОТР"))
+        self.assertEqual(r.max_bid, clean.max_bid)                       # не подтвердится — как у чистой
+        self.assertLess(r.max_bid_if_defect or 0, r.max_bid)             # подтвердится — с резервом на мотор
+        self.assertEqual(r.inspect, ["объявлен Major Engine Defect"])
+        self.assertAlmostEqual(r.market_price, 10000 * self.costs["market"]["kbb_heavy"])
+        self.assertIn("шанс", " ".join([r.verdict, "шанс"]))
+
+    def test_disabled_setting_applies_reserve(self) -> None:
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Transmission Defect"),
+                      dict(self.costs, inspect_major_defects=False))
+        self.assertTrue(r.verdict.startswith("МОЖНО"))
+        self.assertIsNone(r.max_bid_if_defect)
+
+    def test_no_photos_needs_inspection(self) -> None:
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean", no_photos=True), self.costs)
+        self.assertEqual(r.inspect, ["без фото"])
+
+    def test_stop_factor_still_wins(self) -> None:
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Engine Defect, Structural damage"), self.costs)
+        self.assertTrue(r.verdict.startswith("ПРОПУСТИТЬ"))
+
+
 class TestRows(unittest.TestCase):
     def test_apply_to_rows_fills_calc_columns(self) -> None:
         row = empty_row()

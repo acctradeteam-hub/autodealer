@@ -38,6 +38,8 @@ class Deal:
     days_to_list: int = 0     # от покупки до публикации объявления
     days_listed: int = 0      # от публикации до продажи
     no_photos: str = ""       # «да» — лот был без фото
+    announced_defect: str = ""   # что было в объявлении: «Major Engine Defect» …
+    defect_confirmed: str = ""   # «да» / «нет» — подтвердился ли на деле
     notes: str = ""
 
     @property
@@ -93,13 +95,20 @@ def report(deals: list[Deal], costs: dict) -> list[str]:
             line += f"; сбор {d.auction}: реально ${fee_real:,.0f}, по нашей сетке ${fee_table:,.0f}"
         if d.no_photos:
             line += "; лот без фото"
+        if d.announced_defect:
+            line += f"; объявлено «{d.announced_defect}» — {'подтвердилось' if d.defect_confirmed == 'да' else 'не подтвердилось' if d.defect_confirmed == 'нет' else 'не проверено'}"
         lines.append(line)
     if deals:
         lines.append("")
         lines.append(f"Сделок: {len(deals)}. Медиана: прибыль ${statistics.median(d.profit for d in deals):,.0f}, "
                      f"{statistics.median(d.profit / d.sale for d in deals):.0%} от продажи; "
                      f"до объявления {statistics.median(d.days_to_list for d in deals):g} дн., в продаже {statistics.median(d.days_listed for d in deals):g} дн.")
-        lines.append(f"Подсказки для config/costs.json: detailing_usd ≈ {statistics.median(d.prep for d in deals):,.0f}, "
+        announced = [d for d in deals if d.announced_defect and d.defect_confirmed in ("да", "нет")]
+        if announced:
+            false = sum(1 for d in announced if d.defect_confirmed == "нет")
+            lines.append(f"Объявленные «Major … Defect»: не подтвердились {false} из {len(announced)}")
+        lines.append(f"Подсказки для config/costs.json: подготовка по факту ≈ {statistics.median(d.prep for d in deals):,.0f} "
+                     f"(в detailing_usd — с запасом: при большом обороте мыть самому не получится), "
                      f"ремонт по факту ≈ {statistics.median(d.repair for d in deals):,.0f} (recon_default_usd — резерв на скрытое), "
                      f"plan.prep_days ≈ {statistics.median(d.days_to_list for d in deals):g}, дни продажи ≈ {statistics.median(d.days_listed for d in deals):g}"
                      + (" — мало сделок, это ещё не статистика" if len(deals) < 5 else ""))

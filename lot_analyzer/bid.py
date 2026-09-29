@@ -330,6 +330,8 @@ class BidResult:
     market_price: float | None = None    # сколько обычно платят на торгах (по истории результатов)
     market_source: str = ""
     win_chance: float | None = None      # доля похожих лотов, ушедших не дороже потолка
+    inspect: list[str] = field(default_factory=list)   # почему нужен личный осмотр
+    max_bid_if_defect: int | None = None  # потолок, если объявленный дефект подтвердится
     verdict: str = ""
     lines: list[str] = field(default_factory=list)  # расчёт по статьям
 
@@ -341,7 +343,53 @@ def _usd(value: float) -> str:
     return f"${value:,.0f}"
 
 
+# Объявления CarMax о тяжёлом дефекте, которые на деле часто не подтверждаются (опыт владельца:
+# Civic 2015 и Kia Sportage с «Major Engine Defect» оказались исправны). Такие лоты — в «личный осмотр».
+MAJOR_DEFECT_RE = re.compile(r"major\s+(engine|transmission)\s+defect", re.I)
+
+
 def calculate(data: BidInput, costs: dict) -> BidResult:
+    """Потолок ставки. Для «Major Engine/Transmission Defect» — два сценария и пометка «личный осмотр»."""
+    inspect: list[str] = []
+    if data.no_photos:
+        inspect.append("без фото")
+    announced = sorted({m.group(0).title() for m in MAJOR_DEFECT_RE.finditer(f"{data.history_text} {data.defects_text}")})
+    if not announced or not costs.get("inspect_major_defects", True):
+        result = _calculate(data, costs)
+        result.inspect = inspect
+        return result
+
+    inspect.insert(0, "объявлен " + ", ".join(announced))
+    confirmed = _calculate(data, costs)                     # дефект подтвердится: резерв на мотор / коробку
+    clean = BidInput(**{**data.__dict__,
+                        "history_text": MAJOR_DEFECT_RE.sub("", data.history_text),
+                        "defects_text": MAJOR_DEFECT_RE.sub("", data.defects_text)})
+    result = _calculate(clean, costs)                       # дефект не подтвердится
+    result.inspect = inspect
+    result.max_bid_if_defect = confirmed.max_bid
+    if result.max_bid is None:                              # стоп-факторы или нет оценки — как есть
+        return result
+
+    # Рынок для таких лотов — как для машин с тяжёлым дефектом: другие дилеры ставят с поправкой на него.
+    result.market_price, result.market_source = confirmed.market_price, confirmed.market_source
+    heavy_curve = (costs.get("market") or {}).get("kbb_heavy_curve") or []
+    result.win_chance = win_chance(result.max_bid, data.kbb_private_party, heavy_curve) if data.kbb_private_party else None
+    bid = result.max_bid
+    verdict = f"ОСМОТР: до {_usd(bid)}, если дефект не подтвердится"
+    verdict += f" (подтвердится — до {_usd(confirmed.max_bid)})" if confirmed.max_bid else " (подтвердится — не брать)"
+    if result.market_price:
+        verdict += f"; рынок ≈ {_usd(result.market_price)} — лоты с таким объявлением уходят дешевле"
+        if result.win_chance is not None:
+            verdict += f", выигрывает ~{result.win_chance:.0%} похожих"
+    if data.current_bid and data.current_bid > bid:
+        verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)} (даже без дефекта)"
+    rest = [x for x in result.verdict.split("; ")[1:] if not x.startswith("рынок ≈")]
+    result.verdict = "; ".join([verdict] + rest)
+    result.lines.append(f"если дефект подтвердится: потолок {_usd(confirmed.max_bid) if confirmed.max_bid else 'нет'}")
+    return result
+
+
+def _calculate(data: BidInput, costs: dict) -> BidResult:
     result = BidResult()
     lines = result.lines
 
@@ -547,6 +595,8 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.
             row["calc_verdict"] += "; предварительно — откройте карточку лота"
         row["calc_breakdown"] = result.breakdown()
+        row["inspect"] = "; ".join(result.inspect)
+        row["calc_max_bid_if_defect_usd"] = str(result.max_bid_if_defect) if result.max_bid_if_defect else ""
 
 
 _ESTIMATOR_CACHE: dict = {}

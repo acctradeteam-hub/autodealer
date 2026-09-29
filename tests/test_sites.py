@@ -192,7 +192,7 @@ class TestCarMaxWatchlist(unittest.TestCase):
         verdict = {lot: calculate(input_from_row(r), COSTS).verdict for lot, r in self.by_lot.items()}
         self.assertTrue(verdict["A/88"].startswith("ПРОПУСТИТЬ"))       # Structural damage
         self.assertTrue(verdict["B/10"].startswith("ПРОПУСТИТЬ"))       # Not actual miles
-        self.assertTrue(verdict["A/70"].startswith("МОЖНО"))            # KBB из заметки
+        self.assertTrue(verdict["A/70"].startswith("ОСМОТР"))           # KBB из заметки, «Major transmission defect»
         self.assertTrue(verdict["A/9"].startswith("НЕТ ОЦЕНКИ"))        # KBB не вписан
 
     def test_history_in_words_and_dmv_fee(self) -> None:

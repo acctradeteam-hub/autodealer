@@ -11,7 +11,8 @@ from lot_analyzer.bid import load_costs
 
 COSTS = load_costs(Path(__file__).resolve().parent.parent / "config" / "costs.json")
 CIVIC = deals.Deal(vehicle="2015 Honda Civic", auction="CarMax", bid=4500, paid=4945, repair=28, prep=0, dealer=300,
-                   sale=8300, days_to_list=3, days_listed=2, no_photos="да")
+                   sale=8300, days_to_list=3, days_listed=2, no_photos="да", kbb=9410,
+                   announced_defect="Major Transmission Defect", defect_confirmed="нет")
 
 
 class TestDeals(unittest.TestCase):
@@ -25,6 +26,9 @@ class TestDeals(unittest.TestCase):
         self.assertIn("прибыль $3,027 = 36% от продажи, 57% на вложенное", text)
         self.assertIn("реально $445, по нашей сетке $445", text)
         self.assertIn("лот без фото", text)
+        self.assertIn("не подтвердилось", text)
+        self.assertIn("не подтвердились 1 из 1", text)
+        self.assertIn("продажа = 88% KBB", text)
 
     def test_save_and_load_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

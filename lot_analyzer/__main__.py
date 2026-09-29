@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
+from .inspection import inspection_rows, render_html
 from .pages import collect_inputs, read_page
 from .parsers import parse_page
 from .report import (
@@ -114,12 +115,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         apply_to_rows(rows, costs)
         # Сверху — что можно брать (по убыванию потолка), внизу — что пропустить.
-        rank = {"МОЖНО": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
+        rank = {"МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
         rows.sort(key=lambda r: (rank.get(r["calc_verdict"].split(" ")[0].rstrip(":"), 5), -float(r["calc_max_bid_usd"] or 0)))
 
     stem = args.name or f"lots_{dt.date.today().isoformat()}"
     run_tsv = write_tsv(rows, out_dir / f"{stem}.tsv")
     run_xlsx = write_xlsx(rows, out_dir / f"{stem}.xlsx")
+    to_inspect = inspection_rows(rows)
+    if to_inspect:
+        inspect_path = out_dir / f"{stem}_на_осмотр.html"
+        inspect_path.write_text(render_html(rows, f"На осмотр — {stem}"), encoding="utf-8")
+        say(f"На осмотр: {inspect_path} (лотов: {len(to_inspect)})")
     say(f"\nПрогон:      {run_tsv}\n             {run_xlsx}")
 
     if not args.no_cumulative:

@@ -39,7 +39,7 @@
   "_title_required": "true — машины без титула на руках (Title Absent, Possible / App 227) пропускаются: стратегия быстрого оборота.",
   "title_required": true,
 
-  "detailing_usd": 0,
+  "detailing_usd": 150,
   "smog_usd": 60,
   "_dealer_fee": "Сколько берёт дилер, через которого вы оформляете машину, за одну машину (если берёт).",
   "dealer_fee_usd": 300,
@@ -133,6 +133,8 @@
   "kbb_estimate": {"age_per_year": -0.08, "miles_elasticity": -0.45, "max_year_gap": 2, "min_comps": 1, "use_market_comps": true, "min_market_comps": 5},
   "_plan": "Допущения планировщика: дни на подготовку и дни продажи по KBB. Civic 2015: 3 дня до объявления + 2 в продаже; заложено осторожнее — 3 + 7/10/14 (уточняйте журналом сделок: python3 -m lot_analyzer.deals), ниже floor_ratio × KBB выигрыш считается подозрительным.",
   "plan": {"prep_days": 3, "sale_days_by_kbb": [[8000, 7], [12000, 10], [99999999, 14]], "floor_ratio": 0.6, "reg227_market_discount": 0.06},
+  "_inspect_major_defects": "Лоты CarMax с «Major Engine / Transmission Defect» часто исправны (Civic 2015, Kia Sportage). true — считать два потолка (дефект не подтвердился / подтвердился) и помечать «ЛИЧНЫЙ ОСМОТР»; false — сразу закладывать ремонт.",
+  "inspect_major_defects": true,
   "_no_photos": "Лоты без фото (заметка «No pictures», нулевые счётчики фото CarMax, hasImages=false у Manheim): по опыту владельца — конкурентов меньше, цена ниже (Civic 2015: закуп $4,500, продажа $8,300 за 5 дней). no_photo_market_discount — насколько ниже рынок для таких лотов; 0, пока результаты торгов это не подтвердят (признак копится в истории).",
   "no_photo_market_discount": 0.0,
   "_mmr_check": "Предупреждать, если потолок выше MMR × high или ниже MMR × low.",

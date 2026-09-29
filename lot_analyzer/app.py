@@ -26,13 +26,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
+from .inspection import render_html
 from .pages import read_page
 from .parsers import parse_page
 
 SEARCH_URLS_PATH = Path("config/search_urls.json")
 LINKS_PATH = Path("data/search_links.json")
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|auction)_.+\.html?$", re.I)
-RANK = {"МОЖНО": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
+RANK = {"МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
 # ---------------------------------------------------------------- файлы из «Загрузок»
@@ -151,7 +152,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_verdict",
-           "sale_date", "lot_url", "vin", "no_photos", "source_file", "calc_breakdown", "needs_review")
+           "sale_date", "lot_url", "vin", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
 
 
 def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
@@ -181,6 +182,12 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 payload = {"rows": [{k: r.get(k, "") for k in COLUMNS} for r in rows], "files": files,
                            "folders": [str(f) for f in folders]}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            elif url.path == "/inspection":
+                pages = find_pages(folders, float(q.get("hours") or 24))
+                rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
+                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None)
+                title = "На осмотр" + (f" — {q['q']}" if q.get("q") else " — все машины из файлов")
+                self._send(render_html(rows, title).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/links":
                 self._send(json.dumps(search_links(q.get("q", ""), num("y1"), num("y2")), ensure_ascii=False).encode("utf-8"))
             else:
@@ -247,7 +254,8 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 <label>KBB PP 92620 Good, $ (если у лота нет)<input id="kbb" inputmode="numeric" placeholder="10000"></label>
 <label>Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
-<button>Показать</button></form>
+<button>Показать</button>
+<button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
 <details style="margin-top:8px"><summary>Свой сохранённый поиск для этой машины</summary>
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
@@ -264,7 +272,7 @@ function cls(v){return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=await r.json();
 $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
-<td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.no_photos?' <span class="pill v-mid">без фото</span>':''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
+<td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
 <td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.kbb_private_party_usd?money(x.kbb_private_party_usd):(x.kbb_estimate_usd?'≈'+money(x.kbb_estimate_usd)+`<div class="muted">${esc(x.kbb_estimate_source)}</div>`:'—')}</td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>

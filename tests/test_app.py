@@ -80,6 +80,17 @@ class TestOneWindow(unittest.TestCase):
             finally:
                 app.LINKS_PATH = old
 
+    def test_inspection_page(self) -> None:
+        from lot_analyzer.inspection import inspection_rows, render_html
+
+        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "")
+        picked = inspection_rows(rows)
+        self.assertTrue(picked)
+        self.assertTrue(all(r["inspect"] and not r["calc_verdict"].startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО")) for r in picked))
+        page = render_html(rows)
+        self.assertIn("Потолок без дефекта", page)
+        self.assertIn("A/70", page)                                  # Civic с «Major transmission defect»
+
     def test_http_api(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -90,6 +101,9 @@ class TestOneWindow(unittest.TestCase):
             data = json.loads(urllib.request.urlopen(base + "/api/rows?q=honda+civic&y1=2013&y2=2016").read())
             self.assertTrue(data["rows"])
             self.assertEqual(len(data["files"]), 3)
+            page = urllib.request.urlopen(base + "/inspection?q=").read().decode("utf-8")
+            self.assertIn("Список на осмотр", urllib.request.urlopen(base + "/").read().decode("utf-8"))
+            self.assertIn("На осмотр", page)
         finally:
             server.shutdown()
 
