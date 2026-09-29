@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-from . import acv, manheim, sites_text
+from . import acv, lists, manheim, sites_text
 from .extract import LotDocument
 from .normalize import (
     clean_cell,
@@ -361,6 +361,39 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
     поверх списка открыта карточка одной из них, её подробности (повреждения,
     протектор) добавляются в строку этой машины. Иначе — одна строка, как parse_lot.
     """
+    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def blank() -> dict[str, str]:
+        row = empty_row()
+        row["source_file"], row["parsed_at"] = source_name, stamp
+        return row
+
+    # Manheim: результаты поиска — у каждой карточки встроен JSON объявления.
+    listings = manheim.find_listings(html) if ("manheim" in html[:600_000].lower() or "coxautoinc" in html) else []
+    if len(listings) > 1:
+        rows = []
+        for data in listings:
+            row = blank()
+            notes = manheim.apply_detail(row, manheim.detail_from(data)) + _vin_notes(row)
+            row["needs_review"] = clean_cell("; ".join(notes + _missing_summary(row)), 600)
+            rows.append(row)
+        return rows
+
+    # ADESA / ACV: страница-список (поиск, сохранённый поиск).
+    list_cards = lists.find_list(html)
+    if list_cards:
+        opened = parse_lot(html, source_name=source_name, auction_hint=auction_hint) if "auction-detail" in html else None
+        rows = []
+        for info in list_cards:
+            if opened is not None and opened.get("lot_number") == info.get("lot"):
+                rows.append(opened)          # карточка открыта — в ней всё подробнее
+                continue
+            row = blank()
+            notes = lists.row_from_card(row, info) + _vin_notes(row)
+            row["needs_review"] = clean_cell("; ".join(notes), 600)
+            rows.append(row)
+        return rows
+
     cards = sites_text.find_carmax_cards(html)
     if not cards:
         return [parse_lot(html, source_name=source_name, auction_hint=auction_hint)]
@@ -368,7 +401,6 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
     opened = parse_lot(html, source_name=source_name, auction_hint=auction_hint)
     opened_vin = opened["vin"] if opened.get("auction") == "CarMax" else ""
     rows = []
-    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     for card in cards:
         if card["vin"] == opened_vin:
             row = dict(opened)

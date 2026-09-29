@@ -44,7 +44,8 @@ _SKIP_PATTERNS = {
     "odometer_problem": r"odometer (rollback|problem|discrepancy|tamper)|mileage (inconsistency|discrepancy)|rollback|not[\s-]*actual|\btmu\b|true mileage unknown|скрут",
     "structural_damage": r"structural (damage|alteration)|frame damage|unibody damage|frame/unibody damage|повреждени[ея] рамы|\bрам[аы]\b",
     "airbag_deployed": r"airbags? deployed|подушк\w* (безопасности )?сработал",
-    "flood": r"\bflood\b|water damage|water intrusion|затоплен|утоплен",
+    # «LR Tail Lamp: Water Damage» — влага в фонаре, не затопление машины.
+    "flood": r"\bflood\b|(?<!lamp: )(?<!light: )water damage|water intrusion|затоплен|утоплен",
     "mechanical_severe": r"engine does not crank|cranks,? does not start|does not stay running|vehicle inop|does not move|coolant intermix|не заводится",
 }
 _SKIP_TEXT = {
@@ -278,6 +279,10 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         factor = float(costs.get("auction_retail_factor", 0.9))
         result.sale_price = data.auction_retail * factor
         result.sale_source = f"ритейл аукциона × {factor:g} — ориентир, сверьте с Facebook"
+    elif data.mmr and float(costs.get("mmr_retail_factor", 0)):
+        factor = float(costs["mmr_retail_factor"])
+        result.sale_price = data.mmr * factor
+        result.sale_source = f"опт/MMR × {factor:g} — грубый ориентир, впишите KBB или FB"
     if not result.sale_price:
         result.verdict = "НЕТ ОЦЕНКИ: впишите цену продажи или KBB Private Party"
         if flags.notes:
@@ -402,6 +407,9 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict) -> None:
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
         row["calc_profit_usd"] = f"{result.profit_at_max:.0f}" if result.profit_at_max is not None else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
+        if result.max_bid and "из списка:" in row.get("needs_review", ""):
+            # Строка из списка поиска: истории и повреждений из карточки ещё нет.
+            row["calc_verdict"] += "; предварительно — откройте карточку лота"
         row["calc_breakdown"] = result.breakdown()
 
 

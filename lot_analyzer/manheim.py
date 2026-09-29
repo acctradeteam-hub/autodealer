@@ -28,19 +28,37 @@ class ManheimDetail:
     listings_on_page: int = 1
 
 
-def find_detail(html: str) -> ManheimDetail | None:
-    """JSON объявления Manheim со страницы или None."""
-    if _LISTING_START not in html and _LISTING_START.replace('"', "&quot;") not in html:
-        return None
+# Карточка лота: {"href":"https://api.coxautoinc.com/…"; карточки списка поиска: {"source":"OVE"|"Simulcast",…
+_JSON_NODE = re.compile(r'^\s*\{"(?:href":"https://api\.coxautoinc\.com/wholesale-marketplace/enablement/listings-search|source":")')
+
+
+def find_listings(html: str) -> list[dict]:
+    """Все объявления Manheim, встроенные в страницу (карточка лота или результаты поиска)."""
+    if "coxautoinc" not in html and '{"source":"' not in html:
+        return []
     soup = BeautifulSoup(html, "lxml")
     listings: list[dict] = []
-    for text in soup.find_all(string=re.compile(r'^\s*\{"href":"https://api\.coxautoinc\.com/wholesale-marketplace/enablement/listings-search')):
+    seen: set[str] = set()
+    for text in soup.find_all(string=_JSON_NODE):
         try:
             data = json.loads(str(text).strip())
         except ValueError:
             continue
-        if isinstance(data, dict) and data.get("vin"):
+        if isinstance(data, dict) and data.get("vin") and data.get("id", data["vin"]) not in seen:
+            seen.add(data.get("id", data["vin"]))
             listings.append(data)
+    return listings
+
+
+def detail_from(data: dict, listings_on_page: int = 1) -> ManheimDetail:
+    title = squeeze((data.get("designatedDescriptionEnrichment") or {}).get("manheimStandardDescription", {}).get("shortDescription", ""))
+    fragment = f"<html><head><title>{title} | Manheim</title></head><body></body></html>"
+    return ManheimDetail(data=data, fragment_html=fragment, listings_on_page=listings_on_page)
+
+
+def find_detail(html: str) -> ManheimDetail | None:
+    """JSON объявления Manheim со страницы или None."""
+    listings = find_listings(html)
     if not listings:
         return None
     data = listings[0]
@@ -69,9 +87,9 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
     row["vin"] = d.get("vin", "")
     row["year"] = str(d.get("year") or desc.get("year") or "")
     row["make"] = d.get("make") or desc.get("make", "")
-    models = d.get("models") or [desc.get("model", "")]
+    models = d.get("models") or [desc.get("model") or ""]
     row["model"] = models[0] if models else ""
-    trims = d.get("trims") or [desc.get("trim", "")]
+    trims = d.get("trims") or [desc.get("trim") or d.get("sourceTrim") or ""]
     row["trim"] = trims[0] if trims else ""
     if d.get("odometer") is not None:
         miles = float(d["odometer"])
@@ -80,7 +98,11 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
             notes.append("пробег переведён из км в мили")
         row["odometer_miles"] = f"{miles:.0f}"
     row["location"] = ", ".join(x for x in (d.get("facilitationLocation") or d.get("auctionName"), d.get("pickupLocationCity"), d.get("pickupLocationState")) if x)
+    if not d.get("pickupLocationCity") and d.get("pickupLocation") and d.get("pickupLocation") != row["location"]:
+        row["location"] = d["pickupLocation"]          # «NV - RENO»
     row["sale_date"] = d.get("saleDate", "") or ""
+    if d.get("channelSaleType") == "TIMED_SALE" and d.get("auctionEndTime"):
+        row["sale_date"] = f"до {d['auctionEndTime'].replace('T', ' ').replace(':00Z', ' UTC')}"
     row["current_bid_usd"] = _money(d.get("bidPrice"))
     row["mmr_adjusted_usd"] = _money(d.get("mmrPrice") or (d.get("valuationsMmr") or {}).get("adjustedValue"))
     row["wholesale_usd"] = row["mmr_adjusted_usd"]
@@ -93,6 +115,20 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
     announcements += [squeeze(str(a)).lstrip("*") for a in d.get("additionalAnnouncements") or []]
     if d.get("remarks"):
         announcements.append(squeeze(d["remarks"]).lstrip("*"))
+    announcements += [squeeze(str(a)) for a in (d.get("announcementsEnrichment") or {}).get("announcements") or []]
+    if d.get("hasFrameDamage"):
+        announcements.append("Frame or Structural Damage")
+    if d.get("salvageVehicle"):
+        announcements.append("Salvage vehicle")
+    title_status = squeeze(d.get("titleStatus") or "")
+    if title_status and title_status != "Not Specified":
+        announcements.append(f"Title status: {title_status}")
+    # Анкета продавца (OVE): только ответы с отрицательной оценкой (connotation −1).
+    announcements += [
+        f"{squeeze(q.get('question', ''))}: {squeeze(q.get('answer', ''))}"
+        for q in (d.get("disclosuresEnrichment") or {}).get("questionnaire") or []
+        if q.get("connotation") == -1
+    ]
     announcements = list(dict.fromkeys(a for a in announcements if a))
 
     # --- повреждения: в «Дефекты» — только требующие действия ---
@@ -144,6 +180,10 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
 
     # --- прочее для решения о ставке ---
     extra = []
+    if d.get("bidPrice") and d.get("channelSaleType") == "TIMED_SALE":
+        extra.append(f"текущая ставка OVE: ${float(d['bidPrice']):,.0f}")
+    if d.get("buyNowPrice"):
+        extra.append(f"Buy Now: ${float(d['buyNowPrice']):,.0f}")
     sale = d.get("sale") or {}
     if d.get("laneNumber") or d.get("runNumber"):
         extra.append(f"дорожка {d.get('laneNumber', '?')}, номер {d.get('runNumber', '?')}")
