@@ -40,11 +40,11 @@ def load_costs(path: Path = DEFAULT_COSTS_PATH) -> dict:
 _NEGATION = re.compile(r"(\bno\b|\bnot\b|\bnone\b|\bwithout\b|\bzero\b|\b0\b|\bбез\b|\bнет\b|\bне\b)[\w\s/-]{0,20}$", re.I)
 
 _SKIP_PATTERNS = {
-    "branded_title": r"salvage|rebuilt|reconstructed|\bjunk\b|lemon|buy\s*back|non[\s-]*repairable|certificate of destruction|restored title|спасён|восстановленн",
+    "branded_title": r"salvage|rebuilt|reconstructed|total loss|\bjunk\b|lemon|buy\s*back|non[\s-]*repairable|certificate of destruction|restored title|спасён|восстановленн",
     "odometer_problem": r"odometer (rollback|problem|discrepancy|tamper)|mileage (inconsistency|discrepancy)|rollback|not[\s-]*actual|\btmu\b|true mileage unknown|скрут",
     "structural_damage": r"structural (damage|alteration)|frame damage|unibody damage|frame/unibody damage|повреждени[ея] рамы|\bрам[аы]\b",
     "airbag_deployed": r"airbags? deployed|подушк\w* (безопасности )?сработал",
-    "flood": r"\bflood\b|water damage|затоплен|утоплен",
+    "flood": r"\bflood\b|water damage|water intrusion|затоплен|утоплен",
     "mechanical_severe": r"engine does not crank|cranks,? does not start|does not stay running|vehicle inop|does not move|coolant intermix|не заводится",
 }
 _SKIP_TEXT = {
@@ -57,7 +57,11 @@ _SKIP_TEXT = {
 }
 
 # Не стоп-фактор, но продать машину нельзя, пока нет титула.
-_TITLE_ABSENT = r"title absent|title (delay|missing)|no title|титул отсутств"
+_TITLE_ABSENT = r"title absent|title (delay|missing)|no title(?!\s*(issues?|problems?))|титул отсутств"
+# Калифорния: для оформления понадобится форма REG 227 (дубликат титула).
+_POSSIBLE_227 = r"possible 227|\breg[\s-]?227\b"
+# Продавец пишет «не на ходу», даже если отчёт говорит обратное.
+_NON_RUNNER = r"non[\s-]*runner|no runner|does not run"
 
 
 def _positive_hits(text: str, pattern: str) -> list[re.Match]:
@@ -92,7 +96,7 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
 
     rates = costs.get("history_discounts", {})
     count_match = re.search(r"(\d+)\s*(accidents?|дтп|аварi?\w*)", text, re.I)
-    accident_hits = _positive_hits(text, r"accident|damage reported|\bдтп\b|авари")
+    accident_hits = _positive_hits(text, r"accident|damage reported|damage history|\bдтп\b|авари")
     accident_count = 0
     if count_match:
         accident_count = int(count_match.group(1))
@@ -110,12 +114,16 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
     if owners and int(owners.group(1)) >= 4:
         flags.discounts[f"{owners.group(1)} владельцев"] = rates.get("owners_4_plus", 0.03)
 
-    if _positive_hits(text, r"rental|fleet|\btaxi\b|аренд|такси|прокат"):
+    if _positive_hits(text, r"rental|fleet|\btaxi\b|police|non-?personal use|аренд|такси|прокат"):
         flags.discounts["аренда/флит"] = rates.get("rental_fleet", 0.03)
-    if _positive_hits(text, r"recovered theft|theft recovery|stolen vehicle|угон"):
+    if _positive_hits(text, r"recovered theft|theft recovery|theft history|stolen vehicle|угон"):
         flags.discounts["был в угоне"] = rates.get("theft_recovery", 0.10)
     if _positive_hits(text, _TITLE_ABSENT):
         flags.notes.append("нет титула на руках — продать нельзя, пока его не пришлют")
+    if _positive_hits(text, _POSSIBLE_227):
+        flags.notes.append("Possible 227 — титул через дубликат (REG 227), оформление затянется")
+    if _positive_hits(text, _NON_RUNNER):
+        flags.notes.append("продавец пишет «не на ходу» — заложен резерв, проверьте на месте")
     return flags
 
 
@@ -207,7 +215,8 @@ class BidInput:
     auction: str = ""
     sale_price: float | None = None      # своя оценка цены продажи
     kbb_private_party: float | None = None
-    mmr: float | None = None
+    auction_retail: float | None = None  # розничная оценка самого аукциона (Manheim, ADESA)
+    mmr: float | None = None             # MMR или оптовая оценка аукциона
     recon: float | None = None           # своя оценка ремонта
     current_bid: float | None = None
     history_text: str = ""               # титул, Carfax, CR, повреждения — одной строкой
@@ -236,6 +245,13 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
     result = BidResult()
     lines = result.lines
 
+    # 0. Стоп-факторы — до всего остального: такую машину не берём при любой цене.
+    flags = assess_history(data.history_text, costs)
+    if flags.skip:
+        result.verdict = "ПРОПУСТИТЬ: " + ", ".join(flags.skip)
+        lines.append("стоп-факторы в истории")
+        return result
+
     # 1. Цена продажи
     if data.sale_price:
         result.sale_price, result.sale_source = data.sale_price, "своя оценка"
@@ -243,18 +259,19 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         factor = float(costs.get("kbb_private_party_factor", 1.0))
         result.sale_price = data.kbb_private_party * factor
         result.sale_source = f"KBB PP × {factor:g}"
+    elif data.auction_retail:
+        factor = float(costs.get("auction_retail_factor", 0.9))
+        result.sale_price = data.auction_retail * factor
+        result.sale_source = f"ритейл аукциона × {factor:g} — ориентир, сверьте с Facebook"
     if not result.sale_price:
         result.verdict = "НЕТ ОЦЕНКИ: впишите цену продажи или KBB Private Party"
+        if flags.notes:
+            result.verdict += "; " + "; ".join(flags.notes)
         return result
     sale = result.sale_price
     lines.append(f"продажа {_usd(sale)} ({result.sale_source})")
 
-    # 2. История
-    flags = assess_history(data.history_text, costs)
-    if flags.skip:
-        result.verdict = "ПРОПУСТИТЬ: " + ", ".join(flags.skip)
-        lines.append("стоп-факторы в истории")
-        return result
+    # 2. Скидка за историю
     discount_pct = sum(flags.discounts.values())
     discount = sale * discount_pct
     if discount:
@@ -317,9 +334,9 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)}"
     if data.mmr:
         if bid > data.mmr * float(costs.get("mmr_warn_high", 1.15)):
-            verdict += f"; потолок выше MMR {_usd(data.mmr)} — проверьте цену продажи"
+            verdict += f"; потолок выше опта/MMR {_usd(data.mmr)} — проверьте цену продажи"
         elif bid < data.mmr * float(costs.get("mmr_warn_low", 0.7)):
-            verdict += f"; потолок сильно ниже MMR {_usd(data.mmr)} — шанс выиграть мал"
+            verdict += f"; потолок сильно ниже опта/MMR {_usd(data.mmr)} — шанс выиграть мал"
     if flags.notes:
         verdict += "; " + "; ".join(flags.notes)
     result.verdict = verdict
@@ -340,7 +357,8 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         auction=row.get("auction", ""),
         sale_price=parse_money(row.get("retail_estimate_usd")) or parse_money(row.get("cargurus_retail_usd")),
         kbb_private_party=parse_money(row.get("kbb_private_party_usd")),
-        mmr=parse_money(row.get("mmr_adjusted_usd")),
+        mmr=parse_money(row.get("mmr_adjusted_usd")) or parse_money(row.get("wholesale_usd")),
+        auction_retail=parse_money(row.get("auction_retail_usd")),
         recon=parse_money(row.get("recon_estimate_usd")),
         current_bid=parse_money(row.get("current_bid_usd")),
         history_text=history,

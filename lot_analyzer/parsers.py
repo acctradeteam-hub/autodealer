@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-from . import acv
+from . import acv, manheim, sites_text
 from .extract import LotDocument
 from .normalize import (
     clean_cell,
@@ -215,11 +215,13 @@ def parse_lot(html: str, source_name: str = "", auction_hint: str = "") -> dict[
     Возвращает словарь «ключ колонки -> строковое значение». Ненайденные поля
     остаются пустыми, а их список попадает в колонку «Проверить».
     """
-    # ACV: сохранённая страница — весь Marketplace; разбираем только карточку лота.
-    acv_detail = acv.find_detail(html) if "acvauctions" in html[:400_000].lower() else None
-    if acv_detail is not None:
-        html = acv_detail.fragment_html
-        auction_hint = auction_hint or "ACV"
+    # Площадки с отдельным разбором: на сохранённой странице кроме лота есть
+    # списки других машин и фильтры поиска, поэтому общий разбор получает
+    # только карточку лота, а точные поля затем берутся из неё же.
+    site_name, site_detail, site_apply = _site_detail(html)
+    if site_detail is not None:
+        html = site_detail.fragment_html
+        auction_hint = auction_hint or site_name
 
     doc = LotDocument(html, source_name)
     auction = auction_hint or detect_auction(doc)
@@ -339,14 +341,13 @@ def parse_lot(html: str, source_name: str = "", auction_hint: str = "") -> dict[
     url = squeeze(canonical.get("href") if canonical else "") or _text_field(doc, "lot_url", auction, 300)
     row["lot_url"] = url if url.startswith("http") else ""
 
-    # --- ACV: точные поля из карточки лота перекрывают найденное общим разбором ---
-    if acv_detail is not None:
-        notes = [n for n in notes if not n.startswith("отметка «на ходу»")]
-        notes += acv.apply_detail(row, acv_detail)
+    # --- площадка с отдельным разбором: её поля точнее найденного общим разбором ---
+    if site_detail is not None:
+        notes = site_apply(row, site_detail) + _vin_notes(row)
 
     # --- что осталось проверить глазами ---
     missing = _missing_summary(row)
-    if acv_detail is not None:
+    if site_name == "ACV":
         # У онлайн-торгов ACV нет даты продажи — только таймер в карточке.
         missing = [m.replace("дата продажи, ", "").replace(", дата продажи", "") for m in missing if m != "не найдено: дата продажи"]
     row["needs_review"] = clean_cell("; ".join(notes + missing), 600)
@@ -354,6 +355,45 @@ def parse_lot(html: str, source_name: str = "", auction_hint: str = "") -> dict[
 
 
 # ---------------------------------------------------------------- частные помощники
+
+
+def _site_detail(html: str):
+    """(аукцион, карточка, функция заполнения строки) либо ("", None, None)."""
+    head = html[:600_000].lower()
+    if "acvauctions" in head:
+        detail = acv.find_detail(html)
+        if detail is not None:
+            return "ACV", detail, acv.apply_detail
+    if "manheim.com" in head or "coxautoinc.com" in head:
+        detail = manheim.find_detail(html)
+        if detail is not None:
+            return "Manheim", detail, manheim.apply_detail
+    if "adesa" in head:
+        detail = sites_text.find_adesa(html)
+        if detail is not None:
+            return "ADESA", detail, sites_text.apply_detail
+    if "carmax" in head:
+        detail = sites_text.find_carmax(html)
+        if detail is not None:
+            return "CarMax", detail, sites_text.apply_detail
+    return "", None, None
+
+
+def _vin_notes(row: dict[str, str]) -> list[str]:
+    """Проверки VIN и года — по уже заполненной строке."""
+    notes = []
+    vin = clean_vin(row.get("vin", ""))
+    row["vin"] = vin
+    ok = vin_check_digit_ok(vin) if vin else None
+    row["vin_valid"] = "" if ok is None else ("да" if ok else "нет")
+    if ok is False:
+        notes.append("контрольная цифра VIN не сходится")
+    year = parse_year(row.get("year", ""))
+    vin_year = vin_model_year(vin) if vin else None
+    if year and vin_year and abs(year - vin_year) > 1:
+        notes.append(f"год на странице ({year}) не совпадает с годом из VIN ({vin_year})")
+    return notes
+
 
 
 def _heading_after_year(text: str, year: int) -> str:

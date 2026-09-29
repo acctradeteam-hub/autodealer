@@ -75,6 +75,10 @@ class TestAcvCalculation(unittest.TestCase):
         self.assertIn("пробег", result.verdict)
         self.assertIn("рамы / кузова", result.verdict)
 
+    def test_stop_factors_win_even_without_sale_price(self) -> None:
+        row = dict(self.row, retail_estimate_usd="")
+        self.assertTrue(calculate(input_from_row(row), self.costs).verdict.startswith("ПРОПУСТИТЬ"))
+
     def test_without_stop_factors_theft_discount_and_title_note(self) -> None:
         row = {k: v.replace("Structural Alteration", "SA").replace("Mileage inconsistency", "MI") for k, v in self.row.items()}
         result = calculate(input_from_row(row), self.costs)

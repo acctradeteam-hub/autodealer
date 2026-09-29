@@ -40,6 +40,9 @@ COLUMNS: tuple[Column, ...] = (
     Column("current_bid_usd", "Текущая ставка, $", numeric=True, width=16),
     Column("transport_quote_usd", "Доставка (котировка), $", numeric=True, width=16),
     Column("acv_estimate_usd", "Оценка ACV, $", numeric=True, width=15),
+    Column("condition_grade", "Оценка состояния (grade)", width=14),
+    Column("wholesale_usd", "Опт — оценка аукциона, $", numeric=True, width=17),
+    Column("auction_retail_usd", "Ритейл — оценка аукциона, $", numeric=True, width=18),
     # --- оценки: источники недоступны автоматически, см. README, раздел «Этап 2» ---
     Column("kbb_private_party_usd", "KBB Private Party, $", manual=True, numeric=True, width=19),
     Column("mmr_adjusted_usd", "Adjusted MMR, $", manual=True, numeric=True, width=17),
