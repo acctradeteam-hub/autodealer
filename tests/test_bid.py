@@ -85,11 +85,12 @@ class TestFeesAndRecon(unittest.TestCase):
         self.assertEqual(auction_fee(10**7, "Manheim", costs), 600)
         self.assertEqual(auction_fee(5000, "Неизвестный", costs), 0)
 
-    def test_carmax_tier4_matches_published_schedule(self) -> None:
+    def test_carmax_tier3_january_2026(self) -> None:
+        # Распечатка CarMax Auctions, Tier 3 / January 2026, + cash fee $30.
         costs = load_costs(COSTS_PATH)
-        for bid, fee in ((150, 135), (4000, 385), (4999, 385), (5000, 410), (6999, 425), (7000, 445), (8000, 455), (8500, 465), (20000, 575)):
+        for bid, fee in ((150, 160), (2500, 405), (3500, 385), (4999, 405), (5000, 430), (6999, 445), (7000, 465), (8000, 475), (20000, 595)):
             with self.subTest(bid=bid):
-                self.assertEqual(auction_fee(bid, "CarMax", costs), fee)
+                self.assertEqual(auction_fee(bid, "CarMax", costs), fee + 30)
 
     def test_acv_schedule_from_may_2026(self) -> None:
         costs = load_costs(COSTS_PATH)
