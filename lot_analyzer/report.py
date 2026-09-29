@@ -65,6 +65,7 @@ def write_xlsx(rows: list[dict[str, str]], path: Path, sheet_title: str = "Ло�
     header_fill = PatternFill("solid", fgColor="2F5597")
     manual_fill = PatternFill("solid", fgColor="FFF2CC")   # ручные колонки — светло-жёлтые
     review_fill = PatternFill("solid", fgColor="FCE4E4")   # есть замечания — светло-красный
+    good_fill = PatternFill("solid", fgColor="E2EFDA")     # вердикт «можно» — светло-зелёный
 
     sheet.append(list(COLUMN_TITLES))
     for index, column in enumerate(COLUMNS, start=1):
@@ -94,6 +95,8 @@ def write_xlsx(rows: list[dict[str, str]], path: Path, sheet_title: str = "Ло�
                 cell.fill = manual_fill
             elif has_notes and column.key == "needs_review":
                 cell.fill = review_fill
+            elif column.key == "calc_verdict" and raw:
+                cell.fill = good_fill if raw.startswith("МОЖНО") else review_fill
 
     sheet.freeze_panes = "D2"
     if rows:
@@ -122,6 +125,14 @@ def _add_legend_sheet(workbook) -> None:
         "max_bid_usd": "Вручную: ваша максимальная ставка по лоту",
         "carfax_autocheck": "Вручную: выводы из отчёта Carfax / AutoCheck",
         "condition_report": "Вручную: выводы из Condition Report (Manheim / ACV)",
+        "retail_estimate_usd": "Вручную: за сколько реально продадите на Facebook Marketplace (по похожим объявлениям)",
+        "recon_estimate_usd": "Вручную: своя оценка ремонта. Пусто — берётся резерв из config/costs.json",
+        "calc_verdict": "Расчёт: МОЖНО до $X / ДОРОЖЕ ПОТОЛКА / НЕВЫГОДНО / ПРОПУСТИТЬ (стоп-факторы в истории)",
+        "calc_max_bid_usd": "Расчёт: наибольшая ставка (hammer), при которой остаётся цель прибыли",
+        "sale_estimate_usd": "Расчёт: своя оценка цены продажи, иначе CarGurus, иначе KBB Private Party × коэффициент",
+        "calc_costs_usd": "Расчёт: сборы аукциона при потолке + ремонт, детейлинг, смог, доставка, содержание, резерв",
+        "calc_profit_usd": "Расчёт: прибыль, если купить ровно по потолку",
+        "calc_breakdown": "Расчёт: откуда взялась каждая цифра. Настройки — config/costs.json",
         "needs_review": "Автоматически: поля, которые парсер не нашёл или посчитал спорными",
         "photo_urls": "Автоматически: ссылки на фото. Дефекты по фото не распознаются автоматически",
     }

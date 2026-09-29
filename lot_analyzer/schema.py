@@ -45,6 +45,15 @@ COLUMNS: tuple[Column, ...] = (
     Column("cargurus_retail_usd", "Ритейл CarGurus, $", manual=True, numeric=True, width=18),
     Column("cargurus_deal_rating", "Рейтинг CarGurus", manual=True, width=17),
     Column("max_bid_usd", "Максимальная ставка, $", manual=True, numeric=True, width=21),
+    Column("retail_estimate_usd", "Цена продажи (моя оценка), $", manual=True, numeric=True, width=20),
+    Column("recon_estimate_usd", "Ремонт (моя оценка), $", manual=True, numeric=True, width=17),
+    # --- расчёт потолка ставки (lot_analyzer/bid.py, настройки в config/costs.json) ---
+    Column("calc_verdict", "Вердикт", width=40),
+    Column("calc_max_bid_usd", "Потолок ставки (расчёт), $", numeric=True, width=18),
+    Column("sale_estimate_usd", "Цена продажи (расчёт), $", numeric=True, width=17),
+    Column("calc_costs_usd", "Расходы сверх ставки, $", numeric=True, width=17),
+    Column("calc_profit_usd", "Прибыль при потолке, $", numeric=True, width=17),
+    Column("calc_breakdown", "Расчёт по статьям", width=60),
     # --- история ---
     Column("lot_description", "Описание лота", width=50),
     Column("history_page", "История (со страницы)", width=40),

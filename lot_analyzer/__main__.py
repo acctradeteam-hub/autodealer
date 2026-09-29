@@ -13,6 +13,7 @@ import datetime as dt
 import sys
 from pathlib import Path
 
+from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
 from .pages import collect_inputs, read_page
 from .parsers import parse_lot
 from .report import (
@@ -42,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--manual",
         default=str(DEFAULT_MANUAL_PATH),
         help="файл ручных оценок KBB/MMR/CarGurus (по умолчанию valuations/manual_values.tsv)",
+    )
+    parser.add_argument(
+        "--costs",
+        default=str(DEFAULT_COSTS_PATH),
+        help="настройки расчёта потолка ставки (по умолчанию config/costs.json)",
     )
     parser.add_argument("--no-cumulative", action="store_true", help="не обновлять накопительную таблицу")
     parser.add_argument("--quiet", action="store_true", help="меньше вывода")
@@ -97,6 +103,13 @@ def main(argv: list[str] | None = None) -> int:
         touched = apply_manual_values(rows, manual)
         say(f"Ручные оценки подставлены в строк: {touched} (из {manual_path})")
 
+    costs_path = Path(args.costs)
+    costs = load_costs(costs_path) if costs_path.exists() else None
+    if costs is None:
+        say(f"Файл настроек {costs_path} не найден — потолок ставки не считается.")
+    else:
+        apply_to_rows(rows, costs)
+
     stem = args.name or f"lots_{dt.date.today().isoformat()}"
     run_tsv = write_tsv(rows, out_dir / f"{stem}.tsv")
     run_xlsx = write_xlsx(rows, out_dir / f"{stem}.xlsx")
@@ -105,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_cumulative:
         cumulative_path = out_dir / f"{CUMULATIVE_STEM}.tsv"
         merged, added, updated = merge_cumulative(rows, cumulative_path)
+        if costs is not None:
+            # Ручные оценки и настройки могли поменяться — пересчитываем все строки.
+            apply_manual_values(merged, manual)
+            apply_to_rows(merged, costs)
         write_tsv(merged, cumulative_path)
         cumulative_xlsx = write_xlsx(merged, out_dir / f"{CUMULATIVE_STEM}.xlsx", sheet_title="Все лоты")
         say(

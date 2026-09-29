@@ -1,0 +1,103 @@
+{
+  "_about": "Настройки расчёта максимальной ставки. Все суммы в долларах. Поля, начинающиеся с «_», — пояснения, программа их не читает.",
+
+  "home_zip": "92620",
+  "max_distance_miles": 500,
+
+  "_profit": "Цель по прибыли с машины: берётся большее из двух — сумма или доля от цены продажи.",
+  "profit_min_usd": 1500,
+  "profit_min_pct_of_sale": 0.15,
+
+  "_budget": "Потолок закупа (hammer) при любом раскладе. 0 — без ограничения.",
+  "budget_max_bid_usd": 7000,
+
+  "_bid_step": "Шаг ставки на аукционе: потолок округляется вниз до этого шага.",
+  "bid_step_usd": 25,
+
+  "_sale": "Если своей оценки цены продажи нет, берётся KBB Private Party (ZIP 92620) × этот коэффициент.",
+  "kbb_private_party_factor": 1.0,
+
+  "_transport": "Сейчас забираете сами — 0. Когда начнёте возить перевозчиком, поставьте 250.",
+  "transport_usd": 0,
+
+  "detailing_usd": 150,
+  "smog_usd": 60,
+  "_dealer_fee": "Сколько берёт дилер, через которого вы оформляете машину, за одну машину (если берёт).",
+  "dealer_fee_usd": 0,
+  "_selling": "Реклама / продвижение на Facebook Marketplace на одну машину.",
+  "selling_usd": 0,
+
+  "_holding": "Содержание машины до продажи: дней × стоимость дня (страховка, стоянка, деньги).",
+  "days_to_sell": 30,
+  "holding_per_day_usd": 5,
+
+  "_recon": "Ремонт, если своей оценки нет: базовый резерв + надбавки за найденные в описании/CR слова.",
+  "recon_default_usd": 500,
+  "recon_keywords": {
+    "check engine": 500,
+    "transmission": 1500,
+    "коробк": 1500,
+    "engine noise": 1500,
+    "tires": 400,
+    "шины": 400,
+    "windshield": 300,
+    "лобов": 300,
+    "brakes": 300,
+    "тормоз": 300,
+    "a/c": 400,
+    "кондиционер": 400,
+    "dent": 200,
+    "scratch": 150,
+    "bumper": 350,
+    "бампер": 350
+  },
+
+  "_reserve": "Резерв на непредвиденное, доля от цены продажи.",
+  "reserve_pct_of_sale": 0.03,
+
+  "_history": "Скидка к цене продажи за историю (доля). «skip» в списке ниже — сразу «ПРОПУСТИТЬ».",
+  "history_discounts": {
+    "accident_minor": 0.05,
+    "accident": 0.10,
+    "accidents_multiple": 0.15,
+    "owners_4_plus": 0.03,
+    "rental_fleet": 0.03
+  },
+  "history_skip": [
+    "branded_title",
+    "odometer_problem",
+    "structural_damage",
+    "airbag_deployed",
+    "flood"
+  ],
+
+  "_mmr_check": "Предупреждать, если потолок выше MMR × high или ниже MMR × low.",
+  "mmr_warn_high": 1.15,
+  "mmr_warn_low": 0.7,
+
+  "_auctions": "Сборы покупателя. fee_tiers: [до цены включительно, сбор]. ЦИФРЫ ПРИМЕРНЫЕ: аукционы не публикуют сетку сборов, сверьте со своим аккаунтом (Manheim — My Account / Fees, CarMax — Simulcast, ADESA/OPENLANE — кнопка Buy Fees в карточке лота).",
+  "auctions": {
+    "Manheim": {
+      "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
+      "extra_fees_usd": {"internet": 100, "gate": 0, "title": 0},
+      "verified": false
+    },
+    "CarMax": {
+      "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
+      "extra_fees_usd": {"internet": 100, "gate": 0, "title": 0},
+      "verified": false
+    },
+    "ADESA": {
+      "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
+      "extra_fees_usd": {"internet": 100, "gate": 0, "title": 0},
+      "verified": false
+    }
+  },
+  "_aliases": "Как ещё может называться аукцион в таблице.",
+  "auction_aliases": {
+    "OPENLANE": "ADESA",
+    "Openlane": "ADESA",
+    "CarMax Auctions": "CarMax",
+    "Manheim OVE": "Manheim"
+  }
+}
