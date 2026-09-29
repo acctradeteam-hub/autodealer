@@ -254,6 +254,8 @@ def apply_detail(row: dict[str, str], detail: TextDetail) -> list[str]:
     row["condition_report"] = " | ".join(
         ([f"grade {f['grade']}"] if f.get("grade") else []) + detail.announcements + detail.damages + [f"{x}: issue present" for x in detail.issues]
     )[:1500]
+    if not row["condition_report"] and detail.auction == "CarMax":
+        row["condition_report"] = "повреждений не отмечено (CarMax)"
     row["history_page"] = " | ".join(detail.history + [a for a in detail.announcements if re.search(r"title|history|rental|fleet|lease|theft|227|miles", a, re.I)])[:800]
     title_flags = [x for x in detail.history + detail.announcements if re.search(r"title|227", x, re.I)]
     row["title_type"] = "; ".join(title_flags)[:80] or f"без замечаний по титулу ({detail.auction})"
@@ -281,4 +283,120 @@ def apply_detail(row: dict[str, str], detail: TextDetail) -> list[str]:
         notes.append("ставок ещё нет — показана стартовая цена")
     if detail.auction == "CarMax":
         notes.append("ставку CarMax видно только в Simulcast во время торгов")
+    return notes
+
+
+# ---------------------------------------------------------------- CarMax: watch list / список лотов
+
+# Заметки покупателя в карточке: «KBB 14,380$», «KBB $6,125», «KBB PP $19,940 (92620, 9/18)»,
+# «MMR $13,850», «Est Retail $20,000», «sold 8400».
+_NOTE_KBB = re.compile(r"\bKBB(?:\s*PP)?\s*\$?\s*([\d][\d,]{2,})\s*\$?", re.I)
+_NOTE_MMR = re.compile(r"\bMMR\s*\$?\s*([\d][\d,]{2,})", re.I)
+_NOTE_RETAIL = re.compile(r"\b(?:est\.?\s*)?retail\s*\$?\s*([\d][\d,]{2,})", re.I)
+# Своя цена продажи на Facebook Marketplace: «FB 9500», «FB $9,500», «sell 9500».
+_NOTE_SALE = re.compile(r"\b(?:FB|sell|sale)\s*\$?\s*([\d][\d,]{2,})", re.I)
+_NOTE_SOLD = re.compile(r"\bsold\s*(?:for\s*)?\$?\s*([\d][\d,]{2,})", re.I)
+
+
+def find_carmax_cards(html: str) -> list[dict[str, str]]:
+    """Карточки машин со страницы-списка CarMax (watch list, результаты с VIN).
+
+    Карточка — блок с кнопкой «Copy VIN». Блоки «Nearby cars / Sedans you might
+    like» VIN не показывают и сюда не попадают.
+    """
+    if "carmax" not in html[:600_000].lower():
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    cards: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for button in soup.select('[data-testid="copy-vin-button"]'):
+        vin_box = button.parent
+        vin = squeeze(vin_box.get_text(" ", strip=True))
+        if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) or vin in seen:
+            continue
+        card = vin_box
+        while card is not None and not (card.name == "div" and re.fullmatch(r"\d{5,}", card.get("id", ""))):
+            card = card.parent
+        if card is None or card.find_parent(attrs={"role": "presentation"}) is not None:
+            continue
+        seen.add(vin)
+        info: dict[str, str] = {"vin": vin}
+        caption = card.find("p", class_=re.compile("caption"))
+        head = squeeze(caption.get_text(" ", strip=True)) if caption else ""
+        lane_run, _, location = head.partition("•")
+        info["lane_run"], info["location"] = squeeze(lane_run), squeeze(location)
+        title_btn = caption.find_next("button") if caption else None
+        info["title"] = squeeze(title_btn.get_text(" ", strip=True)) if title_btn else ""
+        texts = [squeeze(p.get_text(" ", strip=True)) for p in card.find_all("p")]
+        info["miles"] = next((t.replace(",", "").removesuffix(" mi") for t in texts if re.fullmatch(r"[\d,]+ mi", t)), "")
+        info["drive"] = next((t for t in texts if "•" in t and "Drive" in t), "")
+        # Объявления CarMax — подписи (caption) после VIN, кроме пометок «Updated …».
+        announcements = []
+        for span in vin_box.find_all_next("span", class_=re.compile("caption")):
+            if card not in span.parents:
+                break
+            text = squeeze(span.get_text(" ", strip=True))
+            if text and not text.startswith("Updated") and text != "No announcement(s)":
+                announcements.append(text)
+        info["announcements"] = " | ".join(dict.fromkeys(announcements))
+        note = card.find("textarea")
+        info["notes"] = squeeze(note.get_text(" ", strip=True)) if note else ""
+        status = card.find(string=re.compile(r"^\s*(Ended|Live|Upcoming|Sold)\s*$"))
+        info["status"] = squeeze(status) if status else ""
+        started = card.find(string=re.compile(r"Started on|Starts on|Starts"))
+        info["start"] = squeeze(str(started)).replace("Started on ", "").replace("Starts on ", "") if started else ""
+        bid = card.find(string=re.compile(r"^\s*\$[\d,]+\s*$"))
+        info["your_bid"] = squeeze(bid) if bid and card.find(string=re.compile("Your bid")) else ""
+        cards.append(info)
+    return cards
+
+
+def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]:
+    """Заполняет строку из карточки watch-листа CarMax. Возвращает заметки для «Проверить»."""
+    notes: list[str] = []
+    row["auction"] = "CarMax"
+    row["vin"] = card["vin"]
+    row["lot_number"] = card.get("lane_run", "")
+    row["location"] = card.get("location", "")
+    match = HEADER_RE.match(card.get("title", ""))
+    if match:
+        year, make, rest = match.groups()
+        model, _, trim = rest.partition(" ")
+        row.update(year=year, make=make, model=model, trim=trim)
+    if card.get("miles", "").isdigit():
+        row["odometer_miles"] = card["miles"]
+    row["sale_date"] = card.get("start", "")
+    announcements = card.get("announcements", "")
+    row["defects"] = announcements
+    row["condition_report"] = announcements
+    row["history_page"] = announcements
+    row["title_type"] = "; ".join(x for x in announcements.split(", ") if re.search(r"title|227", x, re.I))[:80] or "без замечаний по титулу (CarMax)"
+    row["run_and_drive"] = "нет" if re.search(r"no[n]?[\s-]*runner", announcements, re.I) else ""
+
+    user_notes = card.get("notes", "")
+    if user_notes:
+        row["carfax_autocheck"] = user_notes          # заметки покупателя: история, KBB, решения
+        kbb = _NOTE_KBB.search(user_notes)
+        if kbb:
+            row["kbb_private_party_usd"] = kbb.group(1).replace(",", "")
+        mmr = _NOTE_MMR.search(user_notes)
+        if mmr:
+            row["mmr_adjusted_usd"] = mmr.group(1).replace(",", "")
+        sale = _NOTE_SALE.search(user_notes)
+        if sale:
+            row["retail_estimate_usd"] = sale.group(1).replace(",", "")
+        retail = _NOTE_RETAIL.search(user_notes)
+        if retail:
+            row["auction_retail_usd"] = retail.group(1).replace(",", "")
+    extra = [x for x in (card.get("drive", ""), f"статус: {card['status']}" if card.get("status") else "") if x]
+    if card.get("your_bid"):
+        extra.append(f"ваша ставка: {card['your_bid']}")
+    sold = _NOTE_SOLD.search(user_notes)
+    if sold:
+        extra.append(f"продана за ${sold.group(1)}")
+    if user_notes:
+        extra.append(f"заметки: {user_notes}")
+    row["lot_description"] = "; ".join(extra)
+    if card.get("status") == "Ended":
+        notes.append("торги по лоту уже закончились")
     return notes

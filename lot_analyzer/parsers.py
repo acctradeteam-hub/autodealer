@@ -354,6 +354,45 @@ def parse_lot(html: str, source_name: str = "", auction_hint: str = "") -> dict[
     return row
 
 
+def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list[dict[str, str]]:
+    """Разбирает сохранённую страницу: одна строка на лот.
+
+    Страница-список (watch list CarMax) даёт строку на каждую машину; если
+    поверх списка открыта карточка одной из них, её подробности (повреждения,
+    протектор) добавляются в строку этой машины. Иначе — одна строка, как parse_lot.
+    """
+    cards = sites_text.find_carmax_cards(html)
+    if not cards:
+        return [parse_lot(html, source_name=source_name, auction_hint=auction_hint)]
+
+    opened = parse_lot(html, source_name=source_name, auction_hint=auction_hint)
+    opened_vin = opened["vin"] if opened.get("auction") == "CarMax" else ""
+    rows = []
+    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    for card in cards:
+        if card["vin"] == opened_vin:
+            row = dict(opened)
+            card_row = empty_row()
+            notes = sites_text.row_from_carmax_card(card_row, card)
+            # Из списка — заметки покупателя, статус и объявления (они свежее).
+            for key in ("carfax_autocheck", "kbb_private_party_usd", "mmr_adjusted_usd", "auction_retail_usd", "lot_description"):
+                if card_row.get(key):
+                    row[key] = card_row[key]
+            if card_row["defects"] and card_row["defects"] not in row["defects"]:
+                row["defects"] = f"{card_row['defects']} | {row['defects']}"
+                row["condition_report"] = f"{card_row['defects']} | {row['condition_report']}"
+                row["history_page"] = card_row["history_page"]
+            row["needs_review"] = clean_cell("; ".join([row["needs_review"]] + notes if row["needs_review"] else notes), 600)
+        else:
+            row = empty_row()
+            row["source_file"], row["parsed_at"] = source_name, stamp
+            notes = sites_text.row_from_carmax_card(row, card) + _vin_notes(row)
+            notes.append("из списка: повреждения и протектор — в карточке лота")
+            row["needs_review"] = clean_cell("; ".join(notes), 600)
+        rows.append(row)
+    return rows
+
+
 # ---------------------------------------------------------------- частные помощники
 
 

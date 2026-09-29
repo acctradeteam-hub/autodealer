@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
 from .pages import collect_inputs, read_page
-from .parsers import parse_lot
+from .parsers import parse_page
 from .report import (
     apply_manual_values,
     identity_fields,
@@ -80,12 +80,16 @@ def main(argv: list[str] | None = None) -> int:
     for page in pages:
         try:
             html = read_page(page)
-            row = parse_lot(html, source_name=page.name, auction_hint=args.auction)
+            page_rows = parse_page(html, source_name=page.name, auction_hint=args.auction)
         except Exception as error:  # одна битая страница не должна валить весь прогон
             failures.append((page, f"{type(error).__name__}: {error}"))
             say(f"  ! {page.name}: не разобрано ({type(error).__name__}: {error})")
             continue
-        rows.append(row)
+        rows.extend(page_rows)
+        if len(page_rows) > 1:
+            say(f"  + {page.name}: список, машин {len(page_rows)}")
+            continue
+        row = page_rows[0]
         marker = "!" if row["needs_review"] else "+"
         say(f"  {marker} {page.name}: {identity_fields(row)}")
         if row["needs_review"]:
@@ -109,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
         say(f"Файл настроек {costs_path} не найден — потолок ставки не считается.")
     else:
         apply_to_rows(rows, costs)
+        # Сверху — что можно брать (по убыванию потолка), внизу — что пропустить.
+        rank = {"МОЖНО": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
+        rows.sort(key=lambda r: (rank.get(r["calc_verdict"].split(" ")[0].rstrip(":"), 5), -float(r["calc_max_bid_usd"] or 0)))
 
     stem = args.name or f"lots_{dt.date.today().isoformat()}"
     run_tsv = write_tsv(rows, out_dir / f"{stem}.tsv")

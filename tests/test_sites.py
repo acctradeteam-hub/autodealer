@@ -143,3 +143,58 @@ class TestCarMaxVocabulary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCarMaxWatchlist(unittest.TestCase):
+    """Сохранённый watch-лист CarMax: строка на каждую машину, заметки покупателя в расчёте."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from lot_analyzer.parsers import parse_page
+
+        cls.rows = parse_page((FIXTURES / "carmax_watchlist.html").read_text(encoding="utf-8"), source_name="watch")
+        cls.by_lot = {r["lot_number"]: r for r in cls.rows}
+
+    def test_one_row_per_card_without_nearby_block(self) -> None:
+        self.assertEqual(len(self.rows), 8)
+        self.assertNotIn("Fiesta", " ".join(r["model"] for r in self.rows))
+
+    def test_card_fields(self) -> None:
+        r = self.by_lot["A/88"]
+        self.assertEqual((r["vin"], r["year"], r["make"], r["model"], r["trim"]), ("1HGCR2F30FA107196", "2015", "Honda", "Accord", "LX"))
+        self.assertEqual((r["odometer_miles"], r["location"]), ("38864", "Chino, CA"))
+        self.assertEqual(r["defects"], "Major engine defect, Structural damage")
+
+    def test_notes_give_kbb_mmr_and_history(self) -> None:
+        self.assertEqual(self.by_lot["A/88"]["kbb_private_party_usd"], "14380")        # «KBB 14,380$»
+        self.assertEqual(self.by_lot["A/70"]["kbb_private_party_usd"], "11905")        # «KBB $11905»
+        lexus = self.by_lot["B/95"]                                                   # «KBB PP $19,940 (92620, 9/18) MMR $13,850»
+        self.assertEqual((lexus["kbb_private_party_usd"], lexus["mmr_adjusted_usd"]), ("19940", "13850"))
+        self.assertIn("продана за $8400", self.by_lot["A/126"]["lot_description"])
+        self.assertIn("ваша ставка: $6,500", self.by_lot["A/70"]["lot_description"])
+
+    def test_opened_card_merged_with_its_list_entry(self) -> None:
+        r = self.by_lot["A/162"]
+        self.assertIn("3 owners, 1 accident", r["carfax_autocheck"])
+        self.assertTrue(r["sale_date"].startswith("9/29/2026"))                       # из открытой карточки
+
+    def test_verdicts(self) -> None:
+        verdict = {lot: calculate(input_from_row(r), COSTS).verdict for lot, r in self.by_lot.items()}
+        self.assertTrue(verdict["A/88"].startswith("ПРОПУСТИТЬ"))       # Structural damage
+        self.assertTrue(verdict["B/10"].startswith("ПРОПУСТИТЬ"))       # Not actual miles
+        self.assertTrue(verdict["A/70"].startswith("МОЖНО"))            # KBB из заметки
+        self.assertTrue(verdict["A/9"].startswith("НЕТ ОЦЕНКИ"))        # KBB не вписан
+
+    def test_history_in_words_and_dmv_fee(self) -> None:
+        from lot_analyzer.bid import dmv_fees
+
+        self.assertEqual(assess_history("Two owners, three accidents", COSTS).discounts, {"2+ ДТП": 0.15})
+        self.assertEqual(dmv_fees(self.by_lot["A/21"]["defects"]), 71)
+
+    def test_fb_price_note(self) -> None:
+        from lot_analyzer.sites_text import row_from_carmax_card
+        from lot_analyzer.schema import empty_row
+
+        row = empty_row()
+        row_from_carmax_card(row, {"vin": "19XFB2F51EE212231", "title": "2014 Honda Civic LX", "notes": "KBB $11905 FB 9,800"})
+        self.assertEqual((row["kbb_private_party_usd"], row["retail_estimate_usd"]), ("11905", "9800"))

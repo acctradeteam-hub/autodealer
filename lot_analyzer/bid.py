@@ -59,7 +59,7 @@ _SKIP_TEXT = {
 # Не стоп-фактор, но продать машину нельзя, пока нет титула.
 _TITLE_ABSENT = r"title absent|title (delay|missing)|no title(?!\s*(issues?|problems?))|титул отсутств"
 # Калифорния: для оформления понадобится форма REG 227 (дубликат титула).
-_POSSIBLE_227 = r"possible 227|\breg[\s-]?227\b"
+_POSSIBLE_227 = r"(possible|app) 227|\breg[\s-]?227\b"
 # Продавец пишет «не на ходу», даже если отчёт говорит обратное.
 _NON_RUNNER = r"non[\s-]*runner|no runner|does not run"
 
@@ -74,6 +74,15 @@ def _positive_hits(text: str, pattern: str) -> list[re.Match]:
     return hits
 
 
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                 "один": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5}
+
+
+def _words_to_digits(text: str) -> str:
+    """«Two owners, three accidents» -> «2 owners, 3 accidents»."""
+    return re.sub(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b", lambda m: str(_NUMBER_WORDS[m.group(1).lower()]), text, flags=re.I)
+
+
 @dataclass
 class HistoryFlags:
     skip: list[str] = field(default_factory=list)          # причины «пропустить»
@@ -84,7 +93,7 @@ class HistoryFlags:
 def assess_history(text: str, costs: dict) -> HistoryFlags:
     """Разбирает текст истории (титул, Carfax/AutoCheck, CR, повреждения) по ключевым словам."""
     flags = HistoryFlags()
-    text = squeeze(text)
+    text = _words_to_digits(squeeze(text))
     if not text:
         flags.notes.append("истории нет — проверьте Carfax")
         return flags
@@ -207,6 +216,12 @@ def estimate_recon(text: str, costs: dict) -> tuple[float, list[str]]:
     return total, found
 
 
+def dmv_fees(text: str) -> float:
+    """Долги DMV из объявлений CarMax: «Dmv $71», «Dmv fee $144» — платит покупатель."""
+    amounts = {int(m) for m in re.findall(r"\bdmv(?:\s*fees?)?\s*\$\s?(\d{1,5})", text, re.I)}
+    return float(sum(amounts))
+
+
 # ---------------------------------------------------------------- расчёт
 
 
@@ -292,6 +307,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         "реклама": float(costs.get("selling_usd", 0)),
         "содержание": float(costs.get("days_to_sell", 0)) * float(costs.get("holding_per_day_usd", 0)),
         "резерв": sale * float(costs.get("reserve_pct_of_sale", 0)),
+        "DMV": dmv_fees(f"{data.defects_text} {data.history_text}"),
     }
     fixed_total = sum(fixed.values())
     lines.append(f"ремонт {_usd(recon)} ({recon_note})")

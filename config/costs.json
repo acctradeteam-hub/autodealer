@@ -78,7 +78,10 @@
     "warning - engine|warning - check engine": 150,
     "major sunroof defect": 500,
     "hail damage": 1500,
-    "altered suspension": 500
+    "altered suspension": 500,
+    "major transfer case defect|transfer case": 1500,
+    "vehicle wrap": 300,
+    "aftermarket mechanical modifications": 500
   },
   "_obd": "За каждый код ошибки OBD (P0xxx) сверх «check engine».",
   "obd_code_usd": 100,
