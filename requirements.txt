@@ -4,3 +4,4 @@ lxml>=5.0              # быстрый парсер для BeautifulSoup
 openpyxl>=3.1          # запись XLSX
 python-dateutil>=2.9   # разбор дат вида «Tue Oct 06, 2026 9:00 AM PDT»
 # pandas не нужен: таблицы пишутся модулем csv и openpyxl напрямую.
+pypdf>=4.0             # только для PDF с результатами торгов (lot_analyzer.market)

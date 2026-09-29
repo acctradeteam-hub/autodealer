@@ -112,6 +112,8 @@
     "mechanical_severe"
   ],
 
+  "_market": "Сколько обычно платят на торгах: доля от KBB PP / MMR (медиана по data/market_history.csv). Пересчёт: python3 -m lot_analyzer.market <файлы результатов> --update-config. clean — без тяжёлых дефектов, heavy — мотор/коробка/рама/титул.",
+  "market": {"kbb_clean": 0.78, "kbb_heavy": 0.64, "mmr_clean": 1.22, "mmr_heavy": 0.89, "based_on": "история результатов: kbb_clean n=74, kbb_heavy n=15, mmr_clean n=13, mmr_heavy n=14"},
   "_mmr_check": "Предупреждать, если потолок выше MMR × high или ниже MMR × low.",
   "mmr_warn_high": 1.15,
   "mmr_warn_low": 0.7,

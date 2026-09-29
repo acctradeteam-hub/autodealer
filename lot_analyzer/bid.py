@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .market import HEAVY as _HEAVY
 from .normalize import parse_money, squeeze
 
 DEFAULT_COSTS_PATH = Path("config/costs.json")
@@ -223,6 +224,25 @@ def dmv_fees(text: str) -> float:
     return float(sum(amounts))
 
 
+def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, str]:
+    """Сколько обычно платят на торгах за такую машину: KBB (или MMR) × доля из истории результатов.
+
+    Доли — в costs["market"], их пересчитывает `python3 -m lot_analyzer.market … --update-config`.
+    Машины с тяжёлыми дефектами (коробка, мотор, рама, титул) уходят дешевле — для них своя доля.
+    """
+    market = costs.get("market") or {}
+    heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
+    kind = "heavy" if heavy else "clean"
+    label = "с тяжёлыми дефектами" if heavy else "без тяжёлых дефектов"
+    if data.kbb_private_party and market.get(f"kbb_{kind}"):
+        share = float(market[f"kbb_{kind}"])
+        return data.kbb_private_party * share, f"KBB × {share:g} — медиана торгов {label}"
+    if data.mmr and market.get(f"mmr_{kind}"):
+        share = float(market[f"mmr_{kind}"])
+        return data.mmr * share, f"MMR × {share:g} — медиана торгов {label}"
+    return None, ""
+
+
 # ---------------------------------------------------------------- расчёт
 
 
@@ -246,6 +266,8 @@ class BidResult:
     max_bid: int | None = None
     costs_over_bid: float | None = None  # всё сверх ставки при потолке, включая сборы
     profit_at_max: float | None = None
+    market_price: float | None = None    # сколько обычно платят на торгах (по истории результатов)
+    market_source: str = ""
     verdict: str = ""
     lines: list[str] = field(default_factory=list)  # расчёт по статьям
 
@@ -353,7 +375,15 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
     verdict = f"МОЖНО до {_usd(bid)}"
     if data.current_bid and data.current_bid > bid:
         verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)}"
-    if data.mmr:
+    market, market_source = expected_market_price(data, costs)
+    result.market_price, result.market_source = market, market_source
+    if market:
+        lines.append(f"рынок ≈ {_usd(market)} ({market_source})")
+        if bid < market * 0.95:
+            verdict += f"; рынок ≈ {_usd(market)} — потолок ниже на {_usd(market - bid)}, выиграть вряд ли"
+        else:
+            verdict += f"; рынок ≈ {_usd(market)} — шанс есть"
+    elif data.mmr:
         if bid > data.mmr * float(costs.get("mmr_warn_high", 1.15)):
             verdict += f"; потолок выше опта/MMR {_usd(data.mmr)} — проверьте цену продажи"
         elif bid < data.mmr * float(costs.get("mmr_warn_low", 0.7)):
@@ -406,6 +436,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict) -> None:
         row["calc_max_bid_usd"] = str(result.max_bid) if result.max_bid else ""
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
         row["calc_profit_usd"] = f"{result.profit_at_max:.0f}" if result.profit_at_max is not None else ""
+        row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
         if result.max_bid and "из списка:" in row.get("needs_review", ""):
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.

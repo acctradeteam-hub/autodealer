@@ -11,3 +11,6 @@ samples/*.htm
 samples/*.mhtml
 samples/*.mht
 samples/*_files/
+
+# История результатов торгов: ваши ставки (MyMax) и заметки — только локально.
+data/
