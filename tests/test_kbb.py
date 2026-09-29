@@ -62,7 +62,7 @@ class TestKbbEstimator(unittest.TestCase):
         apply_to_rows([a, b, c], COSTS, estimator=KbbEstimator([], COSTS))
         self.assertEqual(a["kbb_estimate_usd"], "")                # свой KBB есть — оценка не нужна
         self.assertTrue(b["kbb_estimate_usd"] and "по KBB похожих" in b["kbb_estimate_source"])
-        self.assertIn("своя оценка", b["calc_breakdown"])
+        self.assertIn("KBB — прикидка", b["calc_breakdown"])
 
 
 if __name__ == "__main__":

@@ -66,7 +66,7 @@ python3 -m lot_analyzer samples/ --no-cumulative
 ### Проверка работоспособности
 
 ```bash
-python3 -m unittest discover -s tests -t . -v      # 146 тестов
+python3 -m unittest discover -s tests -t . -v      # 150 тестов
 python3 -m lot_analyzer tests/fixtures --out /tmp/proba   # прогон на тестовых страницах
 ```
 
@@ -133,6 +133,7 @@ CSS-селекторов каждая страница разбирается ч
 | `lot_analyzer/acv.py` | карточка лота ACV: только блок лота, без списка и фильтров Marketplace |
 | `lot_analyzer/manheim.py` | Manheim: JSON объявления из API Cox Automotive, встроенный в страницу |
 | `lot_analyzer/kbb.py` | своя оценка KBB PP по похожим машинам (ваши KBB, иначе цены торгов); проверка точности |
+| `lot_analyzer/deals.py` | журнал сделок (data/deals.csv, только у вас): прибыль, дни, сверка сбора аукциона и настроек |
 | `lot_analyzer/plan.py` | планировщик: сегмент и ставка под капитал и число ставок в неделю |
 | `lot_analyzer/app.py` | «одно окно» (локальный сервер 127.0.0.1): поиск по всем аукционам, файлы из «Загрузок» |
 | `config/search_urls.json` | ссылки поиска аукционов для «одного окна» |
@@ -187,14 +188,22 @@ CSS-селекторов каждая страница разбирается ч
 
 ## Своя оценка KBB и планировщик по капиталу
 
-* Если у лота нет KBB в заметке, программа оценивает его сама: по вашим KBB похожих
+* KBB PP — официальная цена Kelley Blue Book Private Party (ZIP 92620, Good) с kbb.com.
+  Если у лота её ещё нет в заметке, программа делает прикидку: по вашим KBB похожих
   машин (±2 года, пересчёт на год и пробег; ошибка ~7%), иначе грубо по ценам торгов
-  (~23%). Колонки «KBB PP (своя оценка)» и «Откуда оценка KBB»; проверка — `python3 -m lot_analyzer.kbb`.
+  (~23%). Колонки «KBB PP — прикидка» и «Откуда прикидка KBB»; проверка — `python3 -m lot_analyzer.kbb`.
 * `python3 -m lot_analyzer.plan --capital 20000 30000 --bids 15` — какой сегмент (KBB) и
   какая ставка дают больше прибыли в месяц при вашем капитале; с REG 227 и без.
 * Титул: `title_policy` — `allow_227` по умолчанию (REG 227 можно, +10 дней; «Title Absent» —
   пропуск). Потолка бюджета нет (`budget_max_bid_usd: 0`), цель прибыли — ступенями
   `profit_tiers`. Подробности и расчёты — `docs/STRATEGY_turnover.md`.
+
+## Журнал сделок и лоты без фото
+
+* `python3 -m lot_analyzer.deals add --vehicle "2015 Honda Civic" --auction CarMax --bid 4500 --paid 4945 --repair 28 --dealer 300 --sale 8300 --days-to-list 3 --days-listed 2 --no-photos`
+  — после каждой продажи; `python3 -m lot_analyzer.deals` — прибыль, маржа, дни и подсказки для настроек.
+* Лоты без фото помечаются «БЕЗ ФОТО — осмотрите сами» (заметка «No pictures», нулевые счётчики
+  фото CarMax, `hasImages: false` у Manheim); в «одном окне» — флажок «Без фото».
 
 ## Результаты торгов: сколько на самом деле платят
 

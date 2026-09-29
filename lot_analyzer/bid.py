@@ -308,6 +308,7 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
 class BidInput:
     auction: str = ""
     location: str = ""                   # площадка / город — для стоимости доставки
+    no_photos: bool = False              # лот без фотографий: осматривать самому, конкурентов меньше
     sale_price: float | None = None      # своя оценка цены продажи
     kbb_private_party: float | None = None
     kbb_source: str = ""                 # пусто — KBB из заметки; иначе — своя оценка (откуда)
@@ -360,7 +361,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         result.sale_price = data.kbb_private_party * factor + offset
         result.sale_source = f"KBB PP × {factor:g}" + (f" {offset:+,.0f}" if offset else "")
         if data.kbb_source:
-            result.sale_source += f"; KBB — своя оценка {data.kbb_source}"
+            result.sale_source += f"; KBB — прикидка (на kbb.com не смотрели): {data.kbb_source}"
     elif data.auction_retail:
         factor = float(costs.get("auction_retail_factor", 0.9))
         result.sale_price = data.auction_retail * factor
@@ -371,6 +372,8 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         result.sale_source = f"опт/MMR × {factor:g} — грубый ориентир, впишите KBB или FB"
     if not result.sale_price:
         result.verdict = "НЕТ ОЦЕНКИ: впишите цену продажи или KBB Private Party"
+        if data.no_photos:
+            result.verdict += "; БЕЗ ФОТО — осмотрите сами: другие дилеры по таким почти не торгуются"
         if flags.notes:
             result.verdict += "; " + "; ".join(flags.notes)
         return result
@@ -440,6 +443,10 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
     if data.current_bid and data.current_bid > bid:
         verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)}"
     market, market_source = expected_market_price(data, costs)
+    photo_discount = float(costs.get("no_photo_market_discount", 0)) if data.no_photos else 0.0
+    if market and photo_discount:
+        market *= 1 - photo_discount
+        market_source += f"; без фото −{photo_discount:.0%}"
     result.market_price, result.market_source = market, market_source
     base_kind = "kbb" if data.kbb_private_party and (costs.get("market") or {}).get("kbb_clean") else "mmr"
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -460,6 +467,8 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
             verdict += f"; потолок выше опта/MMR {_usd(data.mmr)} — проверьте цену продажи"
         elif bid < data.mmr * float(costs.get("mmr_warn_low", 0.7)):
             verdict += f"; потолок сильно ниже опта/MMR {_usd(data.mmr)} — шанс выиграть мал"
+    if data.no_photos:
+        verdict += "; БЕЗ ФОТО — осмотрите сами: другие дилеры по таким почти не торгуются"
     if flags.notes:
         verdict += "; " + "; ".join(flags.notes)
     result.verdict = verdict
@@ -479,6 +488,7 @@ def input_from_row(row: dict[str, str]) -> BidInput:
     return BidInput(
         auction=row.get("auction", ""),
         location=row.get("location", ""),
+        no_photos=row.get("no_photos", "") == "да",
         sale_price=parse_money(row.get("retail_estimate_usd")) or parse_money(row.get("cargurus_retail_usd")),
         kbb_private_party=parse_money(row.get("kbb_private_party_usd")),
         mmr=parse_money(row.get("mmr_adjusted_usd")) or parse_money(row.get("wholesale_usd")),

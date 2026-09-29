@@ -118,7 +118,9 @@ def _add_legend_sheet(workbook) -> None:
     sheet["B1"] = "Откуда берётся"
     sheet["A1"].font = sheet["B1"].font = Font(bold=True)
     notes = {
-        "kbb_private_party_usd": "Вручную: KBB Private Party Value с kbb.com, либо из valuations/manual_values.tsv",
+        "kbb_private_party_usd": "Официальная цена Kelley Blue Book Private Party, ZIP 92620, состояние Good — с kbb.com (заметка «KBB …» или вручную)",
+        "kbb_estimate_usd": "Прикидка той же официальной цены KBB PP, пока её не посмотрели на kbb.com: по KBB похожих машин (~7% ошибки) или грубо по торгам",
+        "no_photos": "Лот без фото (заметка «No pictures», нулевые счётчики фото): осматривать самому — конкурентов обычно меньше",
         "mmr_adjusted_usd": "Вручную: Adjusted MMR из Manheim, либо из valuations/manual_values.tsv",
         "cargurus_retail_usd": "Вручную: цена ритейла с CarGurus, цель — рейтинг Great Deal",
         "cargurus_deal_rating": "Вручную: рейтинг CarGurus (Great Deal / Good Deal / Fair Deal)",

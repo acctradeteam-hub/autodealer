@@ -201,6 +201,10 @@ def find_carmax(html: str) -> TextDetail | None:
                 if squeeze(item) and squeeze(item) != "No announcement(s)":
                     detail.announcements.append(squeeze(item))
 
+    # Вкладки фото «Ext. (8)», «Int. (4)», «Tires (4)»… — все нули: фото нет.
+    counts = [int(m.group(1)) for x in lines for m in [re.match(r"^(?:Ext\.|Int\.|Undercarriage|Tires|OBDII)\s*\((\d+)\)$", x)] if m]
+    if counts:
+        f["photo_total"] = str(sum(counts))
     dmg = _index(lines, "Damage assessment")
     if dmg >= 0:
         i = dmg + 1
@@ -278,6 +282,9 @@ def apply_detail(row: dict[str, str], detail: TextDetail) -> list[str]:
     if detail.tires:
         extra.append("протектор: " + ", ".join(f"{t}/32" for t in detail.tires))
     row["lot_description"] = "; ".join(extra)
+    if f.get("photo_total") is not None and f.get("photo_total") != "":
+        row["photo_count"] = f["photo_total"]
+        row["no_photos"] = "да" if f["photo_total"] == "0" else ""
 
     if detail.auction == "ADESA" and f.get("bid_kind") == "Opening bid":
         notes.append("ставок ещё нет — показана стартовая цена")
@@ -297,6 +304,8 @@ _NOTE_RETAIL = re.compile(r"\b(?:est\.?\s*)?retail\s*\$?\s*([\d][\d,]{2,})", re.
 _NOTE_SALE = re.compile(r"\b(?:FB|sell|sale)\s*\$?\s*([\d][\d,]{2,})", re.I)
 # Своя прокси-ставка: «MP 5600», «MP $5,600», «my proxy 5600».
 _NOTE_PROXY = re.compile(r"\b(?:MP|my\s*proxy|proxy)\s*\$?\s*([\d][\d,]{2,})", re.I)
+# «No pictures», «no pics», «без фото» в заметке или объявлении — лот без фотографий.
+NO_PHOTOS_RE = re.compile(r"\bno\s*(pictures?|pics|photos?)\b|\bбез\s*фото", re.I)
 _NOTE_SOLD = re.compile(r"\bsold\s*(?:for\s*)?\$?\s*([\d][\d,]{2,})", re.I)
 
 
@@ -403,6 +412,8 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     if user_notes:
         extra.append(f"заметки: {user_notes}")
     row["lot_description"] = "; ".join(extra)
+    if NO_PHOTOS_RE.search(f"{user_notes} {announcements}"):
+        row["no_photos"] = "да"
     if card.get("status") == "Ended":
         notes.append("торги по лоту уже закончились")
     return notes

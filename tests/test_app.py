@@ -58,6 +58,10 @@ class TestOneWindow(unittest.TestCase):
         # «Рынок» считается для всех, кроме отсеянных стоп-факторами (у них расчёт не нужен).
         self.assertTrue(all(r["market_estimate_usd"] for r in rows if not r["calc_verdict"].startswith("ПРОПУСТИТЬ")))
 
+    def test_only_no_photos_filter(self) -> None:
+        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "", only_no_photos=True)
+        self.assertTrue(all(r["no_photos"] == "да" for r in rows))
+
     def test_mileage_filter(self) -> None:
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "civic", max_miles=110000)
         self.assertTrue(rows and all(int(r["odometer_miles"]) <= 110000 for r in rows))

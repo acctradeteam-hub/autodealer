@@ -89,13 +89,16 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
 
 
 def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
-                year_to: int | None = None, max_miles: int | None = None, kbb: float | None = None) -> list[dict[str, str]]:
+                year_to: int | None = None, max_miles: int | None = None, kbb: float | None = None,
+                only_no_photos: bool = False) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
         for row in cache.rows(path):
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}"
             if key in seen or not matches(row, query, year_from, year_to, max_miles):
+                continue
+            if only_no_photos and row.get("no_photos") != "да":
                 continue
             seen.add(key)
             if kbb and not (row.get("kbb_private_party_usd") or row.get("retail_estimate_usd")):
@@ -148,7 +151,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_verdict",
-           "sale_date", "lot_url", "vin", "source_file", "calc_breakdown", "needs_review")
+           "sale_date", "lot_url", "vin", "no_photos", "source_file", "calc_breakdown", "needs_review")
 
 
 def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
@@ -172,7 +175,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/rows":
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
-                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None)
+                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
+                                   only_no_photos=q.get("nophoto") == "1")
                 files = [{"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))} for p in pages]
                 payload = {"rows": [{k: r.get(k, "") for k in COLUMNS} for r in rows], "files": files,
                            "folders": [str(f) for f in folders]}
@@ -240,7 +244,8 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 <label>Машина<input id="q" placeholder="Honda Civic" autofocus></label>
 <label>Год от<input id="y1" inputmode="numeric" placeholder="2013"></label><label>до<input id="y2" inputmode="numeric" placeholder="2016"></label>
 <label>Пробег до, миль<input id="miles" inputmode="numeric" placeholder="150000"></label>
-<label>KBB PP, $ (если у лота нет)<input id="kbb" inputmode="numeric" placeholder="10000"></label>
+<label>KBB PP 92620 Good, $ (если у лота нет)<input id="kbb" inputmode="numeric" placeholder="10000"></label>
+<label>Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button></form>
 <div class="links" id="links"></div>
@@ -254,12 +259,12 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 <div class="card muted" id="files"></div>
 </main><script>
 const $=id=>document.getElementById(id);const money=v=>v?('$'+Number(v).toLocaleString('en-US')):'—';
-const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value});
+const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,nophoto:$('nophoto').checked?'1':''});
 function cls(v){return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=await r.json();
 $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
-<td>${esc([x.year,x.make,x.model,x.trim].join(' '))}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
+<td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.no_photos?' <span class="pill v-mid">без фото</span>':''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
 <td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.kbb_private_party_usd?money(x.kbb_private_party_usd):(x.kbb_estimate_usd?'≈'+money(x.kbb_estimate_usd)+`<div class="muted">${esc(x.kbb_estimate_source)}</div>`:'—')}</td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>

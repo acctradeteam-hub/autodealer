@@ -16,7 +16,7 @@ class TestPlan(unittest.TestCase):
     def test_economics_sell_at_kbb_minus_500(self) -> None:
         invested, profit, days = car_economics(10000, 0.70, COSTS, PLAN)
         self.assertAlmostEqual(invested + profit, 10000 - 500)
-        self.assertEqual(days, PLAN["prep_days"] + 18)
+        self.assertEqual(days, PLAN["prep_days"] + 10)   # KBB $10,000 — вторая ступень sale_days_by_kbb
 
     def test_chance_excludes_suspicious_cheap_lots(self) -> None:
         curve = [[0.5, 0.1], [0.6, 0.2], [0.8, 0.6]]

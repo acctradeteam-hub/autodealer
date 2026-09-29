@@ -45,8 +45,8 @@ COLUMNS: tuple[Column, ...] = (
     Column("auction_retail_usd", "Ритейл — оценка аукциона, $", numeric=True, width=18),
     # --- оценки: источники недоступны автоматически, см. README, раздел «Этап 2» ---
     Column("kbb_private_party_usd", "KBB Private Party, $", manual=True, numeric=True, width=19),
-    Column("kbb_estimate_usd", "KBB PP (своя оценка), $", numeric=True, width=17),
-    Column("kbb_estimate_source", "Откуда оценка KBB", width=22),
+    Column("kbb_estimate_usd", "KBB PP — прикидка, $", numeric=True, width=17),
+    Column("kbb_estimate_source", "Откуда прикидка KBB", width=22),
     Column("mmr_adjusted_usd", "Adjusted MMR, $", manual=True, numeric=True, width=17),
     Column("cargurus_retail_usd", "Ритейл CarGurus, $", manual=True, numeric=True, width=18),
     Column("cargurus_deal_rating", "Рейтинг CarGurus", manual=True, width=17),
@@ -69,6 +69,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("condition_report", "Condition Report", manual=True, width=30),
     # --- фото и происхождение строки ---
     Column("photo_count", "Кол-во фото", numeric=True, width=12),
+    Column("no_photos", "Без фото", width=9),
     Column("photo_urls", "Ссылки на фото", width=40),
     Column("lot_url", "Ссылка на лот", width=40),
     Column("source_file", "Файл-источник", width=28),

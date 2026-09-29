@@ -206,6 +206,9 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
     if images:
         row["photo_count"] = str(len(images))
         row["photo_urls"] = " ".join(images)[:1500]
+    elif d.get("hasImages") is False or ("images" in d and not images and not d.get("mainImage")):
+        row["photo_count"] = "0"
+        row["no_photos"] = "да"
     if d.get("mComVdpUrl"):
         row["lot_url"] = d["mComVdpUrl"]
 
