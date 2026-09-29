@@ -138,11 +138,16 @@ class TestCarMaxVocabulary(unittest.TestCase):
         self.assertTrue(assess_history("Not actual miles", COSTS).skip)
         self.assertIn("был в угоне", assess_history("Prior theft history", COSTS).discounts)
         self.assertIn("аренда/флит", assess_history("Prior police", COSTS).discounts)
-        relaxed = dict(COSTS, title_required=False)
-        self.assertTrue(any("227" in n for n in assess_history("Possible 227", relaxed).notes))
-        self.assertTrue(assess_history("App 227", COSTS).skip)            # «только с титулом»
+        # allow_227 (по умолчанию): REG 227 можно, с лишними днями; «Title Absent» — пропуск
+        flags = assess_history("App 227", COSTS)
+        self.assertEqual((flags.skip, flags.extra_days), ([], COSTS["reg227_extra_days"]))
+        self.assertTrue(any("227" in n for n in assess_history("Possible 227", COSTS).notes))
         self.assertTrue(assess_history("Title absent", COSTS).skip)
         self.assertFalse(assess_history("No Title Issues", COSTS).skip)
+        # strict: пропуск и того, и другого; allow_all: оба можно, с днями
+        self.assertTrue(assess_history("App 227", dict(COSTS, title_policy="strict")).skip)
+        loose = assess_history("Title absent", dict(COSTS, title_policy="allow_all"))
+        self.assertEqual((loose.skip, loose.extra_days), ([], COSTS["title_absent_extra_days"]))
 
 
 if __name__ == "__main__":

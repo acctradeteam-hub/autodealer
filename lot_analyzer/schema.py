@@ -45,6 +45,8 @@ COLUMNS: tuple[Column, ...] = (
     Column("auction_retail_usd", "Ритейл — оценка аукциона, $", numeric=True, width=18),
     # --- оценки: источники недоступны автоматически, см. README, раздел «Этап 2» ---
     Column("kbb_private_party_usd", "KBB Private Party, $", manual=True, numeric=True, width=19),
+    Column("kbb_estimate_usd", "KBB PP (своя оценка), $", numeric=True, width=17),
+    Column("kbb_estimate_source", "Откуда оценка KBB", width=22),
     Column("mmr_adjusted_usd", "Adjusted MMR, $", manual=True, numeric=True, width=17),
     Column("cargurus_retail_usd", "Ритейл CarGurus, $", manual=True, numeric=True, width=18),
     Column("cargurus_deal_rating", "Рейтинг CarGurus", manual=True, width=17),

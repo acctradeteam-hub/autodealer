@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import statistics
 from dataclasses import asdict, dataclass, fields
@@ -22,12 +23,15 @@ from pathlib import Path
 
 from .normalize import clean_vin, parse_money, squeeze
 
-HISTORY_PATH = Path("data/market_history.csv")
+# LOT_ANALYZER_HISTORY — другой файл истории (тесты подставляют несуществующий, чтобы не зависеть от ваших данных).
+HISTORY_PATH = Path(os.environ.get("LOT_ANALYZER_HISTORY", "data/market_history.csv"))
 
-# Тяжёлые дефекты и проблемы титула: такие машины уходят дешевле, в «чистую» сводку не берём.
+# Тяжёлые дефекты: такие машины уходят заметно дешевле, в «чистую» сводку не берём.
+# Проблемы титула (Title Absent, 227) сюда не входят: по торгам 29.09 они снижают цену лишь на ~6%,
+# а сами правила для них — в bid.title_policy (лишние дни или пропуск).
 HEAVY = re.compile(
     r"major (engine|transmission|transfer case) defect|structural|frame|salvage|rebuilt|total loss|"
-    r"not actual|flood|water intrusion|no runner|non[\s-]*runner|no start|title absent|227|as[\s-]?is|inop",
+    r"not actual|flood|water intrusion|no runner|non[\s-]*runner|no start|as[\s-]?is|inop",
     re.I,
 )
 
@@ -386,6 +390,26 @@ def ratio_summary(records: list[Result], base: str = "kbb", clean_only: bool = T
     return Summary(n, statistics.median(ratios), ratios[n // 4], ratios[(3 * n) // 4])
 
 
+def ratio_curve(records: list[Result], base: str = "kbb", clean_only: bool = True) -> list[list[float]]:
+    """Точки [цена ÷ база, доля лотов не дороже] через каждые 10%: по ним считается шанс выиграть."""
+    ratios = []
+    for rec in records:
+        price, value = parse_money(rec.price), parse_money(getattr(rec, base))
+        if not price or not value or price < 300 or rec.status in ("No Sale", "Not Run"):
+            continue
+        heavy = bool(HEAVY.search(f"{rec.announcements} {rec.notes}"))
+        if (clean_only and heavy) or (not clean_only and not heavy):
+            continue
+        ratio = price / value
+        if 0.3 < ratio < 1.5:                 # вне этого — скорее ошибка в заметке, чем цена
+            ratios.append(ratio)
+    if len(ratios) < 8:
+        return []
+    ratios.sort()
+    n = len(ratios)
+    return [[round(ratios[min(n - 1, int(q * n))], 3), q] for q in (0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lot_analyzer.market", description="Результаты торгов → история и сводка «цена ÷ KBB».")
     parser.add_argument("files", nargs="+", help="PDF «My List» / run list с заметками, CSV всех дорожек")
@@ -412,8 +436,13 @@ def main(argv: list[str] | None = None) -> int:
                 shares[f"{base}_{kind}"], counts[f"{base}_{kind}"] = round(summary.median, 2), summary.n
                 print(f"Цена продажи ÷ {title}, {label} (n={summary.n}): медиана {summary.median:.2f}, "
                       f"половина машин — от {summary.low:.2f} до {summary.high:.2f}")
+    for base in ("kbb", "mmr"):
+        for kind, clean_only in (("clean", True), ("heavy", False)):
+            curve = ratio_curve(merged, base, clean_only)
+            if curve:
+                shares[f"{base}_{kind}_curve"] = curve
     if args.update_config:
-        update_config(Path(args.update_config), shares, counts)
+        update_config(Path(args.update_config), shares, {k: v for k, v in counts.items()})
     return 0
 
 

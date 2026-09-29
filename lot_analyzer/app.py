@@ -147,7 +147,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 # ---------------------------------------------------------------- веб-сервер
 
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "odometer_miles", "current_bid_usd",
-           "kbb_private_party_usd", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_verdict",
+           "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_verdict",
            "sale_date", "lot_url", "vin", "source_file", "calc_breakdown", "needs_review")
 
 
@@ -260,7 +260,7 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=await r.json();
 $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
-<td class="num">${money(x.current_bid_usd)}</td><td class="num">${money(x.kbb_private_party_usd)}</td><td class="num">${money(x.market_estimate_usd)}</td>
+<td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.kbb_private_party_usd?money(x.kbb_private_party_usd):(x.kbb_estimate_usd?'≈'+money(x.kbb_estimate_usd)+`<div class="muted">${esc(x.kbb_estimate_source)}</div>`:'—')}</td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';

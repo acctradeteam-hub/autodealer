@@ -90,6 +90,32 @@ class HistoryFlags:
     skip: list[str] = field(default_factory=list)          # причины «пропустить»
     discounts: dict[str, float] = field(default_factory=dict)  # название -> доля скидки
     notes: list[str] = field(default_factory=list)
+    extra_days: int = 0                                     # лишние дни до продажи (оформление титула)
+
+
+def title_policy(costs: dict) -> str:
+    """strict — только с титулом; allow_227 — REG 227 можно, «Title Absent» нельзя; allow_all — всё, с лишними днями."""
+    if costs.get("title_policy"):
+        return str(costs["title_policy"])
+    return "strict" if costs.get("title_required") else "allow_all"
+
+
+def _title_rules(text: str, costs: dict, flags: "HistoryFlags") -> None:
+    policy = title_policy(costs)
+    absent = bool(_positive_hits(text, _TITLE_ABSENT))
+    reg227 = bool(_positive_hits(text, _POSSIBLE_227))
+    days_227 = int(costs.get("reg227_extra_days", 10))
+    days_absent = int(costs.get("title_absent_extra_days", 35))
+    if policy == "strict" and (absent or reg227):
+        flags.skip.append("нет титула / REG 227 — режим «только с титулом»")
+    elif absent and policy == "allow_227":
+        flags.skip.append("нет титула на руках (Title Absent) — продать нельзя, пока его не пришлют")
+    elif absent:
+        flags.extra_days += days_absent
+        flags.notes.append(f"нет титула на руках — продать нельзя, пока не пришлют (+{days_absent} дн. в расчёте)")
+    elif reg227:
+        flags.extra_days += days_227
+        flags.notes.append(f"REG 227 вместо титула — продажа через дилера с REG 227, +{days_227} дн. на оформление")
 
 
 def assess_history(text: str, costs: dict) -> HistoryFlags:
@@ -129,13 +155,7 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
         flags.discounts["аренда/флит"] = rates.get("rental_fleet", 0.03)
     if _positive_hits(text, r"recovered theft|theft recovery|theft history|stolen vehicle|угон"):
         flags.discounts["был в угоне"] = rates.get("theft_recovery", 0.10)
-    title_problem = _positive_hits(text, _TITLE_ABSENT) or _positive_hits(text, _POSSIBLE_227)
-    if title_problem and costs.get("title_required"):
-        flags.skip.append("нет титула / REG 227 — стратегия «только с титулом»")
-    elif _positive_hits(text, _TITLE_ABSENT):
-        flags.notes.append("нет титула на руках — продать нельзя, пока его не пришлют")
-    if not costs.get("title_required") and _positive_hits(text, _POSSIBLE_227):
-        flags.notes.append("Possible 227 — титул через дубликат (REG 227), оформление затянется")
+    _title_rules(text, costs, flags)
     if _positive_hits(text, _NON_RUNNER):
         flags.notes.append("продавец пишет «не на ходу» — заложен резерв, проверьте на месте")
     return flags
@@ -221,6 +241,29 @@ def estimate_recon(text: str, costs: dict) -> tuple[float, list[str]]:
     return total, found
 
 
+def target_profit(sale: float, costs: dict) -> float:
+    """Цель прибыли: ступени profit_tiers [[цена продажи до, $ или доля]], иначе большее из $ и %."""
+    for upto, value in costs.get("profit_tiers") or []:
+        if sale <= float(upto):
+            value = float(value)
+            return sale * value if value < 1 else value
+    return max(float(costs.get("profit_min_usd", 0)), sale * float(costs.get("profit_min_pct_of_sale", 0)))
+
+
+def win_chance(bid: float, base: float, points: list) -> float | None:
+    """Доля лотов, ушедших не дороже bid, по точкам распределения [[цена ÷ база, накопленная доля], …]."""
+    if not base or not points:
+        return None
+    ratio = bid / base
+    pts = sorted((float(r), float(q)) for r, q in points)
+    if ratio <= pts[0][0]:
+        return pts[0][1] * ratio / pts[0][0] if pts[0][0] else 0.0
+    for (r1, q1), (r2, q2) in zip(pts, pts[1:]):
+        if ratio <= r2:
+            return q1 + (q2 - q1) * (ratio - r1) / (r2 - r1)
+    return pts[-1][1]
+
+
 def transport_cost(location: str, costs: dict) -> float:
     """Доставка: по площадке из transport_by_location (дальние аукционы), иначе transport_usd."""
     lowered = (location or "").lower()
@@ -267,6 +310,7 @@ class BidInput:
     location: str = ""                   # площадка / город — для стоимости доставки
     sale_price: float | None = None      # своя оценка цены продажи
     kbb_private_party: float | None = None
+    kbb_source: str = ""                 # пусто — KBB из заметки; иначе — своя оценка (откуда)
     auction_retail: float | None = None  # розничная оценка самого аукциона (Manheim, ADESA)
     mmr: float | None = None             # MMR или оптовая оценка аукциона
     recon: float | None = None           # своя оценка ремонта
@@ -284,6 +328,7 @@ class BidResult:
     profit_at_max: float | None = None
     market_price: float | None = None    # сколько обычно платят на торгах (по истории результатов)
     market_source: str = ""
+    win_chance: float | None = None      # доля похожих лотов, ушедших не дороже потолка
     verdict: str = ""
     lines: list[str] = field(default_factory=list)  # расчёт по статьям
 
@@ -314,6 +359,8 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         offset = float(costs.get("kbb_private_party_offset_usd", 0))
         result.sale_price = data.kbb_private_party * factor + offset
         result.sale_source = f"KBB PP × {factor:g}" + (f" {offset:+,.0f}" if offset else "")
+        if data.kbb_source:
+            result.sale_source += f"; KBB — своя оценка {data.kbb_source}"
     elif data.auction_retail:
         factor = float(costs.get("auction_retail_factor", 0.9))
         result.sale_price = data.auction_retail * factor
@@ -349,7 +396,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         "доставка": transport_cost(data.location, costs),
         "дилер": float(costs.get("dealer_fee_usd", 0)),
         "реклама": float(costs.get("selling_usd", 0)),
-        "содержание": float(costs.get("days_to_sell", 0)) * float(costs.get("holding_per_day_usd", 0)),
+        "содержание": (float(costs.get("days_to_sell", 0)) + flags.extra_days) * float(costs.get("holding_per_day_usd", 0)),
         "резерв": sale * float(costs.get("reserve_pct_of_sale", 0)),
         "DMV": dmv_fees(f"{data.defects_text} {data.history_text}"),
     }
@@ -357,7 +404,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
     lines.append(f"ремонт {_usd(recon)} ({recon_note})")
     lines.append(", ".join(f"{k} {_usd(v)}" for k, v in fixed.items() if v and k != "ремонт"))
 
-    profit = max(float(costs.get("profit_min_usd", 0)), sale * float(costs.get("profit_min_pct_of_sale", 0)))
+    profit = target_profit(sale, costs)
     lines.append(f"цель прибыли {_usd(profit)}")
 
     all_in_limit = sale - discount - fixed_total - profit
@@ -394,12 +441,20 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)}"
     market, market_source = expected_market_price(data, costs)
     result.market_price, result.market_source = market, market_source
+    base_kind = "kbb" if data.kbb_private_party and (costs.get("market") or {}).get("kbb_clean") else "mmr"
+    base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
+    heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
+    points = (costs.get("market") or {}).get(f"{base_kind}_{'heavy' if heavy else 'clean'}_curve") or []
+    chance = win_chance(bid, base_value, points) if base_value else None
+    result.win_chance = chance
     if market:
         lines.append(f"рынок ≈ {_usd(market)} ({market_source})")
         if bid < market * 0.95:
             verdict += f"; рынок ≈ {_usd(market)} — потолок ниже на {_usd(market - bid)}, выиграть вряд ли"
         else:
             verdict += f"; рынок ≈ {_usd(market)} — шанс есть"
+        if chance is not None:
+            verdict += f" (выигрывает ~{chance:.0%} похожих лотов)"
     elif data.mmr:
         if bid > data.mmr * float(costs.get("mmr_warn_high", 1.15)):
             verdict += f"; потолок выше опта/MMR {_usd(data.mmr)} — проверьте цену продажи"
@@ -446,10 +501,32 @@ def _proxy_note(proxy: float | None, ceiling: int | None) -> str:
     return f"; ваш прокси {_usd(proxy)} в пределах потолка"
 
 
-def apply_to_rows(rows: list[dict[str, str]], costs: dict) -> None:
-    """Заполняет расчётные колонки в каждой строке."""
+def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> None:
+    """Заполняет расчётные колонки в каждой строке.
+
+    Если у строки нет ни KBB, ни своей цены продажи — KBB оценивается по похожим
+    машинам (lot_analyzer/kbb.py): по вашим KBB из истории и заметок, иначе по торгам.
+    """
+    if estimator is None:
+        estimator = _estimator(costs)
+    if estimator is not None:
+        estimator.add_rows(rows)
+    cfg = costs.get("kbb_estimate") or {}
     for row in rows:
-        result = calculate(input_from_row(row), costs)
+        row["kbb_estimate_usd"] = row["kbb_estimate_source"] = ""
+        if estimator is not None and not (parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))):
+            year = int(row["year"]) if str(row.get("year", "")).isdigit() else None
+            miles = parse_money(row.get("odometer_miles"))
+            est = estimator.estimate(row.get("make", ""), row.get("model", ""), year, miles, vin=row.get("vin", ""))
+            market_based = est is not None and est.source.startswith("по рынку")
+            if est and (not market_based or (cfg.get("use_market_comps", True) and est.n >= int(cfg.get("min_market_comps", 5)))):
+                row["kbb_estimate_usd"] = f"{est.value:.0f}"
+                row["kbb_estimate_source"] = est.source + (" (грубо, ±20%)" if market_based else "")
+        data = input_from_row(row)
+        if not data.kbb_private_party and row.get("kbb_estimate_usd"):
+            data.kbb_private_party = parse_money(row["kbb_estimate_usd"])
+            data.kbb_source = row["kbb_estimate_source"]
+        result = calculate(data, costs)
         row["sale_estimate_usd"] = f"{result.sale_price:.0f}" if result.sale_price else ""
         row["calc_max_bid_usd"] = str(result.max_bid) if result.max_bid else ""
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
@@ -460,6 +537,22 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict) -> None:
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.
             row["calc_verdict"] += "; предварительно — откройте карточку лота"
         row["calc_breakdown"] = result.breakdown()
+
+
+_ESTIMATOR_CACHE: dict = {}
+
+
+def _estimator(costs: dict):
+    """Оценщик KBB по data/market_history.csv (кэш по времени изменения файла)."""
+    from .kbb import KbbEstimator
+    from .market import HISTORY_PATH
+
+    stamp = HISTORY_PATH.stat().st_mtime if HISTORY_PATH.exists() else 0
+    key = (stamp, json.dumps(costs.get("kbb_estimate") or {}, sort_keys=True), (costs.get("market") or {}).get("kbb_clean"))
+    if key not in _ESTIMATOR_CACHE:
+        _ESTIMATOR_CACHE.clear()
+        _ESTIMATOR_CACHE[key] = KbbEstimator.from_history(costs) if stamp else KbbEstimator([], costs)
+    return _ESTIMATOR_CACHE[key].copy()
 
 
 # ---------------------------------------------------------------- запуск для одной машины

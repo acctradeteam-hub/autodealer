@@ -192,7 +192,7 @@ class TestCalculate(unittest.TestCase):
         # Типичная машина: продажа $8500 на Facebook Marketplace, чистая история.
         result = calculate(BidInput(auction="Manheim", sale_price=8500, history_text="clean title, 2 owners"), load_costs(COSTS_PATH))
         self.assertIsNotNone(result.max_bid)
-        self.assertTrue(3500 <= result.max_bid <= 6000, result.max_bid)
+        self.assertTrue(3500 <= result.max_bid <= 7000, result.max_bid)   # ступени прибыли: для продажи $8,500 цель $500
 
 
 class TestStrategySettings(unittest.TestCase):
@@ -208,6 +208,32 @@ class TestStrategySettings(unittest.TestCase):
         far = calculate(BidInput(auction="CarMax", location="Fresno, CA", kbb_private_party=10000, history_text="clean"), dict(costs, budget_max_bid_usd=0))
         near = calculate(BidInput(auction="CarMax", location="Chino, CA", kbb_private_party=10000, history_text="clean"), dict(costs, budget_max_bid_usd=0))
         self.assertLess(far.max_bid, near.max_bid)
+
+
+class TestTiersAndChance(unittest.TestCase):
+    def test_profit_tiers(self) -> None:
+        from lot_analyzer.bid import target_profit
+
+        costs = {"profit_tiers": [[7000, 600], [10000, 900], [9999999, 0.1]]}
+        self.assertEqual(target_profit(6500, costs), 600)
+        self.assertEqual(target_profit(9500, costs), 900)
+        self.assertAlmostEqual(target_profit(15000, costs), 1500)
+        self.assertEqual(target_profit(9500, {"profit_min_usd": 1500, "profit_min_pct_of_sale": 0.15}), 1500)
+
+    def test_win_chance_interpolation(self) -> None:
+        from lot_analyzer.bid import win_chance
+
+        points = [[0.6, 0.1], [0.8, 0.5], [1.0, 0.9]]
+        self.assertAlmostEqual(win_chance(7000, 10000, points), 0.3)
+        self.assertAlmostEqual(win_chance(12000, 10000, points), 0.9)
+        self.assertIsNone(win_chance(7000, None, points))
+
+    def test_reg227_adds_holding_days(self) -> None:
+        costs = load_costs(COSTS_PATH)
+        plain = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean"), costs)
+        r227 = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Possible 227"), costs)
+        self.assertLess(r227.max_bid, plain.max_bid)
+        self.assertIn("REG 227", r227.verdict)
 
 
 class TestRows(unittest.TestCase):

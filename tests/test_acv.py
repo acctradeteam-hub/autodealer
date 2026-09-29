@@ -81,12 +81,12 @@ class TestAcvCalculation(unittest.TestCase):
 
     def test_without_stop_factors_theft_discount_and_title_note(self) -> None:
         row = {k: v.replace("Structural Alteration", "SA").replace("Mileage inconsistency", "MI") for k, v in self.row.items()}
-        # Режим «титул не обязателен»: машина считается, «нет титула» — предупреждение.
-        result = calculate(input_from_row(row), dict(self.costs, title_required=False))
+        # Режим allow_all: машина считается, «нет титула» — предупреждение и лишние дни.
+        result = calculate(input_from_row(row), dict(self.costs, title_policy="allow_all"))
         self.assertIsNotNone(result.max_bid)
         self.assertIn("был в угоне", result.breakdown())
         self.assertIn("нет титула", result.verdict)
-        # Режим «только с титулом» (по умолчанию): такую машину пропускаем.
+        # По умолчанию (allow_227) «Title Absent» пропускаем.
         self.assertIn("нет титула", calculate(input_from_row(row), self.costs).verdict)
         self.assertTrue(calculate(input_from_row(row), self.costs).verdict.startswith("ПРОПУСТИТЬ"))
 
