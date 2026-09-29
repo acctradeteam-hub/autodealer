@@ -375,7 +375,7 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
             card_row = empty_row()
             notes = sites_text.row_from_carmax_card(card_row, card)
             # Из списка — заметки покупателя, статус и объявления (они свежее).
-            for key in ("carfax_autocheck", "kbb_private_party_usd", "mmr_adjusted_usd", "auction_retail_usd", "lot_description"):
+            for key in ("carfax_autocheck", "my_proxy_usd", "retail_estimate_usd", "kbb_private_party_usd", "mmr_adjusted_usd", "auction_retail_usd", "lot_description"):
                 if card_row.get(key):
                     row[key] = card_row[key]
             if card_row["defects"] and card_row["defects"] not in row["defects"]:

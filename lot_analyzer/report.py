@@ -126,6 +126,7 @@ def _add_legend_sheet(workbook) -> None:
         "carfax_autocheck": "Вручную: выводы из отчёта Carfax / AutoCheck",
         "condition_report": "Вручную: выводы из Condition Report (Manheim / ACV)",
         "retail_estimate_usd": "Вручную: за сколько реально продадите на Facebook Marketplace (по похожим объявлениям)",
+        "my_proxy_usd": "Из заметки «MP 5600» (My Proxy) или вручную: ваша прокси-ставка — сверяется с потолком в «Вердикте»",
         "recon_estimate_usd": "Вручную: своя оценка ремонта. Пусто — берётся резерв из config/costs.json",
         "calc_verdict": "Расчёт: МОЖНО до $X / ДОРОЖЕ ПОТОЛКА / НЕВЫГОДНО / ПРОПУСТИТЬ (стоп-факторы в истории)",
         "calc_max_bid_usd": "Расчёт: наибольшая ставка (hammer), при которой остаётся цель прибыли",

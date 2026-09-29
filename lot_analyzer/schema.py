@@ -51,6 +51,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("max_bid_usd", "Максимальная ставка, $", manual=True, numeric=True, width=21),
     Column("retail_estimate_usd", "Цена продажи (моя оценка), $", manual=True, numeric=True, width=20),
     Column("recon_estimate_usd", "Ремонт (моя оценка), $", manual=True, numeric=True, width=17),
+    Column("my_proxy_usd", "Мой прокси, $", manual=True, numeric=True, width=13),
     # --- расчёт потолка ставки (lot_analyzer/bid.py, настройки в config/costs.json) ---
     Column("calc_verdict", "Вердикт", width=40),
     Column("calc_max_bid_usd", "Потолок ставки (расчёт), $", numeric=True, width=18),

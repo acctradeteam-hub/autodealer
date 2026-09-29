@@ -382,6 +382,17 @@ def input_from_row(row: dict[str, str]) -> BidInput:
     )
 
 
+def _proxy_note(proxy: float | None, ceiling: int | None) -> str:
+    """Сверка своей прокси-ставки с расчётным потолком."""
+    if not proxy:
+        return ""
+    if ceiling is None:
+        return f"; ваш прокси {_usd(proxy)}"
+    if proxy > ceiling:
+        return f"; ваш прокси {_usd(proxy)} ВЫШЕ потолка на {_usd(proxy - ceiling)}"
+    return f"; ваш прокси {_usd(proxy)} в пределах потолка"
+
+
 def apply_to_rows(rows: list[dict[str, str]], costs: dict) -> None:
     """Заполняет расчётные колонки в каждой строке."""
     for row in rows:
@@ -390,7 +401,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict) -> None:
         row["calc_max_bid_usd"] = str(result.max_bid) if result.max_bid else ""
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
         row["calc_profit_usd"] = f"{result.profit_at_max:.0f}" if result.profit_at_max is not None else ""
-        row["calc_verdict"] = result.verdict
+        row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
         row["calc_breakdown"] = result.breakdown()
 
 

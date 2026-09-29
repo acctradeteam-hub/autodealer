@@ -168,8 +168,9 @@ class TestCarMaxWatchlist(unittest.TestCase):
     def test_notes_give_kbb_mmr_and_history(self) -> None:
         self.assertEqual(self.by_lot["A/88"]["kbb_private_party_usd"], "14380")        # «KBB 14,380$»
         self.assertEqual(self.by_lot["A/70"]["kbb_private_party_usd"], "11905")        # «KBB $11905»
-        lexus = self.by_lot["B/95"]                                                   # «KBB PP $19,940 (92620, 9/18) MMR $13,850»
-        self.assertEqual((lexus["kbb_private_party_usd"], lexus["mmr_adjusted_usd"]), ("19940", "13850"))
+        # «KBB PP $19,940 (92620, 9/18) MMR $13,850 Est Retail $20,000 KBB 19,530$» — берётся последнее, более свежее
+        lexus = self.by_lot["B/95"]
+        self.assertEqual((lexus["kbb_private_party_usd"], lexus["mmr_adjusted_usd"]), ("19530", "13850"))
         self.assertIn("продана за $8400", self.by_lot["A/126"]["lot_description"])
         self.assertIn("ваша ставка: $6,500", self.by_lot["A/70"]["lot_description"])
 
@@ -190,6 +191,14 @@ class TestCarMaxWatchlist(unittest.TestCase):
 
         self.assertEqual(assess_history("Two owners, three accidents", COSTS).discounts, {"2+ ДТП": 0.15})
         self.assertEqual(dmv_fees(self.by_lot["A/21"]["defects"]), 71)
+
+    def test_my_proxy_note_compared_with_ceiling(self) -> None:
+        from lot_analyzer.bid import apply_to_rows
+
+        row = dict(self.by_lot["A/162"], kbb_private_party_usd="9000")   # «3 owners, 1 accident. MP 5600»
+        self.assertEqual(row["my_proxy_usd"], "5600")
+        apply_to_rows([row], COSTS)
+        self.assertIn("ваш прокси $5,600 ВЫШЕ потолка", row["calc_verdict"])
 
     def test_fb_price_note(self) -> None:
         from lot_analyzer.sites_text import row_from_carmax_card

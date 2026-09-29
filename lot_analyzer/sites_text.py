@@ -295,7 +295,15 @@ _NOTE_MMR = re.compile(r"\bMMR\s*\$?\s*([\d][\d,]{2,})", re.I)
 _NOTE_RETAIL = re.compile(r"\b(?:est\.?\s*)?retail\s*\$?\s*([\d][\d,]{2,})", re.I)
 # Своя цена продажи на Facebook Marketplace: «FB 9500», «FB $9,500», «sell 9500».
 _NOTE_SALE = re.compile(r"\b(?:FB|sell|sale)\s*\$?\s*([\d][\d,]{2,})", re.I)
+# Своя прокси-ставка: «MP 5600», «MP $5,600», «my proxy 5600».
+_NOTE_PROXY = re.compile(r"\b(?:MP|my\s*proxy|proxy)\s*\$?\s*([\d][\d,]{2,})", re.I)
 _NOTE_SOLD = re.compile(r"\bsold\s*(?:for\s*)?\$?\s*([\d][\d,]{2,})", re.I)
+
+
+def _last(pattern: re.Pattern[str], text: str) -> str:
+    """Последнее значение в заметке: дописанное позже — свежее."""
+    found = pattern.findall(text)
+    return found[-1].replace(",", "") if found else ""
 
 
 def find_carmax_cards(html: str) -> list[dict[str, str]]:
@@ -376,18 +384,16 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     user_notes = card.get("notes", "")
     if user_notes:
         row["carfax_autocheck"] = user_notes          # заметки покупателя: история, KBB, решения
-        kbb = _NOTE_KBB.search(user_notes)
-        if kbb:
-            row["kbb_private_party_usd"] = kbb.group(1).replace(",", "")
-        mmr = _NOTE_MMR.search(user_notes)
-        if mmr:
-            row["mmr_adjusted_usd"] = mmr.group(1).replace(",", "")
-        sale = _NOTE_SALE.search(user_notes)
-        if sale:
-            row["retail_estimate_usd"] = sale.group(1).replace(",", "")
-        retail = _NOTE_RETAIL.search(user_notes)
-        if retail:
-            row["auction_retail_usd"] = retail.group(1).replace(",", "")
+        for key, pattern in (
+            ("kbb_private_party_usd", _NOTE_KBB),
+            ("mmr_adjusted_usd", _NOTE_MMR),
+            ("my_proxy_usd", _NOTE_PROXY),
+            ("retail_estimate_usd", _NOTE_SALE),
+            ("auction_retail_usd", _NOTE_RETAIL),
+        ):
+            value = _last(pattern, user_notes)
+            if value:
+                row[key] = value
     extra = [x for x in (card.get("drive", ""), f"статус: {card['status']}" if card.get("status") else "") if x]
     if card.get("your_bid"):
         extra.append(f"ваша ставка: {card['your_bid']}")
