@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+from . import acv
 from .extract import LotDocument
 from .normalize import (
     clean_cell,
@@ -214,6 +215,12 @@ def parse_lot(html: str, source_name: str = "", auction_hint: str = "") -> dict[
     Возвращает словарь «ключ колонки -> строковое значение». Ненайденные поля
     остаются пустыми, а их список попадает в колонку «Проверить».
     """
+    # ACV: сохранённая страница — весь Marketplace; разбираем только карточку лота.
+    acv_detail = acv.find_detail(html) if "acvauctions" in html[:400_000].lower() else None
+    if acv_detail is not None:
+        html = acv_detail.fragment_html
+        auction_hint = auction_hint or "ACV"
+
     doc = LotDocument(html, source_name)
     auction = auction_hint or detect_auction(doc)
 
@@ -332,8 +339,17 @@ def parse_lot(html: str, source_name: str = "", auction_hint: str = "") -> dict[
     url = squeeze(canonical.get("href") if canonical else "") or _text_field(doc, "lot_url", auction, 300)
     row["lot_url"] = url if url.startswith("http") else ""
 
+    # --- ACV: точные поля из карточки лота перекрывают найденное общим разбором ---
+    if acv_detail is not None:
+        notes = [n for n in notes if not n.startswith("отметка «на ходу»")]
+        notes += acv.apply_detail(row, acv_detail)
+
     # --- что осталось проверить глазами ---
-    row["needs_review"] = clean_cell("; ".join(notes + _missing_summary(row)), 600)
+    missing = _missing_summary(row)
+    if acv_detail is not None:
+        # У онлайн-торгов ACV нет даты продажи — только таймер в карточке.
+        missing = [m.replace("дата продажи, ", "").replace(", дата продажи", "") for m in missing if m != "не найдено: дата продажи"]
+    row["needs_review"] = clean_cell("; ".join(notes + missing), 600)
     return row
 
 

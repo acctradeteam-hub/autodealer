@@ -300,7 +300,7 @@ class TestReport(unittest.TestCase):
 class TestInputs(unittest.TestCase):
     def test_collect_inputs_finds_pages_in_folder(self) -> None:
         pages = collect_inputs([str(FIXTURES)])
-        self.assertEqual(len(pages), 3)
+        self.assertEqual(len(pages), 4)
 
     def test_mhtml_is_read(self) -> None:
         # Chrome умеет сохранять «Веб-страница, один файл» — это MHTML.

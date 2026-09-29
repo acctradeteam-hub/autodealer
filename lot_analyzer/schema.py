@@ -38,6 +38,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("location", "Локация", width=22),
     Column("sale_date", "Дата продажи", width=14),
     Column("current_bid_usd", "Текущая ставка, $", numeric=True, width=16),
+    Column("transport_quote_usd", "Доставка (котировка), $", numeric=True, width=16),
     Column("acv_estimate_usd", "Оценка ACV, $", numeric=True, width=15),
     # --- оценки: источники недоступны автоматически, см. README, раздел «Этап 2» ---
     Column("kbb_private_party_usd", "KBB Private Party, $", manual=True, numeric=True, width=19),

@@ -41,10 +41,11 @@ _NEGATION = re.compile(r"(\bno\b|\bnot\b|\bnone\b|\bwithout\b|\bzero\b|\b0\b|\b�
 
 _SKIP_PATTERNS = {
     "branded_title": r"salvage|rebuilt|reconstructed|\bjunk\b|lemon|buy\s*back|non[\s-]*repairable|certificate of destruction|restored title|спасён|восстановленн",
-    "odometer_problem": r"odometer (rollback|problem|discrepancy|tamper)|rollback|not[\s-]*actual|\btmu\b|true mileage unknown|скрут",
-    "structural_damage": r"structural damage|frame damage|unibody damage|повреждени[ея] рамы|\bрам[аы]\b",
+    "odometer_problem": r"odometer (rollback|problem|discrepancy|tamper)|mileage (inconsistency|discrepancy)|rollback|not[\s-]*actual|\btmu\b|true mileage unknown|скрут",
+    "structural_damage": r"structural (damage|alteration)|frame damage|unibody damage|frame/unibody damage|повреждени[ея] рамы|\bрам[аы]\b",
     "airbag_deployed": r"airbags? deployed|подушк\w* (безопасности )?сработал",
     "flood": r"\bflood\b|water damage|затоплен|утоплен",
+    "mechanical_severe": r"engine does not crank|cranks,? does not start|does not stay running|vehicle inop|does not move|coolant intermix|не заводится",
 }
 _SKIP_TEXT = {
     "branded_title": "брендированный титул (salvage/rebuilt/lemon…)",
@@ -52,7 +53,11 @@ _SKIP_TEXT = {
     "structural_damage": "повреждение рамы / кузова",
     "airbag_deployed": "срабатывали подушки безопасности",
     "flood": "затопление",
+    "mechanical_severe": "не заводится / не едет / антифриз в масле",
 }
+
+# Не стоп-фактор, но продать машину нельзя, пока нет титула.
+_TITLE_ABSENT = r"title absent|title (delay|missing)|no title|титул отсутств"
 
 
 def _positive_hits(text: str, pattern: str) -> list[re.Match]:
@@ -107,6 +112,10 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
 
     if _positive_hits(text, r"rental|fleet|\btaxi\b|аренд|такси|прокат"):
         flags.discounts["аренда/флит"] = rates.get("rental_fleet", 0.03)
+    if _positive_hits(text, r"recovered theft|theft recovery|stolen vehicle|угон"):
+        flags.discounts["был в угоне"] = rates.get("theft_recovery", 0.10)
+    if _positive_hits(text, _TITLE_ABSENT):
+        flags.notes.append("нет титула на руках — продать нельзя, пока его не пришлют")
     return flags
 
 
@@ -164,13 +173,29 @@ def auction_fee(bid: float, auction: str, costs: dict) -> float:
 
 
 def estimate_recon(text: str, costs: dict) -> tuple[float, list[str]]:
-    """Ремонт по умолчанию: базовый резерв + надбавки за найденные слова."""
+    """Ремонт по умолчанию: базовый резерв + надбавки за найденные неисправности.
+
+    recon_keywords — регулярные выражения (ищутся с начала слова), каждое
+    считается один раз. Отдельно: коды OBD и протектор шин из отчёта ACV.
+    """
     total = float(costs.get("recon_default_usd", 0))
     found: list[str] = []
-    for word, amount in costs.get("recon_keywords", {}).items():
-        if _positive_hits(text, r"\b" + re.escape(word)):  # «dent» не должен ловиться в «accident»
+    for pattern, amount in costs.get("recon_keywords", {}).items():
+        if _positive_hits(text, r"\b(?:" + pattern + ")"):
             total += float(amount)
-            found.append(f"{word} +{amount:g}")
+            found.append(f"{pattern.split('|')[0]} +{amount:g}")
+
+    codes = sorted(set(re.findall(r"\b[PBCU][0-3][0-9A-F]{3}\b", text)))
+    per_code = float(costs.get("obd_code_usd", 0))
+    if codes and per_code:
+        total += per_code * len(codes)
+        found.append(f"коды OBD ×{len(codes)} +{per_code * len(codes):g}")
+
+    worn = [int(d) for d in re.findall(r"(\d{1,2})\s*/\s*32", text) if int(d) <= int(costs.get("tire_min_32nds", 4))]
+    tire_usd = float(costs.get("tire_usd", 0))
+    if worn and tire_usd:
+        total += tire_usd * len(worn)
+        found.append(f"шины ×{len(worn)} +{tire_usd * len(worn):g}")
     return total, found
 
 
