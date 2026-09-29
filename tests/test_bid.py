@@ -85,11 +85,24 @@ class TestFeesAndRecon(unittest.TestCase):
         self.assertEqual(auction_fee(10**7, "Manheim", costs), 600)
         self.assertEqual(auction_fee(5000, "Неизвестный", costs), 0)
 
+    def test_carmax_tier4_matches_published_schedule(self) -> None:
+        costs = load_costs(COSTS_PATH)
+        for bid, fee in ((150, 135), (4000, 385), (4999, 385), (5000, 410), (6999, 425), (7000, 445), (8000, 455), (8500, 465), (20000, 575)):
+            with self.subTest(bid=bid):
+                self.assertEqual(auction_fee(bid, "CarMax", costs), fee)
+
+    def test_dealer_fee_and_profit_target_in_shipped_config(self) -> None:
+        costs = load_costs(COSTS_PATH)
+        self.assertEqual(costs["dealer_fee_usd"], 300)
+        self.assertEqual(costs["profit_min_usd"], 1500)
+        self.assertIn("ACV", costs["auctions"])
+
     def test_auction_names_resolve(self) -> None:
         costs = load_costs(COSTS_PATH)
         self.assertEqual(resolve_auction("OPENLANE", costs), "ADESA")
         self.assertEqual(resolve_auction("CarMax Auctions", costs), "CarMax")
         self.assertEqual(resolve_auction("Manheim Riverside", costs), "Manheim")
+        self.assertEqual(resolve_auction("ACV Auctions", costs), "ACV")
         self.assertEqual(resolve_auction("Copart", costs), "")
 
     def test_recon_keywords_match_word_start_only(self) -> None:

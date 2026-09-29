@@ -23,7 +23,7 @@
   "detailing_usd": 150,
   "smog_usd": 60,
   "_dealer_fee": "Сколько берёт дилер, через которого вы оформляете машину, за одну машину (если берёт).",
-  "dealer_fee_usd": 0,
+  "dealer_fee_usd": 300,
   "_selling": "Реклама / продвижение на Facebook Marketplace на одну машину.",
   "selling_usd": 0,
 
@@ -75,7 +75,7 @@
   "mmr_warn_high": 1.15,
   "mmr_warn_low": 0.7,
 
-  "_auctions": "Сборы покупателя. fee_tiers: [до цены включительно, сбор]. ЦИФРЫ ПРИМЕРНЫЕ: аукционы не публикуют сетку сборов, сверьте со своим аккаунтом (Manheim — My Account / Fees, CarMax — Simulcast, ADESA/OPENLANE — кнопка Buy Fees в карточке лота).",
+  "_auctions": "Сборы покупателя. fee_tiers: [до цены включительно, сбор] или [до, сбор, +за каждую $1000, свыше]. verified=false — ЦИФРЫ ПРИМЕРНЫЕ: аукционы не публикуют сетку сборов, сверьте со своим аккаунтом (Manheim — My Account / Fees, CarMax — Simulcast, ADESA/OPENLANE — кнопка Buy Fees в карточке лота).",
   "auctions": {
     "Manheim": {
       "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
@@ -83,13 +83,20 @@
       "verified": false
     },
     "CarMax": {
-      "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
-      "extra_fees_usd": {"internet": 100, "gate": 0, "title": 0},
-      "verified": false
+      "_source": "CarMax Auctions, Buy Fees Tier 4 (Калифорния), действует с января 2024: kmxaucteaststorage.blob.core.windows.net/content/pdf/buy%20fees/Buy_Fees_Tier_4.pdf. Аукционы CarMax в других штатах (AZ, NV) — другие Tier, сборы там иные. Отдельного сбора за онлайн-покупку в документе нет; при оплате через floorplan +$10.",
+      "fee_tiers": [[199, 135], [399, 190], [599, 220], [999, 260], [1999, 325], [2999, 345], [3999, 365], [4999, 385], [5999, 410], [6999, 425], [19999, 445, 10, 7000], [999999, 575, 5, 20000]],
+      "extra_fees_usd": {"internet": 0, "floorplan_admin": 0},
+      "verified": true
     },
     "ADESA": {
       "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
       "extra_fees_usd": {"internet": 100, "gate": 0, "title": 0},
+      "verified": false
+    },
+    "ACV": {
+      "_source": "ПРИМЕРНО. Настоящая сетка — app.acvauctions.com/myacv/fee-schedule (только после входа). Пришлите её, и цифры будут заменены.",
+      "fee_tiers": [[999, 200], [1999, 275], [2999, 325], [3999, 375], [4999, 425], [5999, 450], [7999, 500], [9999, 550], [14999, 625], [999999, 700]],
+      "extra_fees_usd": {"internet": 0, "title": 0},
       "verified": false
     }
   },
@@ -98,6 +105,7 @@
     "OPENLANE": "ADESA",
     "Openlane": "ADESA",
     "CarMax Auctions": "CarMax",
-    "Manheim OVE": "Manheim"
+    "Manheim OVE": "Manheim",
+    "ACV Auctions": "ACV"
   }
 }

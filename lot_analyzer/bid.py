@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -136,14 +137,13 @@ def auction_fee(bid: float, auction: str, costs: dict) -> float:
     config = costs.get("auctions", {}).get(auction)
     if not config:
         return 0.0
-    fee = 0.0
-    for upper, tier_fee in config.get("fee_tiers", []):
-        if bid <= upper:
-            fee = float(tier_fee)
-            break
-    else:
-        tiers = config.get("fee_tiers") or [[0, 0]]
-        fee = float(tiers[-1][1])
+    tiers = config.get("fee_tiers") or [[0, 0]]
+    tier = next((t for t in tiers if bid <= t[0]), tiers[-1])
+    fee = float(tier[1])
+    if len(tier) >= 4 and bid > tier[3]:
+        # [до, сбор, +за каждую $1000, свыше]: «$445 + $10 за каждую $1K свыше $7K».
+        # Неполную тысячу считаем целой — лучше переоценить сбор на $10, чем недооценить.
+        fee += float(tier[2]) * math.ceil((bid - tier[3]) / 1000)
     return fee + sum(float(v) for v in config.get("extra_fees_usd", {}).values())
 
 
