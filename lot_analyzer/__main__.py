@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
 from .inspection import inspection_rows, render_html
+from . import manheim_csv
 from .pages import collect_inputs, read_page
 from .parsers import parse_page
 from .report import (
@@ -78,15 +79,25 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict[str, str]] = []
     failures: list[tuple[Path, str]] = []
 
+    # CSV-выгрузки Manheim — последними: если машина есть и на сохранённой странице, берётся строка со страницы.
+    pages = sorted(pages, key=lambda p: p.suffix.lower() == ".csv")
+    seen_vins: set[str] = set()
     for page in pages:
         try:
-            html = read_page(page)
-            page_rows = parse_page(html, source_name=page.name, auction_hint=args.auction)
+            if page.suffix.lower() == ".csv":
+                page_rows = [r for r in manheim_csv.read_export(page) if r["vin"] not in seen_vins]
+            else:
+                html = read_page(page)
+                page_rows = parse_page(html, source_name=page.name, auction_hint=args.auction)
+            seen_vins.update(r["vin"] for r in page_rows if r.get("vin"))
         except Exception as error:  # одна битая страница не должна валить весь прогон
             failures.append((page, f"{type(error).__name__}: {error}"))
             say(f"  ! {page.name}: не разобрано ({type(error).__name__}: {error})")
             continue
         rows.extend(page_rows)
+        if page.suffix.lower() == ".csv":
+            say(f"  + {page.name}: выгрузка Manheim, новых машин {len(page_rows)}")
+            continue
         if len(page_rows) > 1:
             say(f"  + {page.name}: список, машин {len(page_rows)}")
             continue

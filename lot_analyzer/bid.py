@@ -214,6 +214,20 @@ def auction_fee(bid: float, auction: str, costs: dict) -> float:
     return fee + sum(float(v) for v in config.get("extra_fees_usd", {}).values())
 
 
+def grade_recon(grade: float | None, auction: str, costs: dict) -> float:
+    """Надбавка к ремонту по CR grade (шкала 0–5): чем ниже оценка, тем больше вложений."""
+    cfg = costs.get("recon_by_grade") or {}
+    if grade is None or not cfg.get("steps"):
+        return 0.0
+    names = [a.lower() for a in cfg.get("auctions", [])]
+    if names and not any(n in (auction or "").lower() for n in names):
+        return 0.0
+    for floor, amount in sorted(cfg["steps"], key=lambda x: -float(x[0])):
+        if grade >= float(floor):
+            return float(amount)
+    return 0.0
+
+
 def estimate_recon(text: str, costs: dict) -> tuple[float, list[str]]:
     """Ремонт по умолчанию: базовый резерв + надбавки за найденные неисправности.
 
@@ -282,16 +296,45 @@ def dmv_fees(text: str) -> float:
     return float(sum(amounts))
 
 
+def market_config(auction: str, costs: dict) -> dict:
+    """Доли рынка для аукциона: общие costs["market"] + поправки costs["market_by_auction"][аукцион].
+
+    На Manheim MMR — это и есть средняя цена его же торгов, поэтому там база — MMR
+    («prefer": "mmr"), а не KBB, как у CarMax.
+    """
+    market = dict(costs.get("market") or {})
+    overrides = costs.get("market_by_auction") or {}
+    key = resolve_auction(auction, costs) or squeeze(auction)
+    for name, extra in overrides.items():
+        if name.startswith("_"):
+            continue
+        if name == key or name.lower() in (auction or "").lower():
+            market.update(extra)
+            break
+    return market
+
+
+def _market_base(data: "BidInput", market: dict) -> str:
+    """Какая база у доли рынка: «kbb» или «mmr»."""
+    if market.get("prefer") == "mmr" and data.mmr and market.get("mmr_clean"):
+        return "mmr"
+    return "kbb" if data.kbb_private_party and market.get("kbb_clean") else "mmr"
+
+
 def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, str]:
     """Сколько обычно платят на торгах за такую машину: KBB (или MMR) × доля из истории результатов.
 
     Доли — в costs["market"], их пересчитывает `python3 -m lot_analyzer.market … --update-config`.
     Машины с тяжёлыми дефектами (коробка, мотор, рама, титул) уходят дешевле — для них своя доля.
     """
-    market = costs.get("market") or {}
+    market = market_config(data.auction, costs)
     heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
     kind = "heavy" if heavy else "clean"
     label = "с тяжёлыми дефектами" if heavy else "без тяжёлых дефектов"
+    note = f"; {market['note']}" if market.get("note") else ""
+    if _market_base(data, market) == "mmr" and data.mmr and market.get(f"mmr_{kind}"):
+        share = float(market[f"mmr_{kind}"])
+        return data.mmr * share, f"MMR × {share:g} — {label}{note}"
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
         share = float(market[f"kbb_{kind}"])
         return data.kbb_private_party * share, f"KBB × {share:g} — медиана торгов {label}"
@@ -315,6 +358,7 @@ class BidInput:
     auction_retail: float | None = None  # розничная оценка самого аукциона (Manheim, ADESA)
     mmr: float | None = None             # MMR или оптовая оценка аукциона
     recon: float | None = None           # своя оценка ремонта
+    grade: float | None = None           # CR grade аукциона (0–5), если есть
     current_bid: float | None = None
     history_text: str = ""               # титул, Carfax, CR, повреждения — одной строкой
     defects_text: str = ""               # описание дефектов для оценки ремонта
@@ -372,8 +416,11 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
 
     # Рынок для таких лотов — как для машин с тяжёлым дефектом: другие дилеры ставят с поправкой на него.
     result.market_price, result.market_source = confirmed.market_price, confirmed.market_source
-    heavy_curve = (costs.get("market") or {}).get("kbb_heavy_curve") or []
-    result.win_chance = win_chance(result.max_bid, data.kbb_private_party, heavy_curve) if data.kbb_private_party else None
+    market = market_config(data.auction, costs)
+    base_kind = _market_base(data, market)
+    base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
+    heavy_curve = market.get(f"{base_kind}_heavy_curve") or []
+    result.win_chance = win_chance(result.max_bid, base_value, heavy_curve) if base_value else None
     bid = result.max_bid
     verdict = f"ОСМОТР: до {_usd(bid)}, если дефект не подтвердится"
     verdict += f" (подтвердится — до {_usd(confirmed.max_bid)})" if confirmed.max_bid else " (подтвердится — не брать)"
@@ -410,6 +457,11 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         result.sale_source = f"KBB PP × {factor:g}" + (f" {offset:+,.0f}" if offset else "")
         if data.kbb_source:
             result.sale_source += f"; KBB — прикидка (на kbb.com не смотрели): {data.kbb_source}"
+            cap = float(costs.get("kbb_estimate_max_to_mmr", 0))
+            if cap and data.mmr and result.sale_price > data.mmr * cap:
+                # Прикидка считает машину «Good», а низкий MMR обычно значит плохое состояние или историю.
+                result.sale_price = data.mmr * cap
+                result.sale_source += f"; ограничено MMR × {cap:g} — прикидка KBB слишком высока для такого опта"
     elif data.auction_retail:
         factor = float(costs.get("auction_retail_factor", 0.9))
         result.sale_price = data.auction_retail * factor
@@ -439,6 +491,10 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         recon, recon_note = data.recon, "своя оценка"
     else:
         recon, found = estimate_recon(f"{data.defects_text} {data.history_text}", costs)
+        extra = grade_recon(data.grade, data.auction, costs)
+        if extra:
+            recon += extra
+            found = found + [f"CR grade {data.grade:g} +{_usd(extra)}"]
         recon_note = "по умолчанию" + (": " + ", ".join(found) if found else "") + " — проверьте CR"
     fixed = {
         "ремонт": recon,
@@ -480,6 +536,10 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
     if bid <= 0:
         result.verdict = "НЕВЫГОДНО: расходы и цель прибыли съедают всю цену продажи"
         return result
+    min_bid = float(costs.get("min_max_bid_usd", 0))
+    if bid < min_bid:
+        result.verdict = f"НЕВЫГОДНО: потолок {_usd(bid)} ниже {_usd(min_bid)} — слишком дешёвая машина"
+        return result
 
     fee = auction_fee(bid, auction, costs)
     lines.append(f"сборы аукциона при потолке {_usd(fee)}")
@@ -496,10 +556,11 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         market *= 1 - photo_discount
         market_source += f"; без фото −{photo_discount:.0%}"
     result.market_price, result.market_source = market, market_source
-    base_kind = "kbb" if data.kbb_private_party and (costs.get("market") or {}).get("kbb_clean") else "mmr"
+    market_cfg = market_config(data.auction, costs)
+    base_kind = _market_base(data, market_cfg)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
     heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
-    points = (costs.get("market") or {}).get(f"{base_kind}_{'heavy' if heavy else 'clean'}_curve") or []
+    points = market_cfg.get(f"{base_kind}_{'heavy' if heavy else 'clean'}_curve") or []
     chance = win_chance(bid, base_value, points) if base_value else None
     result.win_chance = chance
     if market:
@@ -526,6 +587,11 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
 # ---------------------------------------------------------------- строка таблицы
 
 
+def _grade(text: str) -> float | None:
+    match = re.match(r"\s*([0-5](?:\.\d)?)\b", text or "")
+    return float(match.group(1)) if match else None
+
+
 def input_from_row(row: dict[str, str]) -> BidInput:
     """Собирает вход расчёта из строки таблицы «Аналитика лотов»."""
     history = " | ".join(
@@ -542,6 +608,7 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         mmr=parse_money(row.get("mmr_adjusted_usd")) or parse_money(row.get("wholesale_usd")),
         auction_retail=parse_money(row.get("auction_retail_usd")),
         recon=parse_money(row.get("recon_estimate_usd")),
+        grade=_grade(row.get("condition_grade", "")),
         current_bid=parse_money(row.get("current_bid_usd")),
         history_text=history,
         defects_text=" | ".join(squeeze(row.get(k, "")) for k in ("defects", "lot_description") if squeeze(row.get(k, ""))),
@@ -590,6 +657,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
         row["calc_profit_usd"] = f"{result.profit_at_max:.0f}" if result.profit_at_max is not None else ""
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
+        row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
         if result.max_bid and "из списка:" in row.get("needs_review", ""):
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import manheim_csv
+
 SUPPORTED_SUFFIXES = (".html", ".htm", ".xhtml", ".mhtml", ".mht")
 
 
@@ -51,6 +53,8 @@ def collect_inputs(targets: list[str]) -> list[Path]:
         if path.is_dir():
             for candidate in sorted(path.rglob("*")):
                 if candidate.is_file() and candidate.suffix.lower() in SUPPORTED_SUFFIXES:
+                    pages.append(candidate)
+                elif candidate.is_file() and candidate.suffix.lower() == ".csv" and manheim_csv.is_export(candidate):
                     pages.append(candidate)
         elif path.is_file():
             pages.append(path)

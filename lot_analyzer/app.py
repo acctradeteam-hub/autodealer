@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
 from .inspection import render_html
+from . import manheim_csv
 from .pages import read_page
 from .parsers import parse_page
 
@@ -52,7 +53,10 @@ class PageCache:
             if cached and cached[0] == mtime:
                 return [dict(r) for r in cached[1]]
         try:
-            rows = parse_page(read_page(path), source_name=path.name)
+            if path.suffix.lower() == ".csv":
+                rows = manheim_csv.read_export(path)
+            else:
+                rows = parse_page(read_page(path), source_name=path.name)
         except Exception as error:  # битый файл не должен ронять окно
             rows = [{"auction": "?", "source_file": path.name, "needs_review": f"не разобрано: {error}"}]
         with self._lock:
@@ -68,9 +72,12 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
         if not folder.is_dir():
             continue
         for path in folder.iterdir():
-            if path.is_file() and SAVED_BY_BOOKMARKLET.match(path.name) and path.stat().st_mtime >= cutoff:
+            if not path.is_file() or path.stat().st_mtime < cutoff:
+                continue
+            if SAVED_BY_BOOKMARKLET.match(path.name) or manheim_csv.is_export(path):
                 found.append(path)
-    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+    # Новые файлы первыми; CSV-выгрузки — в конце: строка со страницы подробнее (AutoCheck, объявления).
+    return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -p.stat().st_mtime))
 
 
 # ---------------------------------------------------------------- отбор и расчёт

@@ -60,6 +60,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("calc_max_bid_usd", "Потолок ставки (расчёт), $", numeric=True, width=18),
     Column("calc_max_bid_if_defect_usd", "Потолок, если дефект подтвердится, $", numeric=True, width=18),
     Column("market_estimate_usd", "Рынок (обычно платят), $", numeric=True, width=17),
+    Column("calc_win_chance_pct", "Шанс выиграть по потолку, %", numeric=True, width=12),
     Column("sale_estimate_usd", "Цена продажи (расчёт), $", numeric=True, width=17),
     Column("calc_costs_usd", "Расходы сверх ставки, $", numeric=True, width=17),
     Column("calc_profit_usd", "Прибыль при потолке, $", numeric=True, width=17),
