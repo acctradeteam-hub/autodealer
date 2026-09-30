@@ -634,7 +634,8 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
     Если у строки нет ни KBB, ни своей цены продажи — KBB оценивается по похожим
     машинам (lot_analyzer/kbb.py): по вашим KBB из истории и заметок, иначе по торгам.
     """
-    if estimator is None:
+    cfg = costs.get("kbb_estimate") or {}
+    if estimator is None and cfg.get("enabled", True):
         estimator = _estimator(costs)
     if estimator is not None:
         estimator.add_rows(rows)
@@ -661,6 +662,11 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
+        real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
+        if costs.get("require_kbb") and not real_kbb and result.max_bid:
+            # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.
+            rest = [x for x in row["calc_verdict"].split("; ")[1:] if "грубо по MMR" not in x]
+            row["calc_verdict"] = "; ".join([f"НУЖЕН KBB: предварительно до {_usd(result.max_bid)} (цена продажи по MMR)"] + rest)
         if result.max_bid and "из списка:" in row.get("needs_review", ""):
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.
             row["calc_verdict"] += "; предварительно — откройте карточку лота"

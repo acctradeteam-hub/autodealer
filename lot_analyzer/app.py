@@ -33,9 +33,10 @@ from .parsers import parse_page
 
 SEARCH_URLS_PATH = Path("config/search_urls.json")
 LINKS_PATH = Path("data/search_links.json")
+KBB_PATH = Path("data/kbb_values.json")            # KBB PP из приложения, вписанный в окне: {VIN: {"usd": …, "miles": …, "date": …}}
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|auction)_.+\.html?$", re.I)
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
-RANK = {"МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
+RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
 # ---------------------------------------------------------------- файлы из «Загрузок»
@@ -102,6 +103,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
                 only_no_photos: bool = False, max_bid: float | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
+    saved_kbb = load_kbb()
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
         for row in cache.rows(path):
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}"
@@ -110,6 +112,10 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
             if only_no_photos and row.get("no_photos") != "да":
                 continue
             seen.add(key)
+            own = saved_kbb.get(row.get("vin", ""))
+            if own:                          # вписан в окне по этому VIN — главнее всего
+                row["kbb_private_party_usd"] = f"{float(own['usd']):.0f}"
+                row["kbb_entered"] = own.get("date", "")
             if kbb and not (row.get("kbb_private_party_usd") or row.get("retail_estimate_usd")):
                 row["kbb_private_party_usd"] = f"{kbb:.0f}"
                 row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), "KBB — из окна поиска, одинаковый для всех") if x)
@@ -119,6 +125,32 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
         rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid]
     rows.sort(key=lambda r: (RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -expected_gain(r)))
     return rows
+
+
+def load_kbb() -> dict[str, dict]:
+    try:
+        return json.loads(KBB_PATH.read_text(encoding="utf-8")) if KBB_PATH.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_kbb(vin: str, usd: float | None, miles: str = "") -> None:
+    """Запоминает KBB по VIN; пустое значение — стереть."""
+    values = load_kbb()
+    if usd:
+        values[vin] = {"usd": round(usd), "miles": miles, "date": time.strftime("%Y-%m-%d")}
+    else:
+        values.pop(vin, None)
+    KBB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KBB_PATH.write_text(json.dumps(values, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def kbb_link(row: dict[str, str]) -> str:
+    """Страница модели на kbb.com: дальше выбрать комплектацию, пробег, 92620, Good, Private Party."""
+    slug = lambda s: re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    if row.get("make") and row.get("model") and row.get("year"):
+        return f"https://www.kbb.com/{slug(row['make'])}/{slug(row['model'])}/{row['year']}/"
+    return "https://www.kbb.com/whats-my-car-worth/"
 
 
 def expected_gain(row: dict[str, str]) -> float:
@@ -200,7 +232,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 total = len(rows)
                 rows = rows[:SHOW_ROWS]
                 files = [{"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))} for p in pages]
-                payload = {"rows": [{k: r.get(k, "") for k in COLUMNS} for r in rows], "files": files, "total": total,
+                payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_link": kbb_link(r), "kbb_entered": r.get("kbb_entered", "")} for r in rows], "files": files, "total": total,
                            "folders": [str(f) for f in folders]}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/inspection":
@@ -218,6 +250,17 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(b'{"error":"not found"}', status=404)
 
         def do_POST(self) -> None:
+            if urlparse(self.path).path == "/api/kbb":
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                vin = str(data.get("vin", "")).strip().upper()
+                value = str(data.get("usd", "")).replace("$", "").replace(",", "").strip()
+                if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) or (value and not value.replace(".", "", 1).isdigit()):
+                    self._send(b'{"error":"need vin and number"}', status=400)
+                    return
+                save_kbb(vin, float(value) if value else None, str(data.get("miles", "")))
+                self._send(b'{"ok":true}')
+                return
             if urlparse(self.path).path != "/api/links":
                 self._send(b'{"error":"not found"}', status=404)
                 return
@@ -269,6 +312,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 8px;b
 th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-align:right;white-space:nowrap}.wrap{overflow-x:auto}
 .v-ok{background:var(--okbg);color:var(--ok)}.v-bad{background:var(--badbg);color:var(--bad)}.v-mid{background:var(--midbg);color:var(--mid)}
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}details summary{cursor:pointer;color:var(--muted)}
+input.kbb{width:90px;min-width:0;padding:4px 6px;text-align:right}
 </style></head><body><main>
 <h1>Одно окно</h1><div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
 <div class="card"><form id="f" onsubmit="event.preventDefault();refresh();loadLinks()">
@@ -298,13 +342,16 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=await r.json();
 $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
-<td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.kbb_private_party_usd?money(x.kbb_private_party_usd):(x.kbb_estimate_usd?'≈'+money(x.kbb_estimate_usd)+`<div class="muted">${esc(x.kbb_estimate_source)}</div>`:'—')}</td><td class="num">${money(x.market_estimate_usd)}</td>
+<td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
+<div><a class="muted" href="${esc(x.kbb_link)}" target="_blank" rel="noopener" title="Открыть kbb.com: выбрать комплектацию, пробег ${esc(x.odometer_miles)}, ZIP 92620, Good, Private Party">kbb.com ↗</a></div></td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 $('stat').textContent=`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · «МОЖНО»: ${ok} · сверху — больше всего ожидаемой прибыли (прибыль × шанс) · обновлено ${new Date().toLocaleTimeString()}`;
 $('files').innerHTML='Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
+async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
+try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();
 $('links').innerHTML=d.map(x=>`<a class="btn ${x.kind.startsWith('страница')?'sec':''}" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
 '<span class="muted" style="align-self:center">затем на каждой вкладке — закладка «💾 Сохранить для анализа»</span>'}

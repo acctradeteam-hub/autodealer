@@ -58,6 +58,27 @@ class TestOneWindow(unittest.TestCase):
         # «Рынок» считается для всех, кроме отсеянных стоп-факторами (у них расчёт не нужен).
         self.assertTrue(all(r["market_estimate_usd"] for r in rows if not r["calc_verdict"].startswith("ПРОПУСТИТЬ")))
 
+    def test_kbb_entered_in_window_by_vin(self) -> None:
+        costs = load_costs(COSTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            old = app.KBB_PATH
+            app.KBB_PATH = Path(tmp) / "kbb.json"
+            try:
+                rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), costs, "")
+                target = next(r for r in rows if r.get("vin") and not r.get("kbb_private_party_usd") and r["calc_max_bid_usd"])
+                self.assertTrue(target["calc_verdict"].startswith("НУЖЕН KBB"))          # без настоящего KBB — только предварительно
+                app.save_kbb(target["vin"], 14250, target["odometer_miles"])
+                again = next(r for r in app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), costs, "") if r["vin"] == target["vin"])
+                self.assertEqual(again["kbb_private_party_usd"], "14250")
+                self.assertFalse(again["calc_verdict"].startswith("НУЖЕН KBB"))
+                app.save_kbb(target["vin"], None)
+                self.assertEqual(app.load_kbb(), {})
+            finally:
+                app.KBB_PATH = old
+
+    def test_kbb_link(self) -> None:
+        self.assertEqual(app.kbb_link({"make": "Mercedes-Benz", "model": "C-Class", "year": "2016"}), "https://www.kbb.com/mercedes-benz/c-class/2016/")
+
     def test_only_no_photos_filter(self) -> None:
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "", only_no_photos=True)
         self.assertTrue(all(r["no_photos"] == "да" for r in rows))
