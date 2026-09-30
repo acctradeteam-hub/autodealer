@@ -259,7 +259,11 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                         item["kbb"] = (f"KBB {record['year']} {record['make']} {record['model']} {kbb_page.describe(record)}: PP Good ${record['private_party'].get('good', 0):,}"
                                        + ("" if record["miles"] else " — ⚠ пробег не указан на KBB, не подставлено: введите пробег на kbb.com и сохраните снова"))
                     files.append(item)
-                payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", "")} for r in rows], "files": files, "total": total,
+                costs_now = load_costs(costs_path)
+                auto = kbb_site.available(costs_now)
+                payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""),
+                                     "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
+                                    for r in rows], "files": files, "total": total, "kbb_auto": auto,
                            "folders": [str(f) for f in folders]}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/inspection":
@@ -390,7 +394,7 @@ async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=
 $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
 <td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
-<div class="muted">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена">${esc(x.kbb_entered)} ↗</a>`:esc(x.kbb_entered)}</div>${x.vin?`<div><a class="muted" href="#" onclick="fetchKbb(this.closest('td').querySelector('input.kbb'));return false" title="Получить KBB Private Party с kbb.com: пробег лота, ZIP 92620, Good">${x.kbb_private_party_usd?'обновить KBB':'получить KBB'}</a></div>`:''}</td><td class="num">${money(x.market_estimate_usd)}</td>
+<div class="muted">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена">${esc(x.kbb_entered)} ↗</a>`:esc(x.kbb_entered)}</div>${x.vin?`<div>${d.kbb_auto?`<a class="muted" href="#" onclick="fetchKbb(this.closest('td').querySelector('input.kbb'));return false" title="Получить KBB Private Party с kbb.com: пробег лота, ZIP 92620, Good">${x.kbb_private_party_usd?'обновить KBB':'получить KBB'}</a>`:`<a class="muted" href="${esc(x.kbb_open)}" target="_blank" rel="noopener" title="Открыть kbb.com с пробегом ${esc(x.odometer_miles)} и ZIP 92620: выберите комплектацию, Good, затем закладка «💾 Сохранить для анализа»">открыть KBB ↗</a>`}</div>`:''}</td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
@@ -402,7 +406,7 @@ try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/j
 async function fetchKbb(el,quiet,slug){const d=el.dataset;el.placeholder='запрос…';
 let g;try{const r=await fetch('/api/kbb_fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:d.vin,year:d.year,make:d.make,model:d.model,trim:d.trim,miles:d.miles,slug:slug||''})});g=await r.json()}
 catch(e){g={error:'нет связи с программой: '+e}}el.placeholder='KBB PP';
-if(g.error){if(!quiet){if(g.open_url&&confirm('KBB не отдал цену программе ('+g.error+').\n\nОткрыть страницу этой машины на kbb.com в браузере? Пробег '+d.miles+' и ZIP уже подставлены: выберите комплектацию, состояние Good и нажмите закладку «💾 Сохранить для анализа» — KBB появится здесь сам.'))window.open(g.open_url,'_blank');else if(!g.open_url)alert('KBB: '+g.error)}return g}
+if(g.error){if(!quiet){alert('KBB: '+g.error+(g.open_url?'\n\nВместо «получить KBB» теперь ссылка «открыть KBB ↗»: она откроет kbb.com с пробегом '+d.miles+' и ZIP. Выберите комплектацию, Good и нажмите закладку «💾 Сохранить для анализа» — KBB появится здесь сам.':''));await refresh()}return g}
 if(g.candidates){if(quiet)return g;const i=prompt(g.question+'\n'+g.candidates.map((c,n)=>(n+1)+') '+c.split('/').pop()).join('\n')+'\nВведите номер:');
  const c=g.candidates[(parseInt(i)||0)-1];return c?fetchKbb(el,quiet,c):g}
 if(!quiet)await refresh();return g}

@@ -168,6 +168,11 @@ def pick_trim(slugs: list[str], trim: str) -> tuple[str | None, list[str]]:
     return ranked[0], ranked[:15]
 
 
+def available(costs: dict) -> bool:
+    """Можно ли сейчас спрашивать kbb.com программой (включено и сегодня не было блокировки)."""
+    return bool(settings(costs)["enabled"]) and _load().get("_usage", {}).get("blocked") != dt.date.today().isoformat()
+
+
 def browser_url(costs: dict, year: str, make: str, model: str, miles: str) -> str:
     """Страница модели на kbb.com для ВАШЕГО браузера — с пробегом лота и ZIP, в режиме «продажа».
 
