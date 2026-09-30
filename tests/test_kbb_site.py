@@ -71,6 +71,10 @@ class KbbSiteTest(unittest.TestCase):
         with self.assertRaises(kbb_site.KbbSiteError):
             kbb_site.lookup(self.costs, "X", "2017", "Subaru", "Forester", "", "", fetch=self.fake_fetch)
 
+    def test_browser_url_has_mileage_and_zip(self):
+        self.assertEqual(kbb_site.browser_url(self.costs, "2014", "Lexus", "CT", "113,421"),
+                         "https://www.kbb.com/lexus/ct/2014/?intent=trade-in-sell&mileage=113421&zipcode=92620")
+
     def test_daily_limit_stops_requests(self):
         cfg = {**kbb_site.settings(self.costs), "daily_limit": 0, "min_interval_sec": 0}
         with self.assertRaises(kbb_site.KbbSiteError) as ctx:

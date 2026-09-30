@@ -286,7 +286,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                           str(data.get("model", "")), str(data.get("trim", "")), str(data.get("miles", "")),
                                           chosen=str(data.get("slug", "")))
                 except kbb_site.KbbSiteError as error:
-                    self._send(json.dumps({"error": str(error)}, ensure_ascii=False).encode("utf-8"))
+                    # Программе KBB не ответил — открываем страницу машины в браузере человека.
+                    url = kbb_site.browser_url(load_costs(costs_path), str(data.get("year", "")), str(data.get("make", "")),
+                                               str(data.get("model", "")), str(data.get("miles", "")))
+                    self._send(json.dumps({"error": str(error), "open_url": url}, ensure_ascii=False).encode("utf-8"))
                     return
                 if got.get("usd") and re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
                     note = f"{got['trim_slug'].split('/')[-1]}, {int(got['miles']):,} миль"
@@ -399,7 +402,7 @@ try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/j
 async function fetchKbb(el,quiet,slug){const d=el.dataset;el.placeholder='запрос…';
 let g;try{const r=await fetch('/api/kbb_fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:d.vin,year:d.year,make:d.make,model:d.model,trim:d.trim,miles:d.miles,slug:slug||''})});g=await r.json()}
 catch(e){g={error:'нет связи с программой: '+e}}el.placeholder='KBB PP';
-if(g.error){if(!quiet)alert('KBB: '+g.error);return g}
+if(g.error){if(!quiet){if(g.open_url&&confirm('KBB не отдал цену программе ('+g.error+').\n\nОткрыть страницу этой машины на kbb.com в браузере? Пробег '+d.miles+' и ZIP уже подставлены: выберите комплектацию, состояние Good и нажмите закладку «💾 Сохранить для анализа» — KBB появится здесь сам.'))window.open(g.open_url,'_blank');else if(!g.open_url)alert('KBB: '+g.error)}return g}
 if(g.candidates){if(quiet)return g;const i=prompt(g.question+'\n'+g.candidates.map((c,n)=>(n+1)+') '+c.split('/').pop()).join('\n')+'\nВведите номер:');
  const c=g.candidates[(parseInt(i)||0)-1];return c?fetchKbb(el,quiet,c):g}
 if(!quiet)await refresh();return g}

@@ -168,6 +168,20 @@ def pick_trim(slugs: list[str], trim: str) -> tuple[str | None, list[str]]:
     return ranked[0], ranked[:15]
 
 
+def browser_url(costs: dict, year: str, make: str, model: str, miles: str) -> str:
+    """Страница модели на kbb.com для ВАШЕГО браузера — с пробегом лота и ZIP, в режиме «продажа».
+
+    Выбираете комплектацию, нажимаете закладку «Сохранить для анализа» — окно само
+    прочитает Private Party из сохранённой страницы (lot_analyzer/kbb_page.py).
+    """
+    cfg = settings(costs)
+    miles_n = re.sub(r"\D", "", str(miles or ""))
+    query = f"?intent=trade-in-sell&mileage={miles_n}&zipcode={cfg['zip']}" if miles_n else f"?intent=trade-in-sell&zipcode={cfg['zip']}"
+    if year and make and model:
+        return f"{BASE}/{slug(make)}/{model_slugs(model)[0]}/{year}/{query}"
+    return f"{BASE}/whats-my-car-worth/"
+
+
 # ---------------------------------------------------------------- главное
 
 def lookup(costs: dict, vin: str, year: str, make: str, model: str, trim: str, miles: str,
