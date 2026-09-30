@@ -72,6 +72,10 @@ class PageCache:
                     record, rows = kbb_page.parse(html), []
                     if record:
                         record["file"] = path.name
+                    elif 'id="kbb-report"' in html:            # отчёт автопилота KBB: что получилось и что нет
+                        from bs4 import BeautifulSoup
+                        report = BeautifulSoup(html, "lxml").select_one("#kbb-report")
+                        record = {"report": report.get_text("\n", strip=True) if report else ""}
                 else:
                     rows = parse_page(html, source_name=path.name)
         except Exception as error:  # битый файл не должен ронять окно
@@ -139,7 +143,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     saved_kbb = load_kbb()
     kbb_cfg = costs.get("kbb_page") or {}
     condition = kbb_cfg.get("condition", "good")
-    kbb_pages = [r for r in (cache.kbb(p) for p in pages) if r and r["miles"]]   # без пробега — не подставляем
+    kbb_pages = [r for r in (cache.kbb(p) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
         for row in cache.rows(path):
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}"
@@ -272,7 +276,11 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 for p in pages:
                     item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))}
                     record = cache.kbb(p)
-                    if record:
+                    if record and "report" in record:
+                        item["kbb"] = record["report"].replace("\n", " · ")
+                        if "НЕТ " in record["report"]:
+                            item["kbb"] = "⚠ " + item["kbb"]
+                    elif record:
                         pp = record["private_party"].get(kbb_cfg.get("condition", "good"))
                         warn = ("" if record["miles"] else " — ⚠ пробег не указан на KBB, не подставлено: введите пробег на kbb.com и сохраните снова")
                         if not pp:
@@ -395,7 +403,7 @@ async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=
 $('rows').innerHTML=d.rows.map((x,i)=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
 <td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
-<div class="muted">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена">${esc(x.kbb_entered)} ↗</a>`:esc(x.kbb_entered)}</div>${x.vin&&x.odometer_miles?`<div><a class="muted" href="${esc(laUrl([x]))}" onclick="openKbb([shown[${i}]]);return false" title="Откроется kbb.com — нажмите там закладку «💾 Сохранить для анализа», дальше всё само: комплектация, пробег ${esc(x.odometer_miles)}, 92620, Private Party, Good">${x.kbb_private_party_usd?'обновить KBB ↗':'получить KBB ↗'}</a></div>`:''}</td><td class="num">${money(x.market_estimate_usd)}</td>
+<div class="muted">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена">${esc(x.kbb_entered)} ↗</a>`:esc(x.kbb_entered)}</div>${x.vin&&x.odometer_miles?`<div><a class="muted" href="${esc(laUrl([x]))}" onclick="openKbb([shown[${i}]]);return false" title="Откроется kbb.com и сам получит KBB (расширение «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»): комплектация, пробег ${esc(x.odometer_miles)}, 92620, Private Party, Good">${x.kbb_private_party_usd?'обновить KBB ↗':'получить KBB ↗'}</a></div>`:''}</td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
@@ -410,8 +418,8 @@ function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.mo
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
 function kbbTop(){const list=shown.filter(x=>x.vin&&x.odometer_miles&&!x.kbb_private_party_usd).slice(0,15);
 if(!list.length){alert('У машин на экране KBB уже есть');return}
-alert('Откроется kbb.com. Нажмите там закладку «💾 Сохранить для анализа» — она сама получит KBB для '+list.length+' машин (около 5 секунд на машину) и сохранит файлы. Цены появятся здесь сами.\n\nЕсли Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.');
-openKbb(list)}
+openKbb(list);
+$('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
 /* Машины передаются и в адресе (#la=…), и в имени вкладки — на случай, если kbb.com при переадресации потеряет хвост адреса. */
 function openKbb(list){const url=laUrl(list);window.open(url,'la='+url.split('#la=')[1])}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();

@@ -70,6 +70,15 @@ class KbbPageTest(unittest.TestCase):
         self.assertEqual(trade["private_party"], {})                          # вкладка Trade-In — Private Party нет
         self.assertIn("Sell it yourself", trade["note"])
 
+    def test_autopilot_report_shown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "KBB_report_20260930T053842.html"
+            path.write_text('<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: x; url: https://www.kbb.com/lot-analyzer-report -->\n'
+                            '<html><body><pre id="kbb-report">KBB-автопилот: 1 из 2\nOK  2014 Lexus CT → $12,180\nНЕТ 2014 Fakemake: нет комплектаций</pre></body></html>')
+            self.assertIn(path, app.find_pages([Path(tmp)], 24))
+            record = app.PageCache().kbb(path)
+            self.assertIn("НЕТ 2014 Fakemake", record["report"])
+
     def test_far_mileage_does_not_match(self):
         record = kbb_page.parse(kbb_html(60000))
         self.assertFalse(kbb_page.matches(record, {"year": "2017", "make": "Subaru", "model": "Forester", "odometer_miles": "90000"}, 3000))

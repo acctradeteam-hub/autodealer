@@ -38,7 +38,8 @@ class TestBookmarklet(unittest.TestCase):
         # без POST и без чужих адресов.
         self.assertEqual(self.source.count("fetch("), 1)
         self.assertIn("return fetch(url, { credentials: 'include' })", self.source)
-        self.assertIn("var url = '/' + slugOf(car.mk)", self.source)             # адрес — путь на том же сайте
+        self.assertIn("var base = '/' + slugOf(car.mk)", self.source)            # адрес — путь на том же сайте
+        self.assertIn("var path = '/' + slugOf(car.mk)", self.source)
         self.assertNotIn("method:", self.source)
         self.assertNotIn("XMLHttpRequest", self.source)
         self.assertNotIn("sendBeacon", self.source)

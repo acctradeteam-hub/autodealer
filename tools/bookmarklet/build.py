@@ -60,6 +60,17 @@ INSTALL_PAGE = """<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <strong>KBB без кликов: расширение Chrome «Lot Analyzer KBB» (один раз, 1 минута)</strong>
+  <ol>
+    <li>В Chrome откройте адрес <code>chrome://extensions</code>.</li>
+    <li>Справа вверху включите «Режим разработчика» (Developer mode).</li>
+    <li>Нажмите «Загрузить распакованное» (Load unpacked) и выберите папку <code>tools/kbb_extension</code> в папке программы.</li>
+    <li>Готово: в окне программы «получить KBB ↗» или «KBB для лучших 15» — вкладка KBB откроется и всё сделает сама, цены появятся в окне. Закладку на KBB нажимать не нужно.</li>
+  </ol>
+  <p class="muted">Расширение работает только на kbb.com и только на вкладках, открытых из окна программы; ничего никуда не отправляет. После обновления программы: на <code>chrome://extensions</code> у «Lot Analyzer KBB» нажмите ⟳ (или выберите папку новой версии).</p>
+</div>
+
+<div class="card">
   <strong>2. Использование</strong>
   <ol>
     <li>Откройте watch list на CarMax Auctions (или карточку лота на ACV, Manheim, ADESA) и дождитесь, пока всё загрузится.</li>
@@ -84,7 +95,13 @@ def main() -> None:
     (HERE / "bookmarklet.txt").write_text(url + "\n", encoding="utf-8")
     page = INSTALL_PAGE.format(url=html.escape(url, quote=True), url_text=html.escape(url))
     (HERE / "install.html").write_text(page, encoding="utf-8")
-    print(f"bookmarklet.txt: {len(url)} символов\ninstall.html готов")
+    # Расширение Chrome: тот же код, но запускается само на вкладке kbb.com, открытой из окна программы.
+    extension = HERE.parent / "kbb_extension"
+    extension.mkdir(exist_ok=True)
+    (extension / "content.js").write_text(
+        "/* Собрано из tools/bookmarklet/save_auction_page.js (python3 tools/bookmarklet/build.py) — не править вручную. */\n"
+        "window.lotAnalyzerAuto = true;\n" + source, encoding="utf-8")
+    print(f"bookmarklet.txt: {len(url)} символов\ninstall.html готов\nkbb_extension/content.js готов")
 
 
 if __name__ == "__main__":

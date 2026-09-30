@@ -1,3 +1,5 @@
+/* Собрано из tools/bookmarklet/save_auction_page.js (python3 tools/bookmarklet/build.py) — не править вручную. */
+window.lotAnalyzerAuto = true;
 /* Закладка «Сохранить для анализа»: один клик на странице аукциона (watch list,
    карточка лота) — и страница сохраняется в «Загрузки» как .html для lot_analyzer.
    Работает в вашем браузере, под вашим входом на сайт; никуда ничего не отправляет.
