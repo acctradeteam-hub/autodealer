@@ -29,6 +29,12 @@
     var type = (liveInputs[j].type || '').toLowerCase();
     if (type === 'password' || type === 'hidden') { copyInputs[j].removeAttribute('value'); } else { copyInputs[j].setAttribute('value', liveInputs[j].value); }
   }
+  /* Картинки-шкалы с ценой (KBB рисует свою цену в SVG): текст с «$» сохраняем, саму картинку выбрасываем. */
+  var pics = copy.querySelectorAll('svg');
+  for (var s = 0; s < pics.length; s++) {
+    var words = (pics[s].textContent || '').replace(/\s+/g, ' ').trim();
+    if (words.indexOf('$') >= 0 && pics[s].parentNode) { var note = document.createElement('span'); note.className = 'svg-text'; note.textContent = ' ' + words + ' '; pics[s].parentNode.replaceChild(note, pics[s]); }
+  }
   /* Лишнее: скрипты (кроме JSON с данными), стили, значки, фреймы. */
   var junk = copy.querySelectorAll('script, style, link[rel="stylesheet"], link[rel="preload"], svg, iframe, noscript, video, audio');
   for (var k = 0; k < junk.length; k++) {

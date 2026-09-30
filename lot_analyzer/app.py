@@ -251,13 +251,18 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                    only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
                 total = len(rows)
                 rows = rows[:SHOW_ROWS]
+                kbb_cfg = load_costs(costs_path).get("kbb_page") or {}
                 files = []
                 for p in pages:
                     item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))}
                     record = cache.kbb(p)
                     if record:
-                        item["kbb"] = (f"KBB {record['year']} {record['make']} {record['model']} {kbb_page.describe(record)}: PP Good ${record['private_party'].get('good', 0):,}"
-                                       + ("" if record["miles"] else " — ⚠ пробег не указан на KBB, не подставлено: введите пробег на kbb.com и сохраните снова"))
+                        pp = record["private_party"].get(kbb_cfg.get("condition", "good"))
+                        warn = ("" if record["miles"] else " — ⚠ пробег не указан на KBB, не подставлено: введите пробег на kbb.com и сохраните снова")
+                        if not pp:
+                            warn += " — ⚠ нет Private Party (Good) — на KBB нажмите «Sell it yourself», состояние Good, и сохраните снова"
+                        item["kbb"] = (f"KBB {record['year']} {record['make']} {record['model']} {kbb_page.describe(record)}: "
+                                       + (f"PP Good ${pp:,}" if pp else "") + warn)
                     files.append(item)
                 costs_now = load_costs(costs_path)
                 auto = kbb_site.available(costs_now)

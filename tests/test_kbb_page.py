@@ -52,6 +52,21 @@ class KbbPageTest(unittest.TestCase):
             finally:
                 app.KBB_PATH = old
 
+    def test_value_page_text_private_party(self):
+        url = ("https://www.kbb.com/lexus/ct/2014/ct-200h-hatchback-4d/?vehicleid=395230&mileage=113421&intent=trade-in-sell"
+               "&pricetype=private-party&condition=good&zipcode=92620")
+        html = (f"<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: 2026-09-30T03:25:43Z; url: {url} -->\n"
+                "<html><body><h1>This car’s value</h1><p>Your car's value and next steps</p><button>Trade or sell to dealer</button>"
+                "<button>Sell it yourself</button><p>$11,640 - $13,510</p>"
+                '<span class="svg-text"> Private Party Value $12,575 </span>'
+                "<p>Mileage: Edit mileage, currently 113,421 ZIP Code: Edit ZIP code, currently 92620 Condition Good</p></body></html>")
+        record = kbb_page.parse(html)
+        self.assertEqual((record["private_party"], record["miles"], record["zip"], record["trim"]),
+                         ({"good": 12575}, 113421, "92620", "ct-200h-hatchback-4d"))
+        trade = kbb_page.parse(html.replace("pricetype=private-party", "pricetype=trade-in"))
+        self.assertEqual(trade["private_party"], {})                          # вкладка Trade-In — Private Party нет
+        self.assertIn("Sell it yourself", trade["note"])
+
     def test_far_mileage_does_not_match(self):
         record = kbb_page.parse(kbb_html(60000))
         self.assertFalse(kbb_page.matches(record, {"year": "2017", "make": "Subaru", "model": "Forester", "odometer_miles": "90000"}, 3000))

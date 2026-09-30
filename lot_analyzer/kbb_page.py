@@ -29,6 +29,67 @@ def is_kbb(html: str) -> bool:
 
 def parse(html: str) -> dict | None:
     """Значения KBB со страницы: {"year", "make", "model", "trim", "zip", "miles", "private_party": {…}, …}."""
+    record = _parse_next_data(html)
+    return record if record else parse_text(html)
+
+
+def _saved_url(html: str) -> str:
+    match = re.search(r"<!-- saved-by: lot_analyzer bookmarklet;[^>]*?url: (\S+) -->", html[:3000]) or \
+        re.search(r"<!-- saved from url=\(\d+\)(\S+) -->", html[:3000])
+    return match.group(1) if match else ""
+
+
+def parse_text(html: str) -> dict | None:
+    """Итоговая страница оценки KBB («Your car's value»): цена — в видимом тексте и на шкале.
+
+    Адрес страницы (его записывает закладка) говорит, что выбрано: pricetype=private-party
+    («Sell it yourself») или trade-in («Trade or sell to dealer»), пробег, ZIP, состояние.
+    Главную цифру KBB рисует на шкале (SVG) — закладка сохраняет её текст в span.svg-text.
+    """
+    from urllib.parse import parse_qs, urlparse
+    from bs4 import BeautifulSoup
+
+    url = _saved_url(html)
+    parts = urlparse(url)
+    path = [p for p in parts.path.split("/") if p]
+    if "kbb.com" not in parts.netloc or len(path) < 4 or not path[2].isdigit():
+        return None
+    query = {k: v[0] for k, v in parse_qs(parts.query).items()}
+    soup = BeautifulSoup(html, "lxml")
+    text = soup.get_text(" ", strip=True)
+    start = text.find("Your car's value")
+    if start < 0:
+        start = text.find("Your car’s value")
+    if start < 0:
+        return None                                        # не итоговая страница (опции, цвет, выбор предложения)
+    block = text[start:start + 1500]
+    price_range = re.search(r"\$\s?([\d,]+)\s*[-–]\s*\$\s?([\d,]+)", block)
+    gauge = " ".join(el.get_text(" ", strip=True) for el in soup.select(".svg-text"))
+    value = re.search(r"(?:Value|Price)[^$]{0,60}\$\s?([\d,]+)", gauge) or re.search(r"\$\s?([\d,]+)(?!\s*[-–])", gauge)
+    miles = query.get("mileage") or (re.search(r"currently ([\d,]+)", block) or [None, ""])[1]
+    zipcode = query.get("zipcode") or (re.search(r"ZIP Code:?[^0-9]{0,40}(\d{5})", block) or [None, ""])[1]
+    condition = slug(query.get("condition") or (re.search(r"Condition\s+(Excellent|Very Good|Good|Fair)", block) or [None, "good"])[1]).replace("-", "")
+    price_type = (query.get("pricetype") or "").lower()
+    record = {"year": path[2], "make": path[0], "model": path[1], "trim": path[3] if len(path) > 3 else "",
+              "zip": zipcode, "miles": int(re.sub(r"\D", "", miles) or 0), "private_party": {}, "trade_in": {},
+              "auction": {}, "retail": None, "fpp": None, "range": None, "note": ""}
+    if price_range:
+        record["range"] = (int(price_range.group(1).replace(",", "")), int(price_range.group(2).replace(",", "")))
+    amount = int(value.group(1).replace(",", "")) if value else None
+    if amount is None and record["range"]:
+        amount = round(sum(record["range"]) / 2)
+        record["note"] = "середина диапазона KBB — центральной цифры в файле нет"
+    if amount is None:
+        return None
+    if "private" in price_type:
+        record["private_party"][condition] = amount
+    else:
+        record["trade_in"][condition] = amount
+        record["note"] = "открыта вкладка «Trade or sell to dealer» (Trade-In) — нажмите «Sell it yourself» и сохраните снова"
+    return record
+
+
+def _parse_next_data(html: str) -> dict | None:
     match = NEXT_DATA_RE.search(html)
     if not match:
         return None
@@ -91,4 +152,5 @@ def matches(record: dict, row: dict[str, str], max_gap: int) -> bool:
 
 
 def describe(record: dict) -> str:
-    return f"{record['trim']}, {record['miles']:,} миль, ZIP {record['zip']}"
+    text = f"{record['trim']}, {record['miles']:,} миль, ZIP {record['zip']}"
+    return text + (f" ({record['note']})" if record.get("note") else "")
