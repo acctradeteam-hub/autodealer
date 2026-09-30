@@ -77,6 +77,13 @@ class TestOneWindow(unittest.TestCase):
                 app.KBB_PATH = old
 
 
+    def test_saved_copy_of_own_window_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            own = Path(tmp) / "auction_page_2026-09-29_2041.html"
+            own.write_text("<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: x; url: http://127.0.0.1:8765/ -->\n<html></html>")
+            shutil.copy(FIXTURES / "adesa_search_list.html", Path(tmp) / "ADESA_ADESA_2026-09-29_1421.html")
+            self.assertEqual([p.name for p in app.find_pages([Path(tmp)], 24)], ["ADESA_ADESA_2026-09-29_1421.html"])
+
     def test_only_no_photos_filter(self) -> None:
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "", only_no_photos=True)
         self.assertTrue(all(r["no_photos"] == "да" for r in rows))

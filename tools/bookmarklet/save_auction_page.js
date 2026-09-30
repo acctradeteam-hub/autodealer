@@ -16,6 +16,10 @@
     toast.textContent = text;
     if (hide) { var t = toast; toast = null; setTimeout(function () { t.remove(); }, hide); }
   };
+  if (/^(127\.0\.0\.1|localhost)$/.test(host)) {
+    say('Это окно программы — здесь сохранять не нужно. Нажимайте закладку на странице аукциона или KBB.', 6000);
+    return;
+  }
   var save = function (parts) {
   var live = document.documentElement;
   var copy = live.cloneNode(true);

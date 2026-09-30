@@ -83,6 +83,21 @@ class PageCache:
         return [dict(r) for r in rows]
 
 
+OWN_WINDOW_RE = re.compile(r"url: https?://(?:127\.0\.0\.1|localhost)[:/]")
+
+
+def is_own_window(path: Path) -> bool:
+    """Копия самого окна программы (закладку нажали на 127.0.0.1) — не страница аукциона, пропускаем."""
+    if path.suffix.lower() not in (".html", ".htm"):
+        return False
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(600).decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(OWN_WINDOW_RE.search(head))
+
+
 def find_pages(folders: list[Path], hours: float) -> list[Path]:
     """Страницы, сохранённые закладкой (имя «CarMax_…», «ACV_…» и т.п.) за последние `hours` часов."""
     cutoff = time.time() - hours * 3600
@@ -93,7 +108,8 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
         for path in folder.iterdir():
             if not path.is_file() or path.stat().st_mtime < cutoff:
                 continue
-            if SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path):
+            if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)) \
+                    and not is_own_window(path):
                 found.append(path)
     # Новые файлы первыми; CSV-выгрузки — в конце: строка со страницы подробнее (AutoCheck, объявления).
     return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -p.stat().st_mtime))
