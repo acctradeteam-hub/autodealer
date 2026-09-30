@@ -91,6 +91,7 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
     row["model"] = models[0] if models else ""
     trims = d.get("trims") or [desc.get("trim") or d.get("sourceTrim") or ""]
     row["trim"] = trims[0] if trims else ""
+    row["exterior_color"] = str(d.get("exteriorColor") or "")
     if d.get("odometer") is not None:
         miles = float(d["odometer"])
         if (d.get("odometerUnits") or "mi").lower().startswith("k"):

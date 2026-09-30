@@ -32,8 +32,12 @@ def is_kbb(html: str) -> bool:
 
 def parse(html: str) -> dict | None:
     """Значения KBB со страницы: {"year", "make", "model", "trim", "zip", "miles", "private_party": {…}, …}."""
-    record = _parse_next_data(html)
-    return record if record else parse_text(html)
+    record = _parse_next_data(html) or parse_text(html)
+    if record:
+        # Закладка-автопилот записывает VIN лота, для которого запрошен KBB: так цена встаёт точно в свою строку.
+        vin = re.search(r"lot-vin: ([A-HJ-NPR-Z0-9]{17})", html[:3000])
+        record["vin"] = vin.group(1) if vin else ""
+    return record
 
 
 def _saved_url(html: str) -> str:
@@ -142,7 +146,9 @@ def _parse_next_data(html: str) -> dict | None:
 
 
 def matches(record: dict, row: dict[str, str], max_gap: int) -> bool:
-    """Подходит ли страница KBB машине лота: год, марка, модель и пробег рядом."""
+    """Подходит ли страница KBB машине лота: тот же VIN, либо год, марка, модель и пробег рядом."""
+    if record.get("vin"):
+        return record["vin"] == row.get("vin")
     if str(row.get("year", "")) != record["year"] or slug(row.get("make", "")) != record["make"]:
         return False
     lot_model, kbb_model = slug(row.get("model", "")), record["model"]

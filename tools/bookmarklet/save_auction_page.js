@@ -117,6 +117,96 @@
     };
     step();
   };
+  /* KBB-автопилот: окно программы открывает kbb.com с машинами лотов в адресе (#la=…).
+     Для каждой: список комплектаций со страницы модели → похожая на трим лота →
+     страница цены этой комплектации (пробег лота, ZIP 92620, Private Party, Good) → файл в «Загрузки».
+     Всё в вашем браузере, по одному запросу за раз, с паузой между машинами. */
+  var laMatch = /[#&]la=([^&]+)/.exec(location.hash);
+  if (auction === 'KBB' && laMatch) {
+    var cars = [];
+    try { cars = JSON.parse(decodeURIComponent(laMatch[1])); } catch (e) { cars = []; }
+    var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
+    var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
+    var nextData = function (html) {
+      var found = /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+      if (!found) { return null; }
+      try { return JSON.parse(found[1]); } catch (e) { return null; }
+    };
+    var trimsOf = function (data) {
+      var out = [];
+      var seen = {};
+      var walk = function (node, depth) {
+        if (!node || typeof node !== 'object' || depth > 12) { return; }
+        if (node.__typename === 'Trim' && node.name && node.vehicleId && !seen[node.vehicleId]) { seen[node.vehicleId] = 1; out.push({ name: node.name, id: node.vehicleId }); }
+        Object.keys(node).forEach(function (key) { walk(node[key], depth + 1); });
+      };
+      walk(data, 0);
+      return out;
+    };
+    var pickTrim = function (trims, want) {
+      if (trims.length === 1) { return trims[0]; }
+      var wanted = slugOf(want).replace('2-5i', '25i').replace('2-0t', '20t').replace('1-5t', '15t').split('-').filter(function (w) { return w && w !== 'base' && w !== 'w'; });
+      var score = function (trim) {
+        var words = slugOf(trim.name).split('-');
+        var hits = wanted.filter(function (w) { return words.indexOf(w) >= 0; }).length;
+        var extra = words.filter(function (w) { return wanted.indexOf(w) < 0 && !styleWords.test(w); }).length;
+        return hits * 100 - extra;
+      };
+      var ranked = trims.slice().sort(function (a, b) { return score(b) - score(a); });
+      if (!wanted.length || score(ranked[0]) < 100 || score(ranked[0]) === score(ranked[1])) { return null; }
+      return ranked[0];
+    };
+    var pause = function (ms) { return new Promise(function (done) { setTimeout(done, ms); }); };
+    var getText = function (url) { return fetch(url, { credentials: 'include' }).then(function (r) { if (!r.ok) { throw new Error('KBB ответил ' + r.status); } return r.text(); }); };
+    var saveFile = function (html, url, car) {
+      var body = html.replace(/<script[^>]*\bsrc=[^>]*>\s*<\/script>/gi, '').replace(/<link[^>]*>/gi, '');
+      var head = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: ' + new Date().toISOString() + '; lot-vin: ' + car.v + '; url: https://www.kbb.com' + url + ' -->\n';
+      var blob = new Blob([head + body], { type: 'text/html;charset=utf-8' });
+      var link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'KBB_' + [car.y, slugOf(car.mk), slugOf(car.md), car.v].join('_') + '.html';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 3000);
+    };
+    var one = async function (car) {
+      var query = '?intent=trade-in-sell&mileage=' + car.mi + '&zipcode=92620';
+      var models = [slugOf(car.md), slugOf(car.md).replace(/-/g, ''), slugOf(car.md).split('-')[0]].filter(function (m, i, all) { return m && all.indexOf(m) === i; });
+      var trims = [];
+      var modelSlug = '';
+      for (var n = 0; n < models.length && !trims.length; n++) {
+        var path = '/' + slugOf(car.mk) + '/' + models[n] + '/' + car.y + '/';
+        var html = location.pathname === path ? document.documentElement.outerHTML : await getText(path + query).catch(function () { return ''; });
+        trims = trimsOf(nextData(html));
+        modelSlug = models[n];
+      }
+      if (!trims.length) { throw new Error('на KBB не нашлось комплектаций'); }
+      var trim = pickTrim(trims, car.t);
+      if (!trim) {
+        var answer = prompt(car.y + ' ' + car.mk + ' ' + car.md + ' «' + (car.t || '?') + '», ' + car.mi + ' миль — какая комплектация на KBB?\n' + trims.map(function (t, i) { return (i + 1) + ') ' + t.name; }).join('\n') + '\nНомер:');
+        trim = trims[(parseInt(answer, 10) || 0) - 1];
+        if (!trim) { throw new Error('комплектация не выбрана'); }
+      }
+      var url = '/' + slugOf(car.mk) + '/' + modelSlug + '/' + car.y + '/' + slugOf(trim.name) + '/?vehicleid=' + trim.id + '&intent=trade-in-sell&pricetype=private-party&condition=good&mileage=' + car.mi + '&zipcode=92620';
+      var page = await getText(url);
+      if (!/valuations\(|privateparty|Private Party|Sell it yourself/i.test(page)) { throw new Error('KBB не отдал цены для ' + trim.name); }
+      saveFile(page, url, car);
+      return trim.name;
+    };
+    (async function () {
+      var done = [];
+      var failed = [];
+      for (var c = 0; c < cars.length; c++) {
+        var car = cars[c];
+        var label = car.y + ' ' + car.mk + ' ' + car.md;
+        say('KBB: ' + (c + 1) + ' из ' + cars.length + ' — ' + label + '…');
+        try { done.push(label + ' → ' + await one(car)); } catch (e) { failed.push(label + ': ' + e.message); }
+        if (c < cars.length - 1) { await pause(2500 + Math.random() * 2000); }
+      }
+      say('KBB готово: ' + done.length + ' из ' + cars.length + '. Вернитесь в окно программы — цены уже там.' + (failed.length ? ' Не получилось: ' + failed.join('; ') : ''), 15000);
+    })();
+    return;
+  }
   var hasPages = auction === 'Manheim' && document.querySelector('.pagination__control--next') && document.querySelector('.stockwave-vehicle-info');
   if (hasPages && confirm('Manheim: собрать ВСЕ страницы результатов в один файл?\nОК — все страницы (около 3 секунд на страницу), Отмена — только эту.')) {
     var back = document.querySelector('.pagination__control--page-1');

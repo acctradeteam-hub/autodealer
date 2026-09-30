@@ -26,6 +26,7 @@ COLUMNS: tuple[Column, ...] = (
     Column("make", "Марка", width=14),
     Column("model", "Модель", width=18),
     Column("trim", "Комплектация", width=16),
+    Column("exterior_color", "Цвет", width=10),
     Column("odometer_miles", "Пробег, мили", numeric=True, width=13),
     Column("odometer_brand", "Достоверность пробега", width=20),
     Column("title_type", "Тип титула", width=20),

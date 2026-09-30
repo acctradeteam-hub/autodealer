@@ -34,8 +34,14 @@ class TestBookmarklet(unittest.TestCase):
     def test_privacy_rules_in_source(self) -> None:
         self.assertIn("'password'", self.source)       # пароли не сохраняются
         self.assertIn("script, style", self.source)     # скрипты выбрасываются
-        self.assertNotIn("fetch(", self.source)         # никуда ничего не отправляет
+        # Никуда ничего не отправляет: единственный запрос — чтение страниц того же kbb.com (автопилот KBB),
+        # без POST и без чужих адресов.
+        self.assertEqual(self.source.count("fetch("), 1)
+        self.assertIn("return fetch(url, { credentials: 'include' })", self.source)
+        self.assertIn("var url = '/' + slugOf(car.mk)", self.source)             # адрес — путь на том же сайте
+        self.assertNotIn("method:", self.source)
         self.assertNotIn("XMLHttpRequest", self.source)
+        self.assertNotIn("sendBeacon", self.source)
 
 
 if __name__ == "__main__":
