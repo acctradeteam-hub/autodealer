@@ -27,14 +27,15 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
 from .inspection import render_html
-from . import manheim_csv
+from . import kbb_page, manheim_csv
 from .pages import read_page
 from .parsers import parse_page
 
 SEARCH_URLS_PATH = Path("config/search_urls.json")
 LINKS_PATH = Path("data/search_links.json")
 KBB_PATH = Path("data/kbb_values.json")            # KBB PP из приложения, вписанный в окне: {VIN: {"usd": …, "miles": …, "date": …}}
-SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|auction)_.+\.html?$", re.I)
+SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$", re.I)
+SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
 RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
@@ -46,7 +47,14 @@ class PageCache:
 
     def __init__(self) -> None:
         self._cache: dict[Path, tuple[float, list[dict[str, str]]]] = {}
+        self._kbb: dict[Path, dict | None] = {}
         self._lock = threading.Lock()
+
+    def kbb(self, path: Path) -> dict | None:
+        """Значения KBB, если файл — сохранённая страница kbb.com (иначе None)."""
+        self.rows(path)
+        with self._lock:
+            return self._kbb.get(path)
 
     def rows(self, path: Path) -> list[dict[str, str]]:
         mtime = path.stat().st_mtime
@@ -55,14 +63,23 @@ class PageCache:
             if cached and cached[0] == mtime:
                 return [dict(r) for r in cached[1]]
         try:
+            record = None
             if path.suffix.lower() == ".csv":
                 rows = manheim_csv.read_export(path)
             else:
-                rows = parse_page(read_page(path), source_name=path.name)
+                html = read_page(path)
+                if kbb_page.is_kbb(html):
+                    record, rows = kbb_page.parse(html), []
+                    if record:
+                        record["file"] = path.name
+                else:
+                    rows = parse_page(html, source_name=path.name)
         except Exception as error:  # битый файл не должен ронять окно
+            record = None
             rows = [{"auction": "?", "source_file": path.name, "needs_review": f"не разобрано: {error}"}]
         with self._lock:
             self._cache[path] = (mtime, rows)
+            self._kbb[path] = record
         return [dict(r) for r in rows]
 
 
@@ -76,7 +93,7 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
         for path in folder.iterdir():
             if not path.is_file() or path.stat().st_mtime < cutoff:
                 continue
-            if SAVED_BY_BOOKMARKLET.match(path.name) or manheim_csv.is_export(path):
+            if SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path):
                 found.append(path)
     # Новые файлы первыми; CSV-выгрузки — в конце: строка со страницы подробнее (AutoCheck, объявления).
     return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -p.stat().st_mtime))
@@ -104,6 +121,9 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     saved_kbb = load_kbb()
+    kbb_cfg = costs.get("kbb_page") or {}
+    condition = kbb_cfg.get("condition", "good")
+    kbb_pages = [r for r in (cache.kbb(p) for p in pages) if r and r["miles"]]   # без пробега — не подставляем
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
         for row in cache.rows(path):
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}"
@@ -115,7 +135,14 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
             own = saved_kbb.get(row.get("vin", ""))
             if own:                          # вписан в окне по этому VIN — главнее всего
                 row["kbb_private_party_usd"] = f"{float(own['usd']):.0f}"
-                row["kbb_entered"] = own.get("date", "")
+                row["kbb_entered"] = "вручную " + own.get("date", "")
+            elif not row.get("kbb_private_party_usd"):
+                page = next((r for r in kbb_pages if kbb_page.matches(r, row, int(kbb_cfg.get("max_miles_gap", 3000)))), None)
+                if page and page["private_party"].get(condition):
+                    row["kbb_private_party_usd"] = str(page["private_party"][condition])
+                    row["kbb_entered"] = f"страница KBB: {kbb_page.describe(page)}"
+                    if page["zip"] != str(kbb_cfg.get("zip", "92620")):
+                        row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), f"KBB для ZIP {page['zip']}, не {kbb_cfg.get('zip', '92620')}") if x)
             if kbb and not (row.get("kbb_private_party_usd") or row.get("retail_estimate_usd")):
                 row["kbb_private_party_usd"] = f"{kbb:.0f}"
                 row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), "KBB — из окна поиска, одинаковый для всех") if x)
@@ -231,7 +258,14 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                    only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
                 total = len(rows)
                 rows = rows[:SHOW_ROWS]
-                files = [{"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))} for p in pages]
+                files = []
+                for p in pages:
+                    item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))}
+                    record = cache.kbb(p)
+                    if record:
+                        item["kbb"] = (f"KBB {record['year']} {record['make']} {record['model']} {kbb_page.describe(record)}: PP Good ${record['private_party'].get('good', 0):,}"
+                                       + ("" if record["miles"] else " — ⚠ пробег не указан на KBB, не подставлено: введите пробег на kbb.com и сохраните снова"))
+                    files.append(item)
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_link": kbb_link(r), "kbb_entered": r.get("kbb_entered", "")} for r in rows], "files": files, "total": total,
                            "folders": [str(f) for f in folders]}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
@@ -343,13 +377,13 @@ async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=
 $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">${esc(x.location)}</div></td><td>${x.lot_url?`<a href="${esc(x.lot_url)}" target="_blank" rel="noopener">${esc(x.lot_number||'лот')}</a>`:esc(x.lot_number)}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}<div class="muted">${esc(x.vin)}</div></td><td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
 <td class="num">${money(x.current_bid_usd)}</td><td class="num">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
-<div><a class="muted" href="${esc(x.kbb_link)}" target="_blank" rel="noopener" title="Открыть kbb.com: выбрать комплектацию, пробег ${esc(x.odometer_miles)}, ZIP 92620, Good, Private Party">kbb.com ↗</a></div></td><td class="num">${money(x.market_estimate_usd)}</td>
+<div class="muted">${esc(x.kbb_entered)}</div><div><a class="muted" href="${esc(x.kbb_link)}" target="_blank" rel="noopener" title="Открыть kbb.com: выбрать комплектацию, пробег ${esc(x.odometer_miles)}, ZIP 92620, Good, Private Party">kbb.com ↗</a></div></td><td class="num">${money(x.market_estimate_usd)}</td>
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 $('stat').textContent=`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · «МОЖНО»: ${ok} · сверху — больше всего ожидаемой прибыли (прибыль × шанс) · обновлено ${new Date().toLocaleTimeString()}`;
-$('files').innerHTML='Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
+$('files').innerHTML='Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();

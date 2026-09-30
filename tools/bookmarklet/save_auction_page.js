@@ -5,7 +5,7 @@
    build.py склеивает код в одну строку. */
 (function () {
   var host = location.hostname.toLowerCase();
-  var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : 'auction';
+  var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
   var say = function (text, hide) {
     if (!toast) {
