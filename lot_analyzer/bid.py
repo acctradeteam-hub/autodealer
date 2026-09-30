@@ -576,6 +576,8 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
             verdict += f"; потолок выше опта/MMR {_usd(data.mmr)} — проверьте цену продажи"
         elif bid < data.mmr * float(costs.get("mmr_warn_low", 0.7)):
             verdict += f"; потолок сильно ниже опта/MMR {_usd(data.mmr)} — шанс выиграть мал"
+    if result.sale_source.startswith("опт/MMR"):
+        verdict += "; цена продажи грубо по MMR — впишите KBB"
     if data.no_photos:
         verdict += "; БЕЗ ФОТО — осмотрите сами: другие дилеры по таким почти не торгуются"
     if flags.notes:

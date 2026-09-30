@@ -34,6 +34,7 @@ from .parsers import parse_page
 SEARCH_URLS_PATH = Path("config/search_urls.json")
 LINKS_PATH = Path("data/search_links.json")
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|auction)_.+\.html?$", re.I)
+SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
 RANK = {"МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
@@ -98,7 +99,7 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
 
 def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
                 year_to: int | None = None, max_miles: int | None = None, kbb: float | None = None,
-                only_no_photos: bool = False) -> list[dict[str, str]]:
+                only_no_photos: bool = False, max_bid: float | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
@@ -114,8 +115,19 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
                 row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), "KBB — из окна поиска, одинаковый для всех") if x)
             rows.append(row)
     apply_to_rows(rows, costs)
-    rows.sort(key=lambda r: (RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -float(r.get("calc_max_bid_usd") or 0)))
+    if max_bid:                              # дороже своего бюджета — не показываем
+        rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid]
+    rows.sort(key=lambda r: (RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -expected_gain(r)))
     return rows
+
+
+def expected_gain(row: dict[str, str]) -> float:
+    """Чего ждать от лота: прибыль при потолке × шанс выиграть (без шанса — осторожно, 30%)."""
+    profit = float(row.get("calc_profit_usd") or 0)
+    chance = float(row["calc_win_chance_pct"]) / 100 if row.get("calc_win_chance_pct") else 0.3
+    if "грубо по MMR" in row.get("calc_verdict", ""):
+        chance *= 0.5                        # цена продажи — прикидка, доверия меньше
+    return profit * chance
 
 
 # ---------------------------------------------------------------- ссылки поиска
@@ -158,7 +170,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 # ---------------------------------------------------------------- веб-сервер
 
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "odometer_miles", "current_bid_usd",
-           "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_verdict",
+           "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_date", "lot_url", "vin", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
 
 
@@ -184,17 +196,22 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
-                                   only_no_photos=q.get("nophoto") == "1")
+                                   only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
+                total = len(rows)
+                rows = rows[:SHOW_ROWS]
                 files = [{"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))} for p in pages]
-                payload = {"rows": [{k: r.get(k, "") for k in COLUMNS} for r in rows], "files": files,
+                payload = {"rows": [{k: r.get(k, "") for k in COLUMNS} for r in rows], "files": files, "total": total,
                            "folders": [str(f) for f in folders]}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/inspection":
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
-                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None)
+                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None, max_bid=num("maxbid"))
                 title = "На осмотр" + (f" — {q['q']}" if q.get("q") else " — все машины из файлов")
                 self._send(render_html(rows, title).encode("utf-8"), "text/html; charset=utf-8")
+            elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
+                pages = find_pages(folders, float(q.get("hours") or 24))
+                self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages]).encode("utf-8"))
             elif url.path == "/api/links":
                 self._send(json.dumps(search_links(q.get("q", ""), num("y1"), num("y2")), ensure_ascii=False).encode("utf-8"))
             else:
@@ -259,6 +276,7 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 <label>Год от<input id="y1" inputmode="numeric" placeholder="2013"></label><label>до<input id="y2" inputmode="numeric" placeholder="2016"></label>
 <label>Пробег до, миль<input id="miles" inputmode="numeric" placeholder="150000"></label>
 <label>KBB PP 92620 Good, $ (если у лота нет)<input id="kbb" inputmode="numeric" placeholder="10000"></label>
+<label>Потолок до, $<input id="maxbid" inputmode="numeric" value="15000" title="Машины с потолком выше — не показывать. Пусто — без ограничения"></label>
 <label>Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>
@@ -274,7 +292,7 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 <div class="card muted" id="files"></div>
 </main><script>
 const $=id=>document.getElementById(id);const money=v=>v?('$'+Number(v).toLocaleString('en-US')):'—';
-const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,nophoto:$('nophoto').checked?'1':''});
+const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 function cls(v){return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=await r.json();
@@ -284,14 +302,16 @@ $('rows').innerHTML=d.rows.map(x=>`<tr><td>${esc(x.auction)}<div class="muted">$
 <td class="num"><b>${money(x.calc_max_bid_usd)}</b></td><td class="num">${money(x.calc_profit_usd)}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="11" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
-const n=d.rows.length,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
-$('stat').textContent=`Машин: ${n} · «МОЖНО»: ${ok} · обновлено ${new Date().toLocaleTimeString()}`;
+const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
+$('stat').textContent=`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · «МОЖНО»: ${ok} · сверху — больше всего ожидаемой прибыли (прибыль × шанс) · обновлено ${new Date().toLocaleTimeString()}`;
 $('files').innerHTML='Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();
 $('links').innerHTML=d.map(x=>`<a class="btn ${x.kind.startsWith('страница')?'sec':''}" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
 '<span class="muted" style="align-self:center">затем на каждой вкладке — закладка «💾 Сохранить для анализа»</span>'}
 async function saveLink(){await fetch('/api/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:$('q').value,auction:$('la').value,url:$('lu').value})});loadLinks()}
-refresh();loadLinks();setInterval(refresh,4000);
+let seenFiles='';
+async function watchFiles(){try{const r=await fetch('/api/files?hours='+encodeURIComponent($('hours').value));const t=await r.text();if(t!==seenFiles){seenFiles=t;refresh()}}catch(e){}}
+loadLinks();watchFiles();setInterval(watchFiles,4000);
 </script></body></html>"""
 
 
