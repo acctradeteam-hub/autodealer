@@ -121,8 +121,14 @@
      Для каждой: список комплектаций со страницы модели → похожая на трим лота →
      страница цены этой комплектации (пробег лота, ZIP 92620, Private Party, Good) → файл в «Загрузки».
      Всё в вашем браузере, по одному запросу за раз, с паузой между машинами. */
-  var laMatch = /[#&]la=([^&]+)/.exec(location.hash);
+  /* Машины — в адресе (#la=…) или в имени вкладки (window.name), если kbb.com при переадресации потерял хвост адреса. */
+  var laMatch = /[#&]la=([^&]+)/.exec(location.hash) || /^la=(.+)$/.exec(window.name || '');
+  if (auction === 'KBB' && !laMatch && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
+    say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB для лучших 15» — и нажмите закладку на открывшейся вкладке.', 12000);
+    return;
+  }
   if (auction === 'KBB' && laMatch) {
+    window.name = '';
     var cars = [];
     try { cars = JSON.parse(decodeURIComponent(laMatch[1])); } catch (e) { cars = []; }
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
