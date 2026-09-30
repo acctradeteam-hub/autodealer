@@ -76,8 +76,6 @@ class TestOneWindow(unittest.TestCase):
             finally:
                 app.KBB_PATH = old
 
-    def test_kbb_link(self) -> None:
-        self.assertEqual(app.kbb_link({"make": "Mercedes-Benz", "model": "C-Class", "year": "2016"}), "https://www.kbb.com/mercedes-benz/c-class/2016/")
 
     def test_only_no_photos_filter(self) -> None:
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "", only_no_photos=True)

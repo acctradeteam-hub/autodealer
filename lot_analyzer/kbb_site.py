@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import ssl
 import threading
 import time
 import urllib.error
@@ -38,6 +39,15 @@ SKIP_SLUGS = {"cost-to-own", "specs", "consumer-reviews", "colors", "options", "
 
 _lock = threading.Lock()
 _last_request = [0.0]
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Python с python.org на Mac не видит системные сертификаты — берём их из certifi."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 class KbbSiteError(Exception):
@@ -95,7 +105,7 @@ def _http_get(url: str, cfg: dict, cache: dict) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9",
                                                    "Accept": "text/html,application/xhtml+xml"})
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
+        with urllib.request.urlopen(request, timeout=25, context=_ssl_context()) as response:
             body = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
         if error.code == 404:
