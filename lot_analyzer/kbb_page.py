@@ -24,6 +24,9 @@ def slug(text: str) -> str:
 
 
 def is_kbb(html: str) -> bool:
+    """Страница kbb.com: по адресу, записанному при сохранении, или по встроенным данным KBB."""
+    if "kbb.com/" in _saved_url(html):
+        return True
     return "__NEXT_DATA__" in html and ("kbb.com" in html[:5000].lower() or "Kelley Blue Book" in html[:20000])
 
 
@@ -65,7 +68,8 @@ def parse_text(html: str) -> dict | None:
     block = text[start:start + 1500]
     price_range = re.search(r"\$\s?([\d,]+)\s*[-–]\s*\$\s?([\d,]+)", block)
     gauge = " ".join(el.get_text(" ", strip=True) for el in soup.select(".svg-text"))
-    value = re.search(r"(?:Value|Price)[^$]{0,60}\$\s?([\d,]+)", gauge) or re.search(r"\$\s?([\d,]+)(?!\s*[-–])", gauge)
+    # Только подписанная цифра шкалы; на странице есть и другие графики с «$» (обслуживание по годам).
+    value = re.search(r"(?:Private Party|Trade-In|Trade In)[^$]{0,40}(?:Value)?[^$]{0,20}\$\s?([\d,]+)(?!\s*[-–])", gauge)
     miles = query.get("mileage") or (re.search(r"currently ([\d,]+)", block) or [None, ""])[1]
     zipcode = query.get("zipcode") or (re.search(r"ZIP Code:?[^0-9]{0,40}(\d{5})", block) or [None, ""])[1]
     condition = slug(query.get("condition") or (re.search(r"Condition\s+(Excellent|Very Good|Good|Fair)", block) or [None, "good"])[1]).replace("-", "")
@@ -78,7 +82,7 @@ def parse_text(html: str) -> dict | None:
     amount = int(value.group(1).replace(",", "")) if value else None
     if amount is None and record["range"]:
         amount = round(sum(record["range"]) / 2)
-        record["note"] = "середина диапазона KBB — центральной цифры в файле нет"
+        record["note"] = f"середина диапазона KBB ${record['range'][0]:,}–${record['range'][1]:,}"
     if amount is None:
         return None
     if "private" in price_type:

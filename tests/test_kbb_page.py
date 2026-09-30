@@ -60,9 +60,12 @@ class KbbPageTest(unittest.TestCase):
                 "<button>Sell it yourself</button><p>$11,640 - $13,510</p>"
                 '<span class="svg-text"> Private Party Value $12,575 </span>'
                 "<p>Mileage: Edit mileage, currently 113,421 ZIP Code: Edit ZIP code, currently 92620 Condition Good</p></body></html>")
+        self.assertTrue(kbb_page.is_kbb(html))                                # без __NEXT_DATA__ — по адресу страницы
         record = kbb_page.parse(html)
         self.assertEqual((record["private_party"], record["miles"], record["zip"], record["trim"]),
                          ({"good": 12575}, 113421, "92620", "ct-200h-hatchback-4d"))
+        chart = html.replace('<span class="svg-text"> Private Party Value $12,575 </span>', '<span class="svg-text"> $600$800$1000 </span>')
+        self.assertEqual(kbb_page.parse(chart)["private_party"], {"good": 12575})   # чужой график не берём — середина диапазона
         trade = kbb_page.parse(html.replace("pricetype=private-party", "pricetype=trade-in"))
         self.assertEqual(trade["private_party"], {})                          # вкладка Trade-In — Private Party нет
         self.assertIn("Sell it yourself", trade["note"])
