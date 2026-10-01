@@ -74,6 +74,12 @@ def _money(value) -> str:
         return ""
 
 
+def lot_url(vin: str, source: str = "") -> str:
+    """Карточка лота на Manheim (фото, CR, ставка): search.manheim.com/results#/details/VIN/Simulcast|OVE."""
+    source = "OVE" if source.upper() in ("OVE", "TIMED SALE", "TIMED_SALE") else (source or "Simulcast")
+    return f"https://search.manheim.com/results#/details/{vin}/{source}"
+
+
 def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
     """Заполняет строку из JSON Manheim. Возвращает заметки для «Проверить»."""
     d = detail.data
@@ -212,6 +218,14 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
         row["no_photos"] = "да"
     if d.get("mComVdpUrl"):
         row["lot_url"] = d["mComVdpUrl"]
+    elif row["vin"]:
+        row["lot_url"] = lot_url(row["vin"], d.get("source") or str(d.get("id") or "").split(".")[0])
+    main = (d.get("mainImage") or {}).get("largeUrl") or (images[0] if images else "")
+    row["photo_main_url"] = main or ""
+    cr_link = d.get("conditionReportUrl") or ""
+    row["cr_url"] = ("https:" + cr_link) if cr_link.startswith("//") else cr_link
+    if not row["condition_grade"] and d.get("conditionGrade"):
+        row["condition_grade"] = str(d["conditionGrade"])
 
     joined = " ".join(announcements).lower()
     if re.search(r"non[\s-]*runner|does not run|no start", joined) and drivable:

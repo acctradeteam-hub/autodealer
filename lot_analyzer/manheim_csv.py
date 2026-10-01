@@ -21,6 +21,7 @@ import io
 import re
 from pathlib import Path
 
+from .manheim import lot_url
 from .schema import empty_row
 
 REQUIRED = ("Vin", "Year", "Make", "Model", "MMR", "Condition Report Grade")
@@ -94,6 +95,7 @@ def read_export(path: Path) -> list[dict[str, str]]:
         row["model"] = (main.get("Model") or "").strip()
         row["trim"] = (main.get("Trim") or "").strip()
         row["exterior_color"] = (main.get("Exterior Color") or "").strip()
+        row["lot_url"] = lot_url(vin, "OVE" if main.get("Inventory") == TIMED else "Simulcast")
         miles = _money(main.get("Odometer Value", ""))
         if miles and (main.get("Odometer Units") or "mi").lower().startswith("km"):
             miles = f"{float(miles) / 1.609:.0f}"

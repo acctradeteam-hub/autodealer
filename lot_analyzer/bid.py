@@ -371,6 +371,7 @@ class BidResult:
     max_bid: int | None = None
     costs_over_bid: float | None = None  # всё сверх ставки при потолке, включая сборы
     profit_at_max: float | None = None
+    profit_at_market: float | None = None  # прибыль, если купить по обычной цене торгов («рынку»)
     market_price: float | None = None    # сколько обычно платят на торгах (по истории результатов)
     market_source: str = ""
     win_chance: float | None = None      # доля похожих лотов, ушедших не дороже потолка
@@ -416,6 +417,12 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
 
     # Рынок для таких лотов — как для машин с тяжёлым дефектом: другие дилеры ставят с поправкой на него.
     result.market_price, result.market_source = confirmed.market_price, confirmed.market_source
+    if result.market_price and result.profit_at_max is not None:
+        # Прибыль, если купить по этому рынку (машина без дефекта): пересчёт от потолка к цене рынка со сборами.
+        auction = resolve_auction(data.auction, costs)
+        m = result.market_price
+        result.profit_at_market = (result.profit_at_max + result.max_bid + auction_fee(result.max_bid, auction, costs)
+                                   - m - auction_fee(m, auction, costs))
     market = market_config(data.auction, costs)
     base_kind = _market_base(data, market)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -556,6 +563,11 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         market *= 1 - photo_discount
         market_source += f"; без фото −{photo_discount:.0%}"
     result.market_price, result.market_source = market, market_source
+    if market:
+        # Сколько останется, если купить по обычной цене торгов: продажа − история − расходы − (рынок + сборы).
+        market_fee = auction_fee(market, auction, costs)
+        result.profit_at_market = sale - discount - fixed_total - market - market_fee
+        lines.append(f"прибыль при покупке по рынку {_usd(market)}: {_usd(result.profit_at_market)} (сборы {_usd(market_fee)})")
     market_cfg = market_config(data.auction, costs)
     base_kind = _market_base(data, market_cfg)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -659,6 +671,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["calc_max_bid_usd"] = str(result.max_bid) if result.max_bid else ""
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
         row["calc_profit_usd"] = f"{result.profit_at_max:.0f}" if result.profit_at_max is not None else ""
+        row["calc_profit_market_usd"] = f"{result.profit_at_market:.0f}" if result.profit_at_market is not None else ""
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)

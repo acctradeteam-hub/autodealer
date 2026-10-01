@@ -60,6 +60,15 @@ class ManheimMarketTest(unittest.TestCase):
         self.assertEqual(grade_recon(4.5, "Manheim", self.costs), 0)
         self.assertEqual(grade_recon(1.5, "CarMax", self.costs), 0)
 
+    def test_profit_at_market_uses_market_price_not_ceiling(self):
+        result = calculate(BidInput(auction="Manheim", kbb_private_party=12000, mmr=7000), self.costs)
+        sale = 12000 + self.costs["kbb_private_party_offset_usd"]
+        # Прибыль по рынку = прибыль при потолке + (потолок + сборы) − (рынок + сборы рынка): чем дороже рынок, тем меньше.
+        cheaper = calculate(BidInput(auction="Manheim", kbb_private_party=12000, mmr=6000), self.costs)
+        self.assertGreater(cheaper.profit_at_market, result.profit_at_market)
+        self.assertLess(result.profit_at_market, sale - 7000)
+        self.assertNotEqual(round(result.profit_at_market), round(result.profit_at_max))
+
     def test_estimated_kbb_capped_by_mmr(self):
         cap = self.costs["kbb_estimate_max_to_mmr"]
         est = calculate(BidInput(auction="Manheim", kbb_private_party=20000, kbb_source="по похожим", mmr=5000), self.costs)

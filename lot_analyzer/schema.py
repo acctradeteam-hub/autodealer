@@ -65,6 +65,9 @@ COLUMNS: tuple[Column, ...] = (
     Column("sale_estimate_usd", "Цена продажи (расчёт), $", numeric=True, width=17),
     Column("calc_costs_usd", "Расходы сверх ставки, $", numeric=True, width=17),
     Column("calc_profit_usd", "Прибыль при потолке, $", numeric=True, width=17),
+    Column("calc_profit_market_usd", "Прибыль при покупке по рынку, $", numeric=True, width=17),
+    Column("cr_url", "Condition Report (ссылка)", width=30),
+    Column("photo_main_url", "Главное фото", width=30),
     Column("calc_breakdown", "Расчёт по статьям", width=60),
     # --- история ---
     Column("lot_description", "Описание лота", width=50),
