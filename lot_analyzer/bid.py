@@ -372,6 +372,7 @@ class BidResult:
     costs_over_bid: float | None = None  # всё сверх ставки при потолке, включая сборы
     profit_at_max: float | None = None
     profit_at_market: float | None = None  # прибыль, если купить по обычной цене торгов («рынку»)
+    profit_items: list = field(default_factory=list)  # статьи этой прибыли: [[подпись, сумма со знаком], …]
     market_price: float | None = None    # сколько обычно платят на торгах (по истории результатов)
     market_source: str = ""
     win_chance: float | None = None      # доля похожих лотов, ушедших не дороже потолка
@@ -423,6 +424,10 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
         m = result.market_price
         result.profit_at_market = (result.profit_at_max + result.max_bid + auction_fee(result.max_bid, auction, costs)
                                    - m - auction_fee(m, auction, costs))
+        if result.profit_items:                             # последние две статьи — покупка и сборы по этому рынку
+            result.profit_items = result.profit_items[:-2] + [
+                [f"Покупка по рынку ({result.market_source}; лоты с таким объявлением уходят дешевле)", -round(m)],
+                [f"Сборы аукциона {auction or ''} при цене {_usd(m)}".replace("  ", " "), -round(auction_fee(m, auction, costs))]]
     market = market_config(data.auction, costs)
     base_kind = _market_base(data, market)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -568,6 +573,40 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         market_fee = auction_fee(market, auction, costs)
         result.profit_at_market = sale - discount - fixed_total - market - market_fee
         lines.append(f"прибыль при покупке по рынку {_usd(market)}: {_usd(result.profit_at_market)} (сборы {_usd(market_fee)})")
+        # Статьи для окна: каждая сумма с подписью, из чего сложилась прибыль.
+        days = float(costs.get("days_to_sell", 0)) + flags.extra_days
+        labels = {
+            "ремонт": ("Ремонт (своя оценка)" if data.recon is not None else
+                       "Ремонт (базовый резерв " + _usd(float(costs.get("recon_default_usd", 0)))
+                       + (" + " + recon_note.replace("по умолчанию: ", "").replace(" — проверьте CR", "") if recon_note != "по умолчанию — проверьте CR" else "")
+                       + " — сверьте с CR)"),
+            "детейлинг": "Детейлинг (предпродажная подготовка)",
+            "смог": "Смог-тест",
+            "доставка": "Доставка с аукциона",
+            "дилер": "Дилерский сбор (dealer fee)",
+            "реклама": "Реклама / продажа",
+            "содержание": f"Содержание, {days:g} дн. (страховка, стоянка)",
+            "резерв": f"Резерв на непредвиденное ({float(costs.get('reserve_pct_of_sale', 0)):.0%} продажи)",
+            "DMV": "Долги DMV по объявлению",
+        }
+        offset = float(costs.get("kbb_private_party_offset_usd", 0))
+        if result.sale_source.startswith("KBB PP") and data.kbb_private_party:
+            sale_label = f"Продажа: KBB PP {_usd(data.kbb_private_party)}" + (f" − {_usd(-offset)}" if offset < 0 else "") + \
+                         (" (KBB — прикидка)" if data.kbb_source else "")
+        else:
+            sale_label = f"Продажа ({result.sale_source})"
+        items = [[sale_label, round(sale)]]
+        if discount:
+            items.append(["Скидка за историю (" + ", ".join(f"{k} {v:.0%}" for k, v in flags.discounts.items()) + ")", -round(discount)])
+        items += [[labels.get(k, k), -round(v)] for k, v in fixed.items() if v]
+        base_label = (f"MMR {_usd(data.mmr)}" if market_source.startswith("MMR") and data.mmr else
+                      f"KBB {_usd(data.kbb_private_party)}" if data.kbb_private_party else "")
+        share = re.search(r"× ([\d.]+)", market_source)
+        market_label = "Покупка по рынку: " + (f"{base_label} × {share.group(1)}" if base_label and share else market_source) + \
+                       (" (с тяжёлыми дефектами дешевле)" if "тяжёлыми" in market_source and "без" not in market_source else "")
+        items += [[market_label, -round(market)],
+                  [f"Сборы аукциона {auction or ''} при цене {_usd(market)}".replace("  ", " "), -round(market_fee)]]
+        result.profit_items = items
     market_cfg = market_config(data.auction, costs)
     base_kind = _market_base(data, market_cfg)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -672,6 +711,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["calc_costs_usd"] = f"{result.costs_over_bid:.0f}" if result.costs_over_bid is not None else ""
         row["calc_profit_usd"] = f"{result.profit_at_max:.0f}" if result.profit_at_max is not None else ""
         row["calc_profit_market_usd"] = f"{result.profit_at_market:.0f}" if result.profit_at_market is not None else ""
+        row["calc_profit_items"] = json.dumps(result.profit_items, ensure_ascii=False) if result.profit_at_market is not None else ""
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)

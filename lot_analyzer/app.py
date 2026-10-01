@@ -245,7 +245,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "exterior_color", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
-           "sale_estimate_usd", "calc_profit_market_usd", "condition_grade", "cr_url", "photo_main_url",
+           "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "condition_grade", "cr_url", "photo_main_url",
            "sale_date", "lot_url", "vin", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
 
 
@@ -375,7 +375,9 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 .v-ok{background:var(--okbg);color:var(--ok)}.v-bad{background:var(--badbg);color:var(--bad)}.v-mid{background:var(--midbg);color:var(--mid)}
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}details summary{cursor:pointer;color:var(--muted)}
 input.kbb{width:90px;min-width:0;padding:4px 6px;text-align:right}
-img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}.neg{color:var(--bad)}.pos{color:var(--ok)}
+img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
+details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
+details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
 <h1>Одно окно</h1><div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
 <div class="card"><form id="f" onsubmit="event.preventDefault();refresh();loadLinks()">
@@ -385,6 +387,7 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 <label>KBB PP 92620 Good, $ (если у лота нет)<input id="kbb" inputmode="numeric" placeholder="10000"></label>
 <label>Потолок до, $<input id="maxbid" inputmode="numeric" value="15000" title="Машины с потолком выше — не показывать. Пусто — без ограничения"></label>
 <label>Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px"></label>
+<label title="Раскрыть у всех машин, из каких сумм сложилась прибыль по рынку">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>
 <button type="button" onclick="kbbTop()" title="Откроет kbb.com: там одна закладка «💾 Сохранить для анализа» получит KBB Private Party для 15 верхних машин без KBB">KBB для лучших 15</button>
@@ -401,6 +404,10 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 </main><script>
 const $=id=>document.getElementById(id);const money=v=>v?('$'+Number(v).toLocaleString('en-US')):'—';
 const signed=v=>(v===''||v==null)?'—':(Number(v)<0?'−$':'$')+Math.abs(Number(v)).toLocaleString('en-US');
+/* Из чего прибыль по рынку: каждая статья с суммой — продажа, ремонт, детейлинг, сборы, покупка по рынку… */
+function profitItems(x){if(!x.calc_profit_items)return '';let items=[];try{items=JSON.parse(x.calc_profit_items)}catch(e){return ''}
+ const rows=items.map(([label,v])=>`<tr><td>${esc(label)}</td><td class="num ${v<0?'neg':''}">${signed(v)}</td></tr>`).join('');
+ return `<details class="calc"${$('showcalc').checked?' open':''}><summary>из чего</summary><table>${rows}<tr class="total"><td>Прибыль по рынку</td><td class="num">${signed(x.calc_profit_market_usd)}</td></tr></table></details>`}
 /* CR grade Manheim (0–5): 4+ хорошо, 3–4 средне, ниже 3 — много вложений */
 const crCls=g=>{const n=parseFloat(g);return isNaN(n)?'':n>=4?'v-ok':n>=3?'v-mid':'v-bad'};
 const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
@@ -416,7 +423,7 @@ $('rows').innerHTML=d.rows.map((x,i)=>`<tr><td>${x.photo_main_url?`<a href="${es
 <div class="muted">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена">${esc(x.kbb_entered)} ↗</a>`:esc(x.kbb_entered)}</div>${x.vin&&x.odometer_miles?`<div><a class="muted" href="${esc(laUrl([x]))}" onclick="openKbb([shown[${i}]]);return false" title="Откроется kbb.com и сам получит KBB (расширение «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»): комплектация, пробег ${esc(x.odometer_miles)}, 92620, Private Party, Good">${x.kbb_private_party_usd?'обновить KBB ↗':'получить KBB ↗'}</a></div>`:''}</td>
 <td class="num" title="Цена продажи на Facebook: KBB PP − $500 (без KBB — грубо по MMR)">${money(x.sale_estimate_usd)}${x.kbb_private_party_usd?'':'<div class="muted">по MMR</div>'}</td>
 <td class="num" title="Сколько обычно платят на торгах за такую машину">${money(x.market_estimate_usd)}</td>
-<td class="num" title="Прибыль, если купить по рынку: продажа − ремонт, детейлинг, дилер и прочее − (рынок + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b></td>
+<td class="num" title="Прибыль, если купить по рынку: продажа − ремонт, детейлинг, дилер и прочее − (рынок + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="12" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
@@ -441,6 +448,7 @@ $('links').innerHTML=d.map(x=>`<a class="btn ${x.kind.startsWith('страниц
 async function saveLink(){await fetch('/api/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:$('q').value,auction:$('la').value,url:$('lu').value})});loadLinks()}
 let seenFiles='';
 async function watchFiles(){try{const r=await fetch('/api/files?hours='+encodeURIComponent($('hours').value));const t=await r.text();if(t!==seenFiles){seenFiles=t;refresh()}}catch(e){}}
+try{$('showcalc').checked=localStorage.getItem('showcalc')==='1'}catch(e){}
 loadLinks();watchFiles();setInterval(watchFiles,4000);
 </script></body></html>"""
 
