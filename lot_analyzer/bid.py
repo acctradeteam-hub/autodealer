@@ -334,6 +334,11 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
     note = f"; {market['note']}" if market.get("note") else ""
     if _market_base(data, market) == "mmr" and data.mmr and market.get(f"mmr_{kind}"):
         share = float(market[f"mmr_{kind}"])
+        # Доля по цене машины: дешёвые на торгах уходят заметно выше MMR, дорогие — около MMR.
+        for upper, band_share in market.get("mmr_bands", []) if kind == "clean" else []:
+            if data.mmr < float(upper):
+                share = float(band_share)
+                break
         return data.mmr * share, f"MMR × {share:g} — {label}{note}"
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
         share = float(market[f"kbb_{kind}"])
