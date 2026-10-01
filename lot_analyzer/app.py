@@ -26,8 +26,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
+from .normalize import parse_money
 from .inspection import render_html
-from . import kbb_page, kbb_site, manheim_csv
+from . import kbb_page, kbb_site, manheim_csv, results
 from .pages import read_page
 from .parsers import parse_page
 
@@ -64,7 +65,9 @@ class PageCache:
                 return [dict(r) for r in cached[1]]
         try:
             record = None
-            if path.suffix.lower() == ".csv":
+            if results.is_lane_csv(path) or results.is_postsale_pdf(path):
+                rows, record = [], {"results": results.read_file(path)}     # итоги торгов — не лоты
+            elif path.suffix.lower() == ".csv":
                 rows = manheim_csv.read_export(path)
             else:
                 html = read_page(path)
@@ -112,8 +115,8 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
         for path in folder.iterdir():
             if not path.is_file() or path.stat().st_mtime < cutoff:
                 continue
-            if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)) \
-                    and not is_own_window(path):
+            if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)
+                    or results.is_lane_csv(path) or results.is_postsale_pdf(path)) and not is_own_window(path):
                 found.append(path)
     # Новые файлы первыми; CSV-выгрузки — в конце: строка со страницы подробнее (AutoCheck, объявления).
     return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -p.stat().st_mtime))
@@ -133,6 +136,29 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
     if miles is not None and max_miles and miles > max_miles:
         return False
     return True
+
+
+def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCache, costs: dict) -> dict:
+    """Итоги торгов: копит их в data/auction_results.csv, пишет «Итог торгов» в строки лотов
+    и возвращает настройки с «рынком» площадок, у которых набралось достаточно своих продаж."""
+    history = results.load_history()
+    new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])]
+    changed = results.merge(history, new)
+    by_vin, by_ymm = results.index(history)
+    for row in rows:
+        rec = results.find(row, by_vin, by_ymm)
+        if not rec:
+            continue
+        mmr = parse_money(row.get("mmr_adjusted_usd"))
+        if mmr and not rec.get("mmr"):                     # в PDF итогов MMR нет — берём из списка до торгов
+            rec["mmr"] = f"{mmr:.0f}"
+            changed = True
+        row["auction_result"] = results.describe(rec, mmr)
+        row["auction_result_price"] = rec.get("price", "") if rec["outcome"] == "Sold" else ""
+    if changed:
+        results.save_history(history)
+    own = {name: s for name, s in results.stats(history).items() if s["enough"]}
+    return {**costs, "market_by_location": own} if own else costs
 
 
 def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
@@ -168,6 +194,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
                 row["kbb_private_party_usd"] = f"{kbb:.0f}"
                 row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), "KBB — из окна поиска, одинаковый для всех") if x)
             rows.append(row)
+    costs = attach_results(rows, pages, cache, costs)
     apply_to_rows(rows, costs)
     if max_bid:                              # дороже своего бюджета — не показываем
         rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid]
@@ -245,7 +272,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "exterior_color", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
-           "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "condition_grade", "cr_url", "photo_main_url",
+           "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
            "sale_date", "lot_url", "vin", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
 
 
@@ -279,7 +306,12 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 for p in pages:
                     item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))}
                     record = cache.kbb(p)
-                    if record and "report" in record:
+                    if record and "results" in record:
+                        recs = record["results"]
+                        sold = sum(1 for r in recs if r["outcome"] == "Sold")
+                        where = ", ".join(sorted({f"{r['auction']} {r['date']}" for r in recs}))
+                        item["kbb"] = f"Итоги торгов {where}: {len(recs)} машин, продано {sold} — сохранены в историю"
+                    elif record and "report" in record:
                         item["kbb"] = record["report"].replace("\n", " · ")
                         if "НЕТ " in record["report"]:
                             item["kbb"] = "⚠ " + item["kbb"]
@@ -295,7 +327,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
                                     for r in rows], "files": files, "total": total,
-                           "folders": [str(f) for f in folders]}
+                           "folders": [str(f) for f in folders],
+                           "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
+                                             for k, v in results.stats(results.load_history()).items()}}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/inspection":
                 pages = find_pages(folders, float(q.get("hours") or 24))
@@ -376,7 +410,7 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}details summary{cursor:pointer;color:var(--muted)}
 input.kbb{width:90px;min-width:0;padding:4px 6px;text-align:right}
 img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
-details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
+div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
 <h1>Одно окно</h1><div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
@@ -398,22 +432,30 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
 <div class="card"><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
-<th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th>Ставка</th><th>KBB</th><th>Продажа</th><th>Рынок</th><th>Прибыль по рынку</th><th>Потолок</th><th>Вердикт</th><th>Торги</th></tr></thead>
+<th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th>Ставка</th><th>KBB</th><th>Продажа</th><th>Рынок</th><th>Прибыль по рынку</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
 </main><script>
 const $=id=>document.getElementById(id);const money=v=>v?('$'+Number(v).toLocaleString('en-US')):'—';
 const signed=v=>(v===''||v==null)?'—':(Number(v)<0?'−$':'$')+Math.abs(Number(v)).toLocaleString('en-US');
 /* Из чего прибыль по рынку: каждая статья с суммой — продажа, ремонт, детейлинг, сборы, покупка по рынку… */
+function resultsSummary(st){const k=Object.keys(st||{});if(!k.length)return '';
+ return '<div><b>История итогов торгов</b> (data/auction_results.csv): '+k.map(a=>`${esc(a)} — ${st[a].n} продаж с MMR, цена ÷ MMR ${st[a].median}`+(st[a].enough?' (рынок этой площадки считается по ней)':' (мало для своего рынка, нужно от 20)')).join('; ')+'</div>'}
 function profitItems(x){if(!x.calc_profit_items)return '';let items=[];try{items=JSON.parse(x.calc_profit_items)}catch(e){return ''}
  const rows=items.map(([label,v])=>`<tr><td>${esc(label)}</td><td class="num ${v<0?'neg':''}">${signed(v)}</td></tr>`).join('');
  return `<details class="calc"${$('showcalc').checked?' open':''}><summary>из чего</summary><table>${rows}<tr class="total"><td>Прибыль по рынку</td><td class="num">${signed(x.calc_profit_market_usd)}</td></tr></table></details>`}
+/* Итог торгов: за сколько продана и как это соотносится с нашим потолком */
+function resultCell(x){if(!x.auction_result)return '';const p=Number(x.auction_result_price),c=Number(x.calc_max_bid_usd);
+ const vs=p&&c?(c>=p?`<div class="pos">потолок ${money(c)} — выиграли бы</div>`:`<div class="neg">потолок ${money(c)} — ниже на ${money(p-c)}</div>`):'';
+ return `<div class="result"><b>${esc(x.auction_result.split(' · ')[0])}</b><div class="muted">${esc(x.auction_result.split(' · ').slice(1).join(' · '))}</div>${vs}</div>`}
 /* CR grade Manheim (0–5): 4+ хорошо, 3–4 средне, ниже 3 — много вложений */
 const crCls=g=>{const n=parseFloat(g);return isNaN(n)?'':n>=4?'v-ok':n>=3?'v-mid':'v-bad'};
 const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 function cls(v){return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-async function refresh(){try{const r=await fetch('/api/rows?'+params());const d=await r.json();shown=d.rows;
+/* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
+let refreshNo=0;
+async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;shown=d.rows;
 $('rows').innerHTML=d.rows.map((x,i)=>`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
 <div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
@@ -426,10 +468,10 @@ $('rows').innerHTML=d.rows.map((x,i)=>`<tr><td>${x.photo_main_url?`<a href="${es
 <td class="num" title="Прибыль, если купить по рынку: продажа − ремонт, детейлинг, дилер и прочее − (рынок + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
-<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}</td></tr>`).join('')||'<tr><td colspan="12" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
+<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||'<tr><td colspan="12" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 $('stat').textContent=`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · «МОЖНО»: ${ok} · сверху — больше прибыль при покупке по рынку · обновлено ${new Date().toLocaleTimeString()}`;
-$('files').innerHTML='Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
+$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 let shown=[];

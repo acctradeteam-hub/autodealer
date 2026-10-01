@@ -296,11 +296,12 @@ def dmv_fees(text: str) -> float:
     return float(sum(amounts))
 
 
-def market_config(auction: str, costs: dict) -> dict:
+def market_config(auction: str, costs: dict, location: str = "") -> dict:
     """Доли рынка для аукциона: общие costs["market"] + поправки costs["market_by_auction"][аукцион].
 
     На Manheim MMR — это и есть средняя цена его же торгов, поэтому там база — MMR
-    («prefer": "mmr"), а не KBB, как у CarMax.
+    («prefer": "mmr"), а не KBB, как у CarMax. Если у площадки накоплены свои итоги торгов
+    (costs["market_by_location"], считает окно по data/auction_results.csv) — берутся они.
     """
     market = dict(costs.get("market") or {})
     overrides = costs.get("market_by_auction") or {}
@@ -310,6 +311,13 @@ def market_config(auction: str, costs: dict) -> dict:
             continue
         if name == key or name.lower() in (auction or "").lower():
             market.update(extra)
+            break
+    place = (location or "").lower()
+    for name, own in (costs.get("market_by_location") or {}).items():
+        # «CA - Manheim California» не должна совпасть с «Manheim Southern California» — сравниваем концовку.
+        if place and (place.endswith(name.lower()) or place == name.lower()):
+            market.update({"mmr_clean": own["median"], "mmr_bands": own["bands"], "mmr_clean_curve": own["curve"],
+                           "note": f"по итогам торгов {name}: {own['n']} продаж"})
             break
     return market
 
@@ -327,7 +335,7 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
     Доли — в costs["market"], их пересчитывает `python3 -m lot_analyzer.market … --update-config`.
     Машины с тяжёлыми дефектами (коробка, мотор, рама, титул) уходят дешевле — для них своя доля.
     """
-    market = market_config(data.auction, costs)
+    market = market_config(data.auction, costs, data.location)
     heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
     kind = "heavy" if heavy else "clean"
     label = "с тяжёлыми дефектами" if heavy else "без тяжёлых дефектов"
@@ -433,7 +441,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
             result.profit_items = result.profit_items[:-2] + [
                 [f"Покупка по рынку ({result.market_source}; лоты с таким объявлением уходят дешевле)", -round(m)],
                 [f"Сборы аукциона {auction or ''} при цене {_usd(m)}".replace("  ", " "), -round(auction_fee(m, auction, costs))]]
-    market = market_config(data.auction, costs)
+    market = market_config(data.auction, costs, data.location)
     base_kind = _market_base(data, market)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
     heavy_curve = market.get(f"{base_kind}_heavy_curve") or []
@@ -612,7 +620,7 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         items += [[market_label, -round(market)],
                   [f"Сборы аукциона {auction or ''} при цене {_usd(market)}".replace("  ", " "), -round(market_fee)]]
         result.profit_items = items
-    market_cfg = market_config(data.auction, costs)
+    market_cfg = market_config(data.auction, costs, data.location)
     base_kind = _market_base(data, market_cfg)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
     heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
