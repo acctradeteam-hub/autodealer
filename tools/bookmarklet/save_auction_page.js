@@ -155,17 +155,22 @@
       walk(data, 0);
       return out;
     };
+    /* Комплектация KBB под трим лота. Вопросов не задаём (автопилот работает без присмотра):
+       при равенстве — самый частый кузов: седан, SUV, пикап, хэтчбек, универсал, минивэн, купе, кабриолет. */
+    var bodyOrder = ['sedan', 'sport-utility', 'suv', 'crew-cab', 'pickup', 'hatchback', 'wagon', 'minivan', 'van', 'coupe', 'convertible'];
     var pickTrim = function (trims, want) {
       if (trims.length === 1) { return trims[0]; }
       var wanted = slugOf(want).replace('2-5i', '25i').replace('2-0t', '20t').replace('1-5t', '15t').split('-').filter(function (w) { return w && w !== 'base' && w !== 'w'; });
       var score = function (trim) {
-        var words = slugOf(trim.name).split('-');
+        var slug = slugOf(trim.name);
+        var words = slug.split('-');
         var hits = wanted.filter(function (w) { return words.indexOf(w) >= 0; }).length;
         var extra = words.filter(function (w) { return wanted.indexOf(w) < 0 && !styleWords.test(w); }).length;
-        return hits * 100 - extra;
+        var body = bodyOrder.findIndex(function (b) { return slug.indexOf(b) >= 0; });
+        return hits * 1000 - extra * 20 - (body < 0 ? bodyOrder.length : body);
       };
       var ranked = trims.slice().sort(function (a, b) { return score(b) - score(a); });
-      if (!wanted.length || score(ranked[0]) < 100 || score(ranked[0]) === score(ranked[1])) { return null; }
+      if (wanted.length && score(ranked[0]) < 0) { return null; }
       return ranked[0];
     };
     /* Private Party Good из страницы KBB: блок valuations во встроенных данных (с нужным пробегом)
@@ -192,7 +197,12 @@
       return 0;
     };
     var pause = function (ms) { return new Promise(function (done) { setTimeout(done, ms); }); };
-    var getText = function (url) { return fetch(url, { credentials: 'include' }).then(function (r) { if (!r.ok) { throw new Error('KBB ответил ' + r.status); } return r.text(); }); };
+    /* Запрос страницы того же kbb.com; не дольше 25 секунд, чтобы автопилот не зависал. */
+    var getText = function (url) {
+      var stop = new AbortController();
+      var timer = setTimeout(function () { stop.abort(); }, 25000);
+      return fetch(url, { credentials: 'include', signal: stop.signal }).then(function (r) { clearTimeout(timer); if (!r.ok) { throw new Error('KBB ответил ' + r.status); } return r.text(); }, function (e) { clearTimeout(timer); throw new Error(e.name === 'AbortError' ? 'KBB не ответил за 25 секунд' : 'нет связи с KBB'); });
+    };
     var saveFile = function (html, url, car) {
       var body = html.replace(/<script[^>]*\bsrc=[^>]*>\s*<\/script>/gi, '').replace(/<link[^>]*>/gi, '');
       var head = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: ' + new Date().toISOString() + '; lot-vin: ' + car.v + '; url: https://www.kbb.com' + url + ' -->\n';
@@ -217,11 +227,7 @@
       }
       if (!trims.length) { throw new Error('на KBB не нашлось комплектаций'); }
       var trim = pickTrim(trims, car.t);
-      if (!trim) {
-        var answer = prompt(car.y + ' ' + car.mk + ' ' + car.md + ' «' + (car.t || '?') + '», ' + car.mi + ' миль — какая комплектация на KBB?\n' + trims.map(function (t, i) { return (i + 1) + ') ' + t.name; }).join('\n') + '\nНомер:');
-        trim = trims[(parseInt(answer, 10) || 0) - 1];
-        if (!trim) { throw new Error('комплектация не выбрана'); }
-      }
+      if (!trim) { throw new Error('комплектация «' + (car.t || '?') + '» не найдена на KBB (есть: ' + trims.map(function (t) { return t.name; }).join(', ') + ') — впишите KBB вручную'); }
       /* Страница цены: пробуем несколько адресов, сохраняем только ту, где есть Private Party Good для пробега лота. */
       var base = '/' + slugOf(car.mk) + '/' + modelSlug + '/' + car.y + '/' + slugOf(trim.name) + '/';
       var tail = 'mileage=' + car.mi + '&zipcode=92620';

@@ -416,7 +416,7 @@ let shown=[];
 /* Адрес kbb.com для закладки-автопилота: страница модели первой машины + машины лотов в #la=… */
 function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.model,t:x.trim,mi:String(x.odometer_miles).replace(/\D/g,'')}));
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
-function kbbTop(){const list=shown.filter(x=>x.vin&&x.odometer_miles&&!x.kbb_private_party_usd).slice(0,15);
+function kbbTop(){const list=shown.filter(x=>x.vin&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ')).slice(0,15);
 if(!list.length){alert('У машин на экране KBB уже есть');return}
 openKbb(list);
 $('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}

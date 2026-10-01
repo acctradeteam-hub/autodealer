@@ -37,7 +37,8 @@ class TestBookmarklet(unittest.TestCase):
         # Никуда ничего не отправляет: единственный запрос — чтение страниц того же kbb.com (автопилот KBB),
         # без POST и без чужих адресов.
         self.assertEqual(self.source.count("fetch("), 1)
-        self.assertIn("return fetch(url, { credentials: 'include' })", self.source)
+        self.assertIn("return fetch(url, { credentials: 'include', signal: stop.signal })", self.source)
+        self.assertNotIn("prompt(", self.source)                                 # автопилот не ждёт ответов на невидимой вкладке
         self.assertIn("var base = '/' + slugOf(car.mk)", self.source)            # адрес — путь на том же сайте
         self.assertIn("var path = '/' + slugOf(car.mk)", self.source)
         self.assertNotIn("method:", self.source)
