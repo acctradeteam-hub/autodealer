@@ -22,7 +22,7 @@ window.lotAnalyzerAuto = true;
     say('Это окно программы — здесь сохранять не нужно. Нажимайте закладку на странице аукциона или KBB.', 6000);
     return;
   }
-  var save = function (parts) {
+  var save = function (parts, lot) {
   var live = document.documentElement;
   var copy = live.cloneNode(true);
   /* Текущий текст заметок и полей ввода — в разметку: cloneNode его не переносит. */
@@ -62,8 +62,8 @@ window.lotAnalyzerAuto = true;
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   var stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes());
   var kind = (document.title.split('|')[0] || 'page').trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'page';
-  var name = auction + '_' + kind + (parts ? '_all' + parts.length : '') + '_' + stamp + '.html';
-  var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: ' + now.toISOString() + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
+  var name = lot ? lot.name : auction + '_' + kind + (parts ? '_all' + parts.length : '') + '_' + stamp + '.html';
+  var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: ' + now.toISOString() + (lot ? '; lot-vin: ' + lot.vin : '') + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   var link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -125,17 +125,20 @@ window.lotAnalyzerAuto = true;
      Всё в вашем браузере, по одному запросу за раз, с паузой между машинами. */
   /* Машины — в адресе (#la=…) или в имени вкладки (window.name), если kbb.com при переадресации потерял хвост адреса. */
   var laMatch = /[#&]la=([^&]+)/.exec(location.hash) || /^la=(.+)$/.exec(window.name || '');
+  /* Автопилот в расширении переходит по страницам KBB; где остановился — хранится в имени вкладки (la-run=…). */
+  var resume = /^la-run=(.+)$/.exec(window.name || '');
   /* Расширение «Lot Analyzer KBB» запускает этот код само на каждой странице kbb.com — работаем, только если есть машины из окна. */
-  if (window.lotAnalyzerAuto && !(auction === 'KBB' && laMatch)) { return; }
-  if (auction === 'KBB' && !laMatch && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
+  if (window.lotAnalyzerAuto && !(auction === 'KBB' && (laMatch || resume))) { return; }
+  if (auction === 'KBB' && !laMatch && !resume && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
     say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB для лучших 15» — и нажмите закладку на открывшейся вкладке.', 12000);
     return;
   }
-  if (auction === 'KBB' && laMatch) {
+  if (auction === 'KBB' && (laMatch || resume)) {
     window.name = '';
     if (location.hash.indexOf('la=') >= 0) { history.replaceState(null, '', location.pathname + location.search); }
-    var cars = [];
-    try { cars = JSON.parse(decodeURIComponent(laMatch[1])); } catch (e) { cars = []; }
+    var state = null;
+    try { state = resume ? JSON.parse(decodeURIComponent(resume[1])) : { cars: JSON.parse(decodeURIComponent(laMatch[1])), i: 0, done: [], failed: [], pending: null }; } catch (e) { state = { cars: [], i: 0, done: [], failed: [], pending: null }; }
+    var cars = state.cars;
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
     var nextData = function (html) {
@@ -234,17 +237,68 @@ window.lotAnalyzerAuto = true;
         tried.push('нет цены для ' + car.mi + ' миль');
         if (u < urls.length - 1) { await pause(1500); }
       }
-      throw new Error(trim.name + ' — ' + tried.join(', '));
+      /* В скачанной странице цены нет — KBB рисует её в браузере. Расширение откроет страницу цены во вкладке и дождётся её. */
+      if (window.lotAnalyzerAuto) { return { navigate: urls[2], trim: trim.name }; }
+      throw new Error(trim.name + ' — ' + tried.join(', ') + ' (поставьте расширение «Lot Analyzer KBB» — оно дождётся цены на странице)');
     };
+    /* Мы на странице цены после перехода: ждём, пока KBB нарисует цену «Sell it yourself» для пробега лота. */
+    var renderedPrice = async function (car) {
+      var rangeNow = function () { var m = /Sell it yourself\s*(\$[\d,]+\s*[-–]\s*\$[\d,]+)/.exec(document.body.innerText || ''); return m ? m[1] : ''; };
+      var clicked = false;
+      var tradeRange = null;
+      var last = null;
+      var same = 0;
+      for (var t = 0; t < 60; t++) {
+        var tab = document.getElementById('ymmt-pricing-tab-private');
+        if (tab && tab.getAttribute('aria-selected') === 'false') {
+          /* Открыта вкладка Trade-In: запоминаем её цифры и переключаемся на «Sell it yourself». */
+          if (!clicked) { tradeRange = rangeNow(); tab.click(); clicked = true; }
+        } else {
+          var price = privateParty(document.documentElement.outerHTML, car.mi, location.href);
+          var shownRange = rangeNow();
+          /* Берём цену, только когда цифры сменились после переключения и не меняются две проверки подряд. */
+          if (price && !(clicked && shownRange === tradeRange)) {
+            if (shownRange === last) { same += 1; } else { same = 0; last = shownRange; }
+            if (same >= 2) { return price; }
+          }
+        }
+        await pause(500);
+      }
+      return 0;
+    };
+    var labelOf = function (car) { return car.y + ' ' + car.mk + ' ' + car.md; };
     (async function () {
-      var done = [];
-      var failed = [];
-      for (var c = 0; c < cars.length; c++) {
-        var car = cars[c];
-        var label = car.y + ' ' + car.mk + ' ' + car.md;
-        say('KBB: ' + (c + 1) + ' из ' + cars.length + ' — ' + label + '…');
-        try { done.push(label + ' → ' + await one(car)); } catch (e) { failed.push(label + ': ' + e.message); }
-        if (c < cars.length - 1) { await pause(2500 + Math.random() * 2000); }
+      var done = state.done;
+      var failed = state.failed;
+      if (state.pending && cars[state.i]) {
+        /* Вернулись на страницу цены после перехода: ждём цену, сохраняем страницу как есть. */
+        var current = cars[state.i];
+        say('KBB: ' + (state.i + 1) + ' из ' + cars.length + ' — ' + labelOf(current) + ': жду цену на странице…');
+        var shownPrice = await renderedPrice(current);
+        if (shownPrice) {
+          save(null, { vin: current.v, name: 'KBB_' + [current.y, slugOf(current.mk), slugOf(current.md), current.v].join('_') + '.html' });
+          done.push(labelOf(current) + ' → ' + state.pending.trim + ': $' + shownPrice.toLocaleString('en-US'));
+        } else {
+          failed.push(labelOf(current) + ': ' + state.pending.trim + ' — на странице KBB нет Private Party для ' + current.mi + ' миль');
+        }
+        state.pending = null;
+        state.i += 1;
+        await pause(1500);
+      }
+      for (; state.i < cars.length; state.i++) {
+        var car = cars[state.i];
+        say('KBB: ' + (state.i + 1) + ' из ' + cars.length + ' — ' + labelOf(car) + '…');
+        try {
+          var result = await one(car);
+          if (result && result.navigate) {
+            state.pending = { trim: result.trim };
+            window.name = 'la-run=' + encodeURIComponent(JSON.stringify(state));
+            location.href = result.navigate;
+            return;
+          }
+          done.push(labelOf(car) + ' → ' + result);
+        } catch (e) { failed.push(labelOf(car) + ': ' + e.message); }
+        if (state.i < cars.length - 1) { await pause(2500 + Math.random() * 2000); }
       }
       say('KBB готово: ' + done.length + ' из ' + cars.length + '. Вернитесь в окно программы — цены уже там.' + (failed.length ? ' Не получилось: ' + failed.join('; ') : ''), 15000);
       /* Отчёт для окна программы: что получилось и что нет — видно внизу окна, в списке файлов. */
