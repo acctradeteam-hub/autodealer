@@ -1,12 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Lot Analyzer KBB",
-  "version": "1.0",
-  "description": "Получает KBB Private Party для машин, открытых из окна программы lot_analyzer. Работает только на вкладках kbb.com, открытых кнопкой «получить KBB» / «KBB для лучших 15».",
+  "version": "1.1",
+  "description": "KBB Private Party для машин из окна программы lot_analyzer (вкладка kbb.com закрывается сама по окончании) и запись расчёта в Notes карточек CarMax.",
+  "background": {"service_worker": "background.js"},
+  "host_permissions": ["http://127.0.0.1:8765/*"],
   "content_scripts": [
     {
       "matches": ["https://www.kbb.com/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.carmaxauctions.com/*"],
+      "js": ["carmax_notes.js"],
       "run_at": "document_idle"
     }
   ]

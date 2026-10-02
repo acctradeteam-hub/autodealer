@@ -316,6 +316,10 @@ window.lotAnalyzerAuto = true;
       rep.download = 'KBB_report_' + stamp + '.html';
       document.body.appendChild(rep);
       rep.click();
+      /* Готово — вкладка KBB закрывается сама (через 4 секунды, чтобы файлы успели сохраниться). */
+      setTimeout(function () {
+        if (window.lotAnalyzerAuto && window.chrome && chrome.runtime && chrome.runtime.id) { chrome.runtime.sendMessage({ type: 'close' }); } else { window.close(); }
+      }, 4000);
     })();
     return;
   }

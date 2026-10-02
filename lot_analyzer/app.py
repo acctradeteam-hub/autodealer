@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
 from .normalize import parse_money
 from .inspection import render_html
-from . import kbb_page, kbb_site, manheim_csv, results
+from . import kbb_page, kbb_site, manheim_csv, notes, results
 from .pages import read_page
 from .parsers import parse_page
 
@@ -340,6 +340,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages]).encode("utf-8"))
+            elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
+                pages = find_pages(folders, float(q.get("hours") or 168))
+                rows = search_rows(pages, cache, load_costs(costs_path), "")
+                self._send(json.dumps(notes.notes_for(rows), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/links":
                 self._send(json.dumps(search_links(q.get("q", ""), num("y1"), num("y2")), ensure_ascii=False).encode("utf-8"))
             else:

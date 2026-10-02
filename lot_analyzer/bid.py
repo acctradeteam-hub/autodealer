@@ -590,8 +590,9 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         days = float(costs.get("days_to_sell", 0)) + flags.extra_days
         labels = {
             "ремонт": ("Ремонт (своя оценка)" if data.recon is not None else
-                       "Ремонт (базовый резерв " + _usd(float(costs.get("recon_default_usd", 0)))
-                       + (" + " + recon_note.replace("по умолчанию: ", "").replace(" — проверьте CR", "") if recon_note != "по умолчанию — проверьте CR" else "")
+                       "Ремонт (" + " + ".join(x for x in (
+                           ("базовый резерв " + _usd(float(costs.get("recon_default_usd", 0)))) if float(costs.get("recon_default_usd", 0)) else "",
+                           recon_note.replace("по умолчанию: ", "").replace(" — проверьте CR", "") if recon_note != "по умолчанию — проверьте CR" else "") if x)
                        + " — сверьте с CR)"),
             "детейлинг": "Детейлинг (предпродажная подготовка)",
             "смог": "Смог-тест",

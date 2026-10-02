@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, Tag
 
 from .normalize import parse_money, squeeze
+from .notes import strip_own
 
 MONEY_RE = re.compile(r"^\$\s?[\d,]+(\.\d\d)?$")
 DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}\b")
@@ -390,7 +391,7 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
                 announcements.append(text)
         info["announcements"] = " | ".join(dict.fromkeys(announcements))
         note = card.find("textarea")
-        info["notes"] = squeeze(note.get_text(" ", strip=True)) if note else ""
+        info["notes"] = squeeze(strip_own(note.get_text())) if note else ""   # без строк расчёта программы («LA …»)
         status = card.find(string=re.compile(r"^\s*(Ended|Live|Upcoming|Sold)\s*$"))
         info["status"] = squeeze(status) if status else ""
         started = card.find(string=re.compile(r"Started on|Starts on|Starts"))

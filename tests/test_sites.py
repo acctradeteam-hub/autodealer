@@ -206,7 +206,7 @@ class TestCarMaxWatchlist(unittest.TestCase):
 
         row = dict(self.by_lot["A/162"], kbb_private_party_usd="9000")   # «3 owners, 1 accident. MP 5600»
         self.assertEqual(row["my_proxy_usd"], "5600")
-        apply_to_rows([row], COSTS)
+        apply_to_rows([row], {**COSTS, **dict(recon_default_usd=300, detailing_usd=150, smog_usd=60, holding_per_day_usd=5, reserve_pct_of_sale=0.03)})
         self.assertIn("ваш прокси $5,600 ВЫШЕ потолка", row["calc_verdict"])
 
     def test_fb_price_note(self) -> None:

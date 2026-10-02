@@ -48,6 +48,10 @@ def simple_costs() -> dict:
     }
 
 
+# Расходы до временного обнуления (2026-10-02): тесты логики не зависят от текущих чисел в costs.json.
+OLD_COSTS = dict(recon_default_usd=300, detailing_usd=150, smog_usd=60, holding_per_day_usd=5, reserve_pct_of_sale=0.03)
+
+
 class TestHistory(unittest.TestCase):
     def test_clean_carfax_has_no_flags(self) -> None:
         flags = assess_history("No accidents reported. No structural damage reported. 2 owners. Personal vehicle", simple_costs())
@@ -190,7 +194,7 @@ class TestCalculate(unittest.TestCase):
 
     def test_shipped_config_gives_sane_bid_for_typical_car(self) -> None:
         # Типичная машина: продажа $8500 на Facebook Marketplace, чистая история.
-        result = calculate(BidInput(auction="Manheim", sale_price=8500, history_text="clean title, 2 owners"), load_costs(COSTS_PATH))
+        result = calculate(BidInput(auction="Manheim", sale_price=8500, history_text="clean title, 2 owners"), {**load_costs(COSTS_PATH), **OLD_COSTS})
         self.assertIsNotNone(result.max_bid)
         self.assertTrue(3500 <= result.max_bid <= 7000, result.max_bid)   # ступени прибыли: для продажи $8,500 цель $500
 
@@ -229,7 +233,7 @@ class TestTiersAndChance(unittest.TestCase):
         self.assertIsNone(win_chance(7000, None, points))
 
     def test_reg227_adds_holding_days(self) -> None:
-        costs = load_costs(COSTS_PATH)
+        costs = {**load_costs(COSTS_PATH), "holding_per_day_usd": 5}
         plain = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean"), costs)
         r227 = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Possible 227"), costs)
         self.assertLess(r227.max_bid, plain.max_bid)
