@@ -216,3 +216,15 @@ class TestCarMaxWatchlist(unittest.TestCase):
         row = empty_row()
         row_from_carmax_card(row, {"vin": "19XFB2F51EE212231", "title": "2014 Honda Civic LX", "notes": "KBB $11905 FB 9,800"})
         self.assertEqual((row["kbb_private_party_usd"], row["retail_estimate_usd"]), ("11905", "9800"))
+
+
+class CarmaxTilesTest(unittest.TestCase):
+    def test_tile_view_cards_without_vin(self):
+        from lot_analyzer.sites_text import find_carmax_cards
+        html = (Path(__file__).parent / "fixtures" / "carmax_tiles.html").read_text(encoding="utf-8")
+        cards = find_carmax_cards(html)
+        self.assertEqual(len(cards), 3)
+        first = cards[0]
+        self.assertEqual((first["vin"], first["lane_run"], first["location"]), ("", "A/70", "Oxnard, CA"))
+        self.assertEqual((first["title"], first["miles"]), ("2014 Honda Civic LX", "60439"))
+        self.assertEqual(first["announcements"], "Major transmission defect")

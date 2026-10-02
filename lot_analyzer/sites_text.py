@@ -365,6 +365,33 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         bid = card.find(string=re.compile(r"^\s*\$[\d,]+\s*$"))
         info["your_bid"] = squeeze(bid) if bid and card.find(string=re.compile("Your bid")) else ""
         cards.append(info)
+    return cards or _carmax_tiles(soup)
+
+
+def _carmax_tiles(soup) -> list[dict[str, str]]:
+    """Вид «плитка» (поиск CarMax): VIN не показан — берём дорожку, машину, пробег и объявления."""
+    cards: list[dict[str, str]] = []
+    for card in soup.find_all("div", id=re.compile(r"^\d{5,}$")):
+        if card.find_parent(attrs={"role": "presentation"}) is not None or card.find_parent("div", id=re.compile(r"^\d{5,}$")):
+            continue
+        texts = [squeeze(p.get_text(" ", strip=True)) for p in card.find_all("p")]
+        head = next((t for t in texts if re.match(r"[A-Z]+/\d+\s*•", t)), "")
+        title = next((t for t in texts if re.match(r"(19|20)\d\d [A-Z]", t)), "")
+        if not head or not title:
+            continue
+        lane_run, _, location = head.partition("•")
+        info = {"vin": "", "stock": card["id"], "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
+        spec = next((t for t in texts if re.match(r"[\d,]+ mi\b", t)), "")
+        info["miles"] = spec.split(" mi")[0].replace(",", "") if spec else ""
+        info["drive"] = " • ".join(spec.split(" • ")[1:]) if spec else ""
+        after = texts[texts.index(spec) + 1:] if spec else []
+        info["announcements"] = next((t for t in after if not t.startswith("$") and t != "No announcement(s)"), "")
+        info["notes"], info["status"] = "", ""
+        started = card.find(string=re.compile(r"Started on|Starts on|Starts"))
+        info["start"] = squeeze(str(started)).replace("Started on ", "").replace("Starts on ", "") if started else ""
+        bid = next((t for t in after if re.fullmatch(r"\$[\d,]+", t)), "")
+        info["your_bid"] = bid if card.find(string=re.compile("Your bid")) else ""
+        cards.append(info)
     return cards
 
 
@@ -416,4 +443,6 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
         row["no_photos"] = "да"
     if card.get("status") == "Ended":
         notes.append("торги по лоту уже закончились")
+    if not card["vin"]:
+        notes.append("VIN нет: страница сохранена в виде «плитка» — VIN видны в виде «Detailed table»")
     return notes

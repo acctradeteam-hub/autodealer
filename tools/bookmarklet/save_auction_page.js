@@ -8,7 +8,7 @@
   var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
   var say = function (text, hide) {
-    if (!toast) {
+    if (!toast || !toast.isConnected) {
       toast = document.createElement('div');
       toast.setAttribute('style', 'position:fixed;z-index:2147483647;right:16px;bottom:16px;max-width:420px;padding:12px 16px;background:#1f6f43;color:#fff;font:14px/1.4 system-ui,sans-serif;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3)');
       document.body.appendChild(toast);
@@ -320,18 +320,27 @@
   /* CarMax показывает часть машин и кнопку «Show more / Показать следующие машины». Жмём её, пока машин
      прибавляется; если кнопки нет — прокручиваем вниз (подгрузка при прокрутке). Карточки запоминаем по VIN:
      если сайт уберёт верхние при прокрутке, в файл они всё равно попадут. */
-  if (auction === 'CarMax' && document.querySelector('[data-testid="copy-vin-button"]')) {
+  if (auction === 'CarMax' && document.querySelector('[data-click-event="VehicleClickPosition"], [data-testid="copy-vin-button"]')) {
     var cmCards = {};
     var cmOrder = [];
+    /* Карточка CarMax — блок с номером машины в id; ключ — VIN (вид «Detailed table»), иначе этот номер. */
+    var cmList = function () {
+      var out = [];
+      var divs = document.querySelectorAll('div[id]');
+      for (var i = 0; i < divs.length; i++) {
+        var card = divs[i];
+        if (!/^\d{5,}$/.test(card.id) || card.closest('[role="presentation"], [role="dialog"]') || (card.parentNode.closest && card.parentNode.closest('div[id]') && /^\d{5,}$/.test(card.parentNode.closest('div[id]').id))) { continue; }
+        var btn = card.querySelector('[data-testid="copy-vin-button"]');
+        var vin = btn ? (btn.parentNode.textContent || '').replace(/\s+/g, '').toUpperCase() : '';
+        out.push({ key: /^[A-HJ-NPR-Z0-9]{17}$/.test(vin) ? vin : 'id' + card.id, el: card });
+      }
+      return out;
+    };
     var cmGrab = function () {
-      var btns = document.querySelectorAll('[data-testid="copy-vin-button"]');
-      for (var i = 0; i < btns.length; i++) {
-        var vin = (btns[i].parentNode.textContent || '').replace(/\s+/g, '').toUpperCase();
-        var card = btns[i].parentNode;
-        while (card && !(card.tagName === 'DIV' && /^\d{5,}$/.test(card.id || ''))) { card = card.parentNode; }
-        if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin) || !card || card.closest('[role="presentation"]')) { continue; }
-        if (!cmCards[vin]) { cmOrder.push(vin); }
-        cmCards[vin] = card.outerHTML;
+      var list = cmList();
+      for (var i = 0; i < list.length; i++) {
+        if (!cmCards[list[i].key]) { cmOrder.push(list[i].key); }
+        cmCards[list[i].key] = list[i].el.outerHTML;
       }
       return cmOrder.length;
     };
@@ -368,14 +377,22 @@
       box.id = 'lot-analyzer-carmax-all';
       box.setAttribute('style', 'display:none');
       var onPage = {};
-      var btns = document.querySelectorAll('[data-testid="copy-vin-button"]');
-      for (var i = 0; i < btns.length; i++) { onPage[(btns[i].parentNode.textContent || '').replace(/\s+/g, '').toUpperCase()] = 1; }
+      cmList().forEach(function (c) { onPage[c.key] = 1; });
       box.innerHTML = cmOrder.filter(function (v) { return !onPage[v]; }).map(function (v) { return cmCards[v]; }).join('');
       if (box.innerHTML) { document.body.appendChild(box); }
       save(null, null, cmOrder.length);
       if (box.parentNode) { box.parentNode.removeChild(box); }
     };
-    cmStep();
+    /* В виде «плитка» CarMax не показывает VIN — переключаем на «Detailed table» и ждём VIN в карточках. */
+    var detailed = document.querySelector('[data-testid="detailed"]');
+    var hasVins = function () { return cmList().some(function (c) { return c.key.slice(0, 2) !== 'id'; }); };
+    if (detailed && detailed.getAttribute('aria-pressed') !== 'true' && !hasVins()) {
+      say('CarMax: переключаю на вид «Detailed table», чтобы были VIN…');
+      detailed.click();
+      var waitedView = 0;
+      var viewPoll = function () { waitedView += 500; if (hasVins() || waitedView >= 15000) { setTimeout(cmStep, 800); } else { setTimeout(viewPoll, 500); } };
+      setTimeout(viewPoll, 500);
+    } else { cmStep(); }
     return;
   }
   var hasPages = auction === 'Manheim' &&document.querySelector('.pagination__control--next') && document.querySelector('.stockwave-vehicle-info');

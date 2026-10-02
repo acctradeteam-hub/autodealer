@@ -402,7 +402,7 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
     opened_vin = opened["vin"] if opened.get("auction") == "CarMax" else ""
     rows = []
     for card in cards:
-        if card["vin"] == opened_vin:
+        if opened_vin and card["vin"] == opened_vin:
             row = dict(opened)
             card_row = empty_row()
             notes = sites_text.row_from_carmax_card(card_row, card)

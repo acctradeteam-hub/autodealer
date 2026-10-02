@@ -172,7 +172,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     kbb_pages = [r for r in (cache.kbb(p) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
         for row in cache.rows(path):
-            key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}"
+            key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
             if key in seen or not matches(row, query, year_from, year_to, max_miles):
                 continue
             if only_no_photos and row.get("no_photos") != "да":
