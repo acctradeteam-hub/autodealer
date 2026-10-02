@@ -14,7 +14,7 @@ PLAN = dict(DEFAULT_PLAN, **COSTS.get("plan", {}))
 
 class TestPlan(unittest.TestCase):
     def test_economics_sell_at_kbb_minus_500(self) -> None:
-        invested, profit, days = car_economics(10000, 0.70, COSTS, PLAN)
+        invested, profit, days = car_economics(10000, 0.70, {**COSTS, "kbb_private_party_offset_usd": -500}, PLAN)
         self.assertAlmostEqual(invested + profit, 10000 - 500)
         self.assertEqual(days, PLAN["prep_days"] + 10)   # KBB $10,000 — вторая ступень sale_days_by_kbb
 

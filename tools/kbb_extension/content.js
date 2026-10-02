@@ -130,7 +130,7 @@ window.lotAnalyzerAuto = true;
   /* Расширение «Lot Analyzer KBB» запускает этот код само на каждой странице kbb.com — работаем, только если есть машины из окна. */
   if (window.lotAnalyzerAuto && !(auction === 'KBB' && (laMatch || resume))) { return; }
   if (auction === 'KBB' && !laMatch && !resume && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
-    say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB для лучших 15» — и нажмите закладку на открывшейся вкладке.', 12000);
+    say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB: 15 + 5 + 5 лучших» — и нажмите закладку на открывшейся вкладке.', 12000);
     return;
   }
   if (auction === 'KBB' && (laMatch || resume)) {
@@ -139,6 +139,8 @@ window.lotAnalyzerAuto = true;
     var state = null;
     try { state = resume ? JSON.parse(decodeURIComponent(resume[1])) : { cars: JSON.parse(decodeURIComponent(laMatch[1])), i: 0, done: [], failed: [], pending: null }; } catch (e) { state = { cars: [], i: 0, done: [], failed: [], pending: null }; }
     var cars = state.cars;
+    /* Модели, которые на KBB называются иначе, чем на аукционах. */
+    var KBB_MODEL = { 'bolt': 'bolt-ev', 'bolt-euv': 'bolt-euv', 'gti': 'golf-gti', 'golf-gti': 'golf-gti', 'e-golf': 'e-golf', 'leaf-plus': 'leaf', 'ioniq-electric': 'ioniq', 'niro-ev': 'niro-ev', 'kona-electric': 'kona-electric', 'clarity-plug-in-hybrid': 'clarity-plug-in-hybrid', 'prius-prime': 'prius-prime', 'rav4-prime': 'rav4-prime' };
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
     var nextData = function (html) {
@@ -218,16 +220,23 @@ window.lotAnalyzerAuto = true;
     };
     var one = async function (car) {
       var query = '?intent=trade-in-sell&mileage=' + car.mi + '&zipcode=92620';
-      var models = [slugOf(car.md), slugOf(car.md).replace(/-/g, ''), slugOf(car.md).split('-')[0]].filter(function (m, i, all) { return m && all.indexOf(m) === i; });
+      /* Как модель называется на KBB: аукцион пишет «Bolt», KBB — «Bolt EV»; гибриды у KBB часто отдельной моделью
+         («camry-hybrid»). Пробуем варианты по очереди, пока страница не покажет комплектации. */
+      var md = slugOf(car.md);
+      var hybrid = /hybrid/i.test(car.md + ' ' + car.t);
+      var models = [KBB_MODEL[md] || '', hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
+        md + '-ev', md.split('-')[0] + (hybrid ? '-hybrid' : '-ev')].filter(function (m, i, all) { return m && all.indexOf(m) === i; });
       var trims = [];
       var modelSlug = '';
       for (var n = 0; n < models.length && !trims.length; n++) {
         var path = '/' + slugOf(car.mk) + '/' + models[n] + '/' + car.y + '/';
         var html = location.pathname === path ? document.documentElement.outerHTML : await getText(path + query).catch(function () { return ''; });
         trims = trimsOf(nextData(html));
+        /* Гибрид не подменяем бензиновой версией: у модели без гибридных комплектаций ищем дальше. */
+        if (hybrid && trims.length && !trims.some(function (t) { return /hybrid/i.test(t.name); }) && models[n].indexOf('hybrid') < 0) { trims = []; }
         modelSlug = models[n];
       }
-      if (!trims.length) { throw new Error('на KBB не нашлось комплектаций'); }
+      if (!trims.length) { throw new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную'); }
       var trim = pickTrim(trims, car.t);
       if (!trim) { throw new Error('комплектация «' + (car.t || '?') + '» не найдена на KBB (есть: ' + trims.map(function (t) { return t.name; }).join(', ') + ') — впишите KBB вручную'); }
       /* Страница цены: пробуем несколько адресов, сохраняем только ту, где есть Private Party Good для пробега лота. */

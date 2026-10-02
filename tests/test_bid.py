@@ -290,3 +290,17 @@ class TestRows(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestElectric(unittest.TestCase):
+    def test_no_smog_for_ev(self) -> None:
+        from lot_analyzer.bid import input_from_row, is_electric
+        self.assertTrue(is_electric({"make": "Chevrolet", "model": "Bolt", "trim": "LT"}))
+        self.assertTrue(is_electric({"make": "Tesla", "model": "Model 3", "trim": "Standard Range"}))
+        self.assertFalse(is_electric({"make": "Toyota", "model": "Prius Prime", "trim": "LE"}))
+        self.assertFalse(is_electric({"make": "Honda", "model": "Clarity Plug-in Hybrid", "trim": ""}))
+        costs = {**load_costs(COSTS_PATH), "smog_usd": 40}
+        ev = calculate(input_from_row({"auction": "Manheim", "make": "Chevrolet", "model": "Bolt EV", "kbb_private_party_usd": "15000", "mmr_adjusted_usd": "11000"}), costs)
+        gas = calculate(input_from_row({"auction": "Manheim", "make": "Chevrolet", "model": "Malibu", "kbb_private_party_usd": "15000", "mmr_adjusted_usd": "11000"}), costs)
+        self.assertNotIn("Смог-тест", [label for label, _ in ev.profit_items])
+        self.assertIn("Смог-тест", [label for label, _ in gas.profit_items])

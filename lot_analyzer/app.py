@@ -25,10 +25,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from .bid import DEFAULT_COSTS_PATH, apply_to_rows, load_costs
+from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs
 from .normalize import parse_money
 from .inspection import render_html
-from . import kbb_page, kbb_site, manheim_csv, notes, popular, results
+from . import analytics, kbb_page, kbb_site, manheim_csv, notes, popular, results
 from .pages import read_page
 from .parsers import parse_page
 
@@ -38,6 +38,7 @@ KBB_PATH = Path("data/kbb_values.json")            # KBB PP из приложе�
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$", re.I)
 SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
+GROUPS = ("popular", "ev", "other")
 RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
@@ -65,7 +66,7 @@ class PageCache:
                 return [dict(r) for r in cached[1]]
         try:
             record = None
-            if results.is_lane_csv(path) or results.is_postsale_pdf(path):
+            if results.is_results_file(path):
                 rows, record = [], {"results": results.read_file(path)}     # итоги торгов — не лоты
             elif path.suffix.lower() == ".csv":
                 rows = manheim_csv.read_export(path)
@@ -116,7 +117,7 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
             if not path.is_file() or path.stat().st_mtime < cutoff:
                 continue
             if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)
-                    or results.is_lane_csv(path) or results.is_postsale_pdf(path)) and not is_own_window(path):
+                    or results.is_results_file(path)) and not is_own_window(path):
                 found.append(path)
     # Новые файлы первыми; CSV-выгрузки — в конце: строка со страницы подробнее (AutoCheck, объявления).
     return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -p.stat().st_mtime))
@@ -153,11 +154,23 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
         if mmr and not rec.get("mmr"):                     # в PDF итогов MMR нет — берём из списка до торгов
             rec["mmr"] = f"{mmr:.0f}"
             changed = True
+        # Что было известно до торгов — в итог: потом по нему видно, почему машина ушла дешевле или дороже.
+        kbb = parse_money(row.get("kbb_private_party_usd"))
+        if kbb and not rec.get("kbb") and not row.get("kbb_from_window_field"):
+            rec["kbb"] = f"{kbb:.0f}"
+            changed = True
+        remarks = row.get("auction_notes") or row.get("defects") or ""
+        if remarks and not rec.get("remarks"):
+            rec["remarks"] = remarks[:300]
+            changed = True
         row["auction_result"] = results.describe(rec, mmr)
         row["auction_result_price"] = rec.get("price", "") if rec["outcome"] == "Sold" else ""
     if changed:
         results.save_history(history)
     own = {name: s for name, s in results.stats(history).items() if s["enough"]}
+    # CarMax: своя доля «цена ÷ KBB» площадки (Chino, Oxnard …), когда своих продаж достаточно.
+    for place, extra in analytics.market_overrides(analytics.joined_sales(history, analytics.load_kbb_log())).items():
+        own[place] = {**own.get(place, {}), **extra}
     return {**costs, "market_by_location": own} if own else costs
 
 
@@ -195,16 +208,22 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
                         row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), f"KBB для ZIP {page['zip']}, не {kbb_cfg.get('zip', '92620')}") if x)
             if kbb and not (row.get("kbb_private_party_usd") or row.get("retail_estimate_usd")):
                 row["kbb_private_party_usd"] = f"{kbb:.0f}"
+                row["kbb_from_window_field"] = "1"           # не настоящий KBB этой машины — в базу не пишем
                 row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), "KBB — из окна поиска, одинаковый для всех") if x)
             rows.append(row)
+    kbb_log = analytics.load_kbb_log()
+    if analytics.record_kbb(rows, kbb_log):            # каждый настоящий KBB — в свою базу
+        analytics.save_kbb_log(kbb_log)
     costs = attach_results(rows, pages, cache, costs)
-    apply_to_rows(rows, costs)
+    # Машинам без KBB — предварительная цена продажи по вашей базе (KBB ÷ MMR той же модели), а не MMR × 1.3.
+    apply_to_rows(rows, costs, estimator=analytics.OwnKbb(kbb_log))
     if max_bid:                              # дороже своего бюджета — не показываем
         rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid]
-    # Сначала популярные модели (Civic, Camry, RAV4 …), среди них — самые выгодные; потом остальные, тоже по выгоде.
+    # Три части: популярные модели (Civic, Camry, RAV4 …), электромобили, остальные; в каждой — сверху самые выгодные.
     for r in rows:
         r["popular"] = "да" if popular.is_popular(r, costs) else ""
-    rows.sort(key=lambda r: (0 if r["popular"] else 1, RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -expected_gain(r)))
+        r["group"] = "popular" if r["popular"] else "ev" if is_electric(r) else "other"
+    rows.sort(key=lambda r: (GROUPS.index(r["group"]), RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -expected_gain(r)))
     return rows
 
 
@@ -307,8 +326,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                    only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
                 total = len(rows)
                 all_rows = rows
-                # По SHOW_ROWS из каждой части: популярные не вытесняют остальные и наоборот.
-                rows = [r for r in rows if r.get("popular")][:SHOW_ROWS] + [r for r in rows if not r.get("popular")][:SHOW_ROWS]
+                # По SHOW_ROWS из каждой части: одна не вытесняет другие.
+                rows = [r for g in GROUPS for r in [x for x in rows if x.get("group") == g][:SHOW_ROWS]]
                 kbb_cfg = load_costs(costs_path).get("kbb_page") or {}
                 files = []
                 for p in pages:
@@ -332,9 +351,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                        + (f"PP Good ${pp:,}" if pp else "") + warn)
                     files.append(item)
                 costs_now = load_costs(costs_path)
-                payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""),
+                payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
                                     for r in rows], "files": files, "total": total, "popular_total": sum(1 for r in all_rows if r.get("popular")),
+                           "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders],
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
                                              for k, v in results.stats(results.load_history()).items()}}
@@ -348,6 +368,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages]).encode("utf-8"))
+            elif url.path == "/analytics":           # своя база: KBB, итоги торгов, доли по площадкам и моделям
+                pages = find_pages(folders, float(q.get("hours") or 168))
+                search_rows(pages, cache, load_costs(costs_path), "")      # свежие файлы — в базу
+                self._send(analytics.render(results.load_history(), analytics.load_kbb_log()).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 rows = search_rows(pages, cache, load_costs(costs_path), "")
@@ -427,7 +451,7 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
-<h1 id="top">Одно окно</h1><div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a></h1><div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
 <div class="card"><form id="f" onsubmit="event.preventDefault();refresh();loadLinks()">
 <label>Машина<input id="q" placeholder="Honda Civic" autofocus></label>
 <label>Год от<input id="y1" inputmode="numeric" placeholder="2013"></label><label>до<input id="y2" inputmode="numeric" placeholder="2016"></label>
@@ -438,7 +462,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label title="Раскрыть у всех машин, из каких сумм сложилась прибыль при покупке по средней цене">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>
-<button type="button" onclick="kbbTop()" title="Откроет kbb.com: там одна закладка «💾 Сохранить для анализа» получит KBB Private Party для 15 верхних машин без KBB">KBB для лучших 15</button>
+<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB: 15 популярных, 5 электромобилей, 5 остальных">KBB: 15 + 5 + 5 лучших</button>
 <button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
 <details style="margin-top:8px"><summary>Свой сохранённый поиск для этой машины</summary>
@@ -471,9 +495,9 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
 async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;shown=d.rows;
-const firstOther=d.rows.findIndex(x=>!x.popular),others=d.total-d.popular_total;
-const section=i=>i===0&&d.rows[0].popular?`<tr class="section"><td colspan="12">★ Популярные модели — ${d.popular_total}: Corolla, Civic, Camry, Accord, Mazda3, CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR · сверху самые выгодные</td></tr>`:
- i===firstOther?`<tr class="section" id="others"><td colspan="12">Остальные машины — ${others} · тоже по выгоде${d.popular_total?' · <a href="#top">↑ к популярным</a>':''}</td></tr>`:'';
+const gt=d.group_total||{},GROUP_TITLE={popular:`★ Популярные модели — ${gt.popular||0}: Corolla, Civic, Camry, Accord, Mazda3, CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR · сверху самые выгодные`,
+ ev:`⚡ Электромобили — ${gt.ev||0} · без смог-теста · тоже по выгоде`,other:`Остальные машины — ${gt.other||0} · тоже по выгоде`};
+const section=i=>{const g=d.rows[i].group;if(i>0&&d.rows[i-1].group===g)return '';return `<tr class="section" id="g-${g}"><td colspan="12">${GROUP_TITLE[g]}${i>0?' · <a href="#top">↑ наверх</a>':''}</td></tr>`};
 $('rows').innerHTML=d.rows.map((x,i)=>section(i)+`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
 <div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
@@ -481,14 +505,14 @@ $('rows').innerHTML=d.rows.map((x,i)=>section(i)+`<tr><td>${x.photo_main_url?`<a
 <td class="num">${x.condition_grade?`<span class="pill ${crCls(x.condition_grade)}">${esc(x.condition_grade.split(' ')[0])}</span>`:'—'}${x.cr_url?`<div><a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a></div>`:''}</td>
 <td class="num">${money(x.current_bid_usd)}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
 <div class="muted" title="${esc(x.kbb_entered)}">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена: ${esc(x.kbb_entered)}">${esc(kbbShort(x.kbb_entered))} ↗</a>`:esc(kbbShort(x.kbb_entered))}</div>${x.vin&&x.odometer_miles?`<div><a class="muted" href="${esc(laUrl([x]))}" onclick="openKbb([shown[${i}]]);return false" title="Откроется kbb.com и сам получит KBB (расширение «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»): комплектация, пробег ${esc(x.odometer_miles)}, 92620, Private Party, Good">${x.kbb_private_party_usd?'обновить ↗':'получить KBB ↗'}</a></div>`:''}</td>
-<td class="num" title="Цена продажи на Facebook: KBB PP − $500 (без KBB — грубо по MMR)">${money(x.sale_estimate_usd)}${x.kbb_private_party_usd?'':'<div class="muted">по MMR</div>'}</td>
+<td class="num" title="Цена продажи на Facebook: KBB Private Party, без вычета на торг — запас на торг решаете сами (без KBB — грубо по MMR)">${money(x.sale_estimate_usd)}${x.kbb_private_party_usd?'':'<div class="muted">по MMR</div>'}</td>
 <td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}</td>
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||'<tr><td colspan="12" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
-$('stat').innerHTML=esc(`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · популярных моделей: ${d.popular_total} · «МОЖНО»: ${ok} · сверху — популярные, внутри — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`)+(firstOther>=0&&d.popular_total?` <a class="btn sec jump" href="#others">↓ Остальные машины (${others})</a>`:'');
+$('stat').innerHTML=esc(`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · популярных моделей: ${d.popular_total} · электромобилей: ${(d.group_total||{}).ev||0} · «МОЖНО»: ${ok} · сверху — популярные, внутри — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`)+(gt.ev?` <a class="btn sec jump" href="#g-ev">↓ Электромобили (${gt.ev})</a>`:'')+(gt.other&&(gt.popular||gt.ev)?` <a class="btn sec jump" href="#g-other">↓ Остальные машины (${gt.other})</a>`:'');
 $('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
@@ -496,7 +520,9 @@ let shown=[];
 /* Адрес kbb.com для закладки-автопилота: страница модели первой машины + машины лотов в #la=… */
 function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.model,t:x.trim,mi:String(x.odometer_miles).replace(/\D/g,'')}));
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
-function kbbTop(){const list=shown.filter(x=>x.vin&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ')).slice(0,15);
+function kbbTop(){const need=x=>x.vin&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
+/* Лучшие без KBB: 15 популярных, 5 электромобилей, 5 остальных. */
+const list=[['popular',15],['ev',5],['other',5]].flatMap(([g,n])=>shown.filter(x=>x.group===g&&need(x)).slice(0,n));
 if(!list.length){alert('У машин на экране KBB уже есть');return}
 openKbb(list);
 $('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}

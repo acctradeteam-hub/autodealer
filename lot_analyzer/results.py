@@ -20,7 +20,8 @@ import statistics
 from pathlib import Path
 
 HISTORY_PATH = Path("data/auction_results.csv")
-FIELDS = ("key", "date", "auction", "code", "lot", "vin", "year", "make", "model", "miles", "cr", "mmr", "outcome", "price", "source")
+# remarks — замечания самого аукциона (Major engine defect, Prior rental …), kbb — KBB Private Party, известный до торгов.
+FIELDS = ("key", "date", "auction", "code", "lot", "vin", "year", "make", "model", "miles", "cr", "mmr", "outcome", "price", "source", "remarks", "kbb")
 # Коды площадок Manheim → название, как оно стоит в списках («CA - Manheim California»).
 CODES = {"CADE": "Manheim California", "SCAA": "Manheim Southern California", "RAA": "Manheim Riverside",
          "SDAA": "Manheim San Diego", "SFAA": "Manheim San Francisco Bay", "NVAA": "Manheim Nevada",
@@ -67,7 +68,7 @@ def read_lane_csv(path: Path) -> list[dict]:
                "vin": (r.get("VIN") or "").strip().upper(), "year": ymm[0] if ymm else "", "make": ymm[1] if len(ymm) > 1 else "",
                "model": " ".join(ymm[2:]), "miles": str(int(_num(r.get("Odometer")) or 0)), "cr": r.get("CR", ""),
                "mmr": str(int(_num(r.get("MMR Avg")) or 0) or ""), "outcome": outcome,
-               "price": str(int(_num(r.get("Sale Price")) or 0) or ""), "source": path.name}
+               "price": str(int(_num(r.get("Sale Price")) or 0) or ""), "source": path.name, "remarks": "", "kbb": ""}
         rec["key"] = _key(rec)
         out.append(rec)
     return out
@@ -87,9 +88,46 @@ def read_postsale_pdf(path: Path) -> list[dict]:
         if m:
             rec = {"date": date, "auction": name, "code": code, "lot": "", "vin": "", "year": m[1], "make": m[2],
                    "model": m[3], "miles": m[4].replace(",", ""), "cr": "", "mmr": "", "outcome": "Sold",
-                   "price": m[5].replace(",", ""), "source": path.name}
+                   "price": m[5].replace(",", ""), "source": path.name, "remarks": "", "kbb": ""}
             rec["key"] = _key(rec)
             out.append(rec)
+    return out
+
+
+def is_carmax_results(path: Path) -> bool:
+    """Итоги торгов CarMax: выгрузка Velocicast (JSON / CSV), «all lanes» CSV, PDF своего списка с итогами."""
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if suffix == ".pdf":
+        return "carmax" in name and ("result" in name or "list" in name)
+    if suffix not in (".json", ".csv"):
+        return False
+    try:
+        head = path.open(encoding="utf-8-sig", errors="replace").read(2000)
+    except OSError:
+        return False
+    if suffix == ".json":
+        return '"vehicles"' in head and ("velocicast" in head.lower() or "final_status" in head or "carmax" in head.lower())
+    return head.startswith("auction_location,") or "final_amount" in head[:600] or "velocicast" in head.lower()
+
+
+def is_results_file(path: Path) -> bool:
+    return is_lane_csv(path) or is_postsale_pdf(path) or is_carmax_results(path)
+
+
+def read_carmax(path: Path) -> list[dict]:
+    from .market import read_results
+
+    out = []
+    for r in read_results(path):
+        make, _, model = r.vehicle.partition(" ")
+        outcome = {"sold": "Sold", "won": "Sold", "no sale": "No Sale"}.get(r.status.lower().split(" (")[0], r.status or "нет итога")
+        rec = {"date": r.date, "auction": f"CarMax {r.location}".strip(), "code": "", "lot": f"{r.lane}/{r.run}".strip("/"),
+               "vin": r.vin, "year": r.year, "make": make, "model": model, "miles": re.sub(r"\D", "", r.miles), "cr": "",
+               "mmr": str(int(_num(r.mmr) or 0) or ""), "outcome": outcome, "price": str(int(_num(r.price) or 0) or ""),
+               "source": path.name, "remarks": r.announcements, "kbb": str(int(_num(r.kbb) or 0) or "")}
+        rec["key"] = _key(rec)
+        out.append(rec)
     return out
 
 
@@ -98,6 +136,8 @@ def read_file(path: Path) -> list[dict]:
         return read_lane_csv(path)
     if is_postsale_pdf(path):
         return read_postsale_pdf(path)
+    if is_carmax_results(path):
+        return read_carmax(path)
     return []
 
 
@@ -107,7 +147,8 @@ def load_history(path: Path | None = None) -> dict[str, dict]:
     path = path or HISTORY_PATH
     if not path.exists():
         return {}
-    return {r["key"]: r for r in csv.DictReader(path.open(encoding="utf-8"))}
+    with path.open(encoding="utf-8") as handle:
+        return {r["key"]: {k: v or "" for k, v in r.items()} for r in csv.DictReader(handle)}
 
 
 def save_history(records: dict[str, dict], path: Path | None = None) -> None:
@@ -128,9 +169,11 @@ def merge(history: dict[str, dict], new: list[dict]) -> bool:
         if old is None:
             history[rec["key"]] = rec
             changed = True
-        elif rec.get("mmr") and not old.get("mmr"):
-            old["mmr"] = rec["mmr"]
-            changed = True
+        else:
+            for field in ("mmr", "kbb", "remarks"):
+                if rec.get(field) and not old.get(field):
+                    old[field] = rec[field]
+                    changed = True
     return changed
 
 

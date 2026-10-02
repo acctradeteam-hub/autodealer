@@ -134,7 +134,7 @@ class TestMergeAndSummary(unittest.TestCase):
 
 class TestMarketInVerdict(unittest.TestCase):
     def setUp(self) -> None:
-        self.costs = dict(load_costs(ROOT / "config" / "costs.json"), budget_max_bid_usd=0, **dict(recon_default_usd=300, detailing_usd=150, smog_usd=60, holding_per_day_usd=5, reserve_pct_of_sale=0.03))
+        self.costs = dict(load_costs(ROOT / "config" / "costs.json"), budget_max_bid_usd=0, **dict(recon_default_usd=300, detailing_usd=150, smog_usd=60, holding_per_day_usd=5, reserve_pct_of_sale=0.03, kbb_private_party_offset_usd=-500))
 
     def test_clean_car_market_note(self) -> None:
         result = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean"), self.costs)

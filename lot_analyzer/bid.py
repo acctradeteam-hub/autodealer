@@ -314,10 +314,18 @@ def market_config(auction: str, costs: dict, location: str = "") -> dict:
             break
     place = (location or "").lower()
     for name, own in (costs.get("market_by_location") or {}).items():
-        # «CA - Manheim California» не должна совпасть с «Manheim Southern California» — сравниваем концовку.
-        if place and (place.endswith(name.lower()) or place == name.lower()):
-            market.update({"mmr_clean": own["median"], "mmr_bands": own["bands"], "mmr_clean_curve": own["curve"],
-                           "note": f"по итогам торгов {name}: {own['n']} продаж"})
+        # «CA - Manheim California» не должна совпасть с «Manheim Southern California» — сравниваем концовку;
+        # CarMax: «Chino, CA» ↔ площадка «Chino».
+        low = name.lower()
+        if place and (place.endswith(low) or place == low or place.startswith(low + ",")):
+            if "median" in own:
+                market.update({"mmr_clean": own["median"], "mmr_bands": own["bands"], "mmr_clean_curve": own["curve"],
+                               "note": f"по итогам торгов {name}: {own['n']} продаж"})
+            for kind in ("clean", "heavy"):
+                if own.get(f"kbb_{kind}"):
+                    market[f"kbb_{kind}"] = own[f"kbb_{kind}"]
+                    market[f"kbb_{kind}_curve"] = own[f"kbb_{kind}_curve"]
+                    market["kbb_note"] = f"по вашим итогам {name}: {own.get('n_kbb_clean', 0)} продаж без тяжёлых дефектов"
             break
     return market
 
@@ -350,7 +358,7 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
         return data.mmr * share, f"MMR × {share:g} — {label}{note}"
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
         share = float(market[f"kbb_{kind}"])
-        return data.kbb_private_party * share, f"KBB × {share:g} — медиана торгов {label}"
+        return data.kbb_private_party * share, f"KBB × {share:g} — медиана торгов {label}" + (f"; {market['kbb_note']}" if market.get("kbb_note") else "")
     if data.mmr and market.get(f"mmr_{kind}"):
         share = float(market[f"mmr_{kind}"])
         return data.mmr * share, f"MMR × {share:g} — медиана торгов {label}"
@@ -375,6 +383,7 @@ class BidInput:
     current_bid: float | None = None
     history_text: str = ""               # титул, Carfax, CR, повреждения — одной строкой
     defects_text: str = ""               # описание дефектов для оценки ремонта
+    electric: bool = False               # электромобиль: смог-тест не нужен
 
 
 @dataclass
@@ -524,7 +533,7 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
     fixed = {
         "ремонт": recon,
         "детейлинг": float(costs.get("detailing_usd", 0)),
-        "смог": float(costs.get("smog_usd", 0)),
+        "смог": 0.0 if data.electric else float(costs.get("smog_usd", 0)),
         "доставка": transport_cost(data.location, costs),
         "дилер": float(costs.get("dealer_fee_usd", 0)),
         "реклама": float(costs.get("selling_usd", 0)),
@@ -659,6 +668,21 @@ def _grade(text: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+# Электромобили: смог-тест в Калифорнии не нужен. Плагин-гибриды (Prius Prime, Clarity Plug-in) — нужен, их тут нет.
+_EV = re.compile(r"\b(bolt|leaf|i3|e-?golf|id\.?\s?4|mustang mach-e|mach-e|ioniq\s?[56]|ioniq electric|kona electric|niro ev|ev6|ev9|"
+                 r"bz4x|solterra|taycan|e-tron|eq[abces]\w*|polestar|spark ev|focus electric|fit ev|clarity electric|rav4 ev|"
+                 r"model [3sxy]|lyriq|blazer ev|equinox ev|f-150 lightning|hummer ev|r1[st]|prologue|zdx|cooper se|xc40 recharge|c40)\b", re.I)
+
+
+def is_electric(row: dict[str, str]) -> bool:
+    if str(row.get("make", "")).strip().lower() in ("tesla", "rivian", "lucid", "polestar"):
+        return True
+    text = f"{row.get('model', '')} {row.get('trim', '')}"
+    if re.search(r"plug-?in|hybrid|phev|prime\b", text, re.I):
+        return False
+    return bool(_EV.search(text) or re.search(r"\b(electric|ev)\b", text, re.I))
+
+
 def input_from_row(row: dict[str, str]) -> BidInput:
     """Собирает вход расчёта из строки таблицы «Аналитика лотов»."""
     history = " | ".join(
@@ -679,6 +703,7 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         current_bid=parse_money(row.get("current_bid_usd")),
         history_text=history,
         defects_text=" | ".join(squeeze(row.get(k, "")) for k in ("defects", "lot_description") if squeeze(row.get(k, ""))),
+        electric=is_electric(row),
     )
 
 
@@ -733,7 +758,8 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         if costs.get("require_kbb") and not real_kbb and result.max_bid:
             # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.
             rest = [x for x in row["calc_verdict"].split("; ")[1:] if "грубо по MMR" not in x]
-            row["calc_verdict"] = "; ".join([f"НУЖЕН KBB: предварительно до {_usd(result.max_bid)} (цена продажи по MMR)"] + rest)
+            basis = "KBB — прикидка по вашей базе" if row.get("kbb_estimate_usd") else "цена продажи по MMR"
+            row["calc_verdict"] = "; ".join([f"НУЖЕН KBB: предварительно до {_usd(result.max_bid)} ({basis})"] + rest)
         if result.max_bid and "из списка:" in row.get("needs_review", ""):
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.
             row["calc_verdict"] += "; предварительно — откройте карточку лота"
