@@ -315,6 +315,38 @@ def _last(pattern: re.Pattern[str], text: str) -> str:
     return found[-1].replace(",", "") if found else ""
 
 
+def _carmax_page_url(html: str) -> str:
+    """Адрес сохранённой страницы CarMax (из пометки закладки или «saved from url» Chrome)."""
+    m = re.search(r"; url: (https://[^\s]*carmaxauctions\.com[^\s]*) -->", html[:3000]) or \
+        re.search(r"saved from url=\(\d+\)(https://[^\s]*carmaxauctions\.com[^\s]*) -->", html[:3000])
+    return m.group(1) if m else ""
+
+
+def carmax_lot_url(stock: str, page_url: str = "") -> str:
+    """Ссылка на конкретный лот: та же страница CarMax с stockNum — сайт сразу открывает карточку машины."""
+    if not stock:
+        return ""
+    if not page_url:
+        return f"https://www.carmaxauctions.com/search?stockNum={stock}"
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+    parts = urlsplit(page_url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "stockNum"] + [("stockNum", stock)]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+
+
+def _carmax_photo(card, page_url: str) -> str:
+    """Главное фото карточки: адрес из <img> (у страниц «Сохранить как» Chrome — локальный файл, такой не берём)."""
+    from urllib.parse import urljoin
+    for img in card.find_all("img"):
+        src = img.get("src") or img.get("data-src") or (img.get("srcset") or "").split(" ")[0]
+        if not src or src.startswith(("data:", "./", "file:")) or "_files/" in src:
+            continue
+        url = urljoin(page_url or "https://www.carmaxauctions.com/", src)
+        if url.startswith("http"):
+            return url
+    return ""
+
+
 def find_carmax_cards(html: str) -> list[dict[str, str]]:
     """Карточки машин со страницы-списка CarMax (watch list, результаты с VIN).
 
@@ -324,6 +356,7 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
     if "carmax" not in html[:600_000].lower():
         return []
     soup = BeautifulSoup(html, "lxml")
+    page_url = _carmax_page_url(html)
     cards: list[dict[str, str]] = []
     seen: set[str] = set()
     for button in soup.select('[data-testid="copy-vin-button"]'):
@@ -337,7 +370,7 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         if card is None or card.find_parent(attrs={"role": "presentation"}) is not None:
             continue
         seen.add(vin)
-        info: dict[str, str] = {"vin": vin}
+        info: dict[str, str] = {"vin": vin, "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url)}
         caption = card.find("p", class_=re.compile("caption"))
         head = squeeze(caption.get_text(" ", strip=True)) if caption else ""
         lane_run, _, location = head.partition("•")
@@ -365,10 +398,10 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         bid = card.find(string=re.compile(r"^\s*\$[\d,]+\s*$"))
         info["your_bid"] = squeeze(bid) if bid and card.find(string=re.compile("Your bid")) else ""
         cards.append(info)
-    return cards or _carmax_tiles(soup)
+    return cards or _carmax_tiles(soup, page_url)
 
 
-def _carmax_tiles(soup) -> list[dict[str, str]]:
+def _carmax_tiles(soup, page_url: str = "") -> list[dict[str, str]]:
     """Вид «плитка» (поиск CarMax): VIN не показан — берём дорожку, машину, пробег и объявления."""
     cards: list[dict[str, str]] = []
     for card in soup.find_all("div", id=re.compile(r"^\d{5,}$")):
@@ -380,7 +413,7 @@ def _carmax_tiles(soup) -> list[dict[str, str]]:
         if not head or not title:
             continue
         lane_run, _, location = head.partition("•")
-        info = {"vin": "", "stock": card["id"], "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
+        info = {"vin": "", "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url), "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
         spec = next((t for t in texts if re.match(r"[\d,]+ mi\b", t)), "")
         info["miles"] = spec.split(" mi")[0].replace(",", "") if spec else ""
         info["drive"] = " • ".join(spec.split(" • ")[1:]) if spec else ""
@@ -402,6 +435,8 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     row["vin"] = card["vin"]
     row["lot_number"] = card.get("lane_run", "")
     row["location"] = card.get("location", "")
+    row["lot_url"] = card.get("lot_url", "")
+    row["photo_main_url"] = card.get("photo", "")
     match = HEADER_RE.match(card.get("title", ""))
     if match:
         year, make, rest = match.groups()

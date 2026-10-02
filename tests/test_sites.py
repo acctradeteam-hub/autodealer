@@ -228,3 +228,14 @@ class CarmaxTilesTest(unittest.TestCase):
         self.assertEqual((first["vin"], first["lane_run"], first["location"]), ("", "A/70", "Oxnard, CA"))
         self.assertEqual((first["title"], first["miles"]), ("2014 Honda Civic LX", "60439"))
         self.assertEqual(first["announcements"], "Major transmission defect")
+
+    def test_lot_link_and_photo(self):
+        from lot_analyzer.sites_text import carmax_lot_url, find_carmax_cards
+        html = (Path(__file__).parent / "fixtures" / "carmax_tiles.html").read_text(encoding="utf-8")
+        html = html.replace("</button></div></div><div class=\"MuiCardMedia-root", "</button></div></div><img src=\"https://img.carmax.test/70272833/1.jpg\"><div class=\"MuiCardMedia-root", 1)
+        first = find_carmax_cards(html)[0]
+        self.assertEqual(first["lot_url"], "https://www.carmaxauctions.com/search?view=tile&stockNum=70272833")
+        self.assertEqual(first["photo"], "https://img.carmax.test/70272833/1.jpg")
+        self.assertEqual(carmax_lot_url("123", "https://www.carmaxauctions.com/mylist?view=detailed&stockNum=9"),
+                         "https://www.carmaxauctions.com/mylist?view=detailed&stockNum=123")
+        self.assertEqual(carmax_lot_url("123"), "https://www.carmaxauctions.com/search?stockNum=123")
