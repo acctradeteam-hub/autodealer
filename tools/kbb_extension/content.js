@@ -130,7 +130,7 @@ window.lotAnalyzerAuto = true;
   /* Расширение «Lot Analyzer KBB» запускает этот код само на каждой странице kbb.com — работаем, только если есть машины из окна. */
   if (window.lotAnalyzerAuto && !(auction === 'KBB' && (laMatch || resume))) { return; }
   if (auction === 'KBB' && !laMatch && !resume && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
-    say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB: 15 + 5 + 5 лучших» — и нажмите закладку на открывшейся вкладке.', 12000);
+    say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB: 15 + 5 + 5 + 5 лучших» — и нажмите закладку на открывшейся вкладке.', 12000);
     return;
   }
   if (auction === 'KBB' && (laMatch || resume)) {

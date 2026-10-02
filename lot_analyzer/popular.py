@@ -41,3 +41,18 @@ def is_popular(row: dict, costs: dict) -> bool:
         if re.search(rule["model"], text, re.I):
             return True
     return False
+
+
+# Пикапы: своя вкладка в окне (свой покупатель и свой рынок).
+PICKUP = re.compile(r"^(f-?\s?(150|250|350|450)|silverado|sierra|tacoma|tundra|colorado|canyon|frontier|titan|ranger|ridgeline|"
+                    r"gladiator|maverick|santa cruz|cybertruck|r1t|avalanche|ram\s?(1500|2500|3500)|1500|2500|3500|"
+                    r"dakota|tacoma|hilux|f-150 lightning|sierra ev|silverado ev)\b", re.I)
+
+
+def is_pickup(row: dict) -> bool:
+    model = str(row.get("model", "")).strip()
+    make = str(row.get("make", "")).strip().lower()
+    if re.match(r"^(1500|2500|3500)\b", model) and make not in ("ram", "dodge", "chevrolet", "gmc"):
+        return False
+    return bool(PICKUP.search(model) or re.search(r"\b(pickup|crew ?cab|crewmax|supercrew|double cab|quad cab|regular cab|access cab|king cab)\b",
+                                                  f"{model} {row.get('trim', '')}", re.I))

@@ -154,3 +154,13 @@ class PopularTest(unittest.TestCase):
             self.assertTrue(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), md)
         for y, mk, md, tr in no:
             self.assertFalse(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), f"{y} {md} {tr}")
+
+
+class PickupTest(unittest.TestCase):
+    def test_pickups(self):
+        from lot_analyzer.popular import is_pickup
+        for mk, md, tr in [("Ford", "F-150", "XLT"), ("Ram", "1500", "Big Horn"), ("Chevrolet", "Silverado 2500HD", "LT"),
+                           ("Toyota", "Tacoma", "SR5"), ("GMC", "Sierra 1500", ""), ("Honda", "Ridgeline", "RTL"), ("Jeep", "Gladiator", "Sport")]:
+            self.assertTrue(is_pickup({"make": mk, "model": md, "trim": tr}), md)
+        for mk, md, tr in [("Toyota", "RAV4", "XLE"), ("Ford", "Explorer", "XLT"), ("Jeep", "Wrangler", "Sport"), ("BMW", "3 Series", "330i")]:
+            self.assertFalse(is_pickup({"make": mk, "model": md, "trim": tr}), md)

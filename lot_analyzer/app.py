@@ -38,7 +38,7 @@ KBB_PATH = Path("data/kbb_values.json")            # KBB PP из приложе�
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$", re.I)
 SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
-GROUPS = ("popular", "ev", "other")
+GROUPS = ("popular", "ev", "truck", "other")
 RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
@@ -219,10 +219,10 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     apply_to_rows(rows, costs, estimator=analytics.OwnKbb(kbb_log))
     if max_bid:                              # дороже своего бюджета — не показываем
         rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid]
-    # Три части: популярные модели (Civic, Camry, RAV4 …), электромобили, остальные; в каждой — сверху самые выгодные.
+    # Вкладки окна: популярные модели (Civic, Camry, RAV4 …), электромобили, пикапы, остальные; в каждой — сверху самые выгодные.
     for r in rows:
         r["popular"] = "да" if popular.is_popular(r, costs) else ""
-        r["group"] = "popular" if r["popular"] else "ev" if is_electric(r) else "other"
+        r["group"] = "popular" if r["popular"] else "truck" if popular.is_pickup(r) else "ev" if is_electric(r) else "other"
     rows.sort(key=lambda r: (GROUPS.index(r["group"]), RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -expected_gain(r)))
     return rows
 
@@ -446,7 +446,8 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}details summary{cursor:pointer;color:var(--muted)}
 input.kbb{width:80px;min-width:0;padding:4px 6px;text-align:right}
 td.kbbcell,th.kbbcell{width:96px;max-width:96px;white-space:normal;overflow-wrap:anywhere}td.kbbcell .muted{font-size:11px;line-height:1.25}
-tr.section td{background:var(--bg);font-weight:700;font-size:14px;padding:10px 8px}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}button.tab{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:600}
+button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
 img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
@@ -462,14 +463,14 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label title="Раскрыть у всех машин, из каких сумм сложилась прибыль при покупке по средней цене">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>
-<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB: 15 популярных, 5 электромобилей, 5 остальных">KBB: 15 + 5 + 5 лучших</button>
+<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button>
 <button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
 <details style="margin-top:8px"><summary>Свой сохранённый поиск для этой машины</summary>
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="tabs" class="tabs"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th>Ставка</th><th class="kbbcell">KBB</th><th>Продажа</th><th class="w110" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов)">Средняя цена покупки<br>на аукционе</th><th class="w110">Прибыль при покупке<br>по средней цене</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -494,11 +495,17 @@ function kbbShort(s){s=String(s||'').replace(/^страница KBB: /,'');retur
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
-async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;shown=d.rows;
-const gt=d.group_total||{},GROUP_TITLE={popular:`★ Популярные модели — ${gt.popular||0}: Corolla, Civic, Camry, Accord, Mazda3, CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR · сверху самые выгодные`,
- ev:`⚡ Электромобили — ${gt.ev||0} · без смог-теста · тоже по выгоде`,other:`Остальные машины — ${gt.other||0} · тоже по выгоде`};
-const section=i=>{const g=d.rows[i].group;if(i>0&&d.rows[i-1].group===g)return '';return `<tr class="section" id="g-${g}"><td colspan="12">${GROUP_TITLE[g]}${i>0?' · <a href="#top">↑ наверх</a>':''}</td></tr>`};
-$('rows').innerHTML=d.rows.map((x,i)=>section(i)+`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
+/* Вкладки: в каждой — только свои машины, сверху самые выгодные. Выбранная вкладка запоминается. */
+const TABS=[['popular','★ Популярные','Corolla, Civic, Camry, Accord, Mazda3, CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR'],
+ ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
+let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
+function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}
+async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;lastData=d;render(d)}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
+function render(d){shown=d.rows;const gt=d.group_total||{};
+if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
+$('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
+ `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · сверху самые выгодные</div>`;
+$('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
 <div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
 <td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
@@ -510,10 +517,11 @@ $('rows').innerHTML=d.rows.map((x,i)=>section(i)+`<tr><td>${x.photo_main_url?`<a
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
 <td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
-<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||'<tr><td colspan="12" class="muted">Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.</td></tr>';
+<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="12" class="muted">${d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
-$('stat').innerHTML=esc(`Машин: ${n}`+(n>d.rows.length?` (показаны лучшие ${d.rows.length})`:'')+` · популярных моделей: ${d.popular_total} · электромобилей: ${(d.group_total||{}).ev||0} · «МОЖНО»: ${ok} · сверху — популярные, внутри — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`)+(gt.ev?` <a class="btn sec jump" href="#g-ev">↓ Электромобили (${gt.ev})</a>`:'')+(gt.other&&(gt.popular||gt.ev)?` <a class="btn sec jump" href="#g-other">↓ Остальные машины (${gt.other})</a>`:'');
-$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
+const inTab=d.rows.filter(x=>x.group===tab).length;
+$('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны лучшие ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · сверху — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`;
+$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 let shown=[];
@@ -521,8 +529,8 @@ let shown=[];
 function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.model,t:x.trim,mi:String(x.odometer_miles).replace(/\D/g,'')}));
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
 function kbbTop(){const need=x=>x.vin&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
-/* Лучшие без KBB: 15 популярных, 5 электромобилей, 5 остальных. */
-const list=[['popular',15],['ev',5],['other',5]].flatMap(([g,n])=>shown.filter(x=>x.group===g&&need(x)).slice(0,n));
+/* Лучшие без KBB: 15 популярных, по 5 электромобилей, пикапов и остальных. */
+const list=[['popular',15],['ev',5],['truck',5],['other',5]].flatMap(([g,n])=>shown.filter(x=>x.group===g&&need(x)).slice(0,n));
 if(!list.length){alert('У машин на экране KBB уже есть');return}
 openKbb(list);
 $('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
