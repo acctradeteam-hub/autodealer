@@ -1,6 +1,6 @@
-/* Lot Analyzer: расчёт программы — в Notes карточек CarMax (watch list, вид «Detailed table»).
-   Только машинам, у которых в программе есть настоящий KBB. Ваш текст заметки остаётся;
-   строка «KBB …$» и строки «LA …» программы ставятся в конец и при пересчёте заменяются.
+/* Lot Analyzer: в Notes карточек CarMax (watch list, вид «Detailed table») — KBB с датой расчёта
+   и замечания самого аукциона («CarMax: Major engine defect, …»), чтобы они остались в заметке и после торгов.
+   Только машинам, у которых в программе есть настоящий KBB. Ваш текст заметки остаётся.
    Окно программы должно быть запущено. Поле, в котором вы сейчас печатаете, не трогается. */
 (function () {
   var PREFIX = 'LA ';
@@ -28,10 +28,20 @@
     while (c && !(c.tagName === 'DIV' && /^\d{5,}$/.test(c.id || ''))) { c = c.parentNode; }
     return c;
   };
+  /* Строки, которые пишет программа (и прежний формат «LA …»): при пересчёте заменяются. */
+  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: )/;
   var merged = function (current, note) {
-    var kbbLine = note.split('\n')[0];
-    var own = current.split('\n').filter(function (l) { return l.indexOf(PREFIX) !== 0 && l.trim() !== kbbLine; }).join('\n').replace(/\s+$/, '');
-    return (own ? own + '\n' : '') + note;
+    var parts = note.split('\n');
+    var kbbLine = parts[0];
+    var num = (/^KBB ([\d,]+)\$/.exec(kbbLine) || [])[1] || '';
+    var same = new RegExp('^\\s*KBB\\s*(PP\\s*)?\\$?\\s*' + num.replace(/,/g, ',?') + '\\s*\\$?(\\s|$)', 'i');
+    var lines = current.split('\n').filter(function (l) { return !OWN.test(l); });
+    /* Тот же KBB уже записан с датой — оставляем как есть (дата — когда посчитали впервые). */
+    var kept = lines.some(function (l) { return same.test(l) && /\d{1,2}\/\d{1,2}/.test(l); });
+    if (!kept) { lines = lines.filter(function (l) { return !same.test(l); }); }
+    var own = lines.join('\n').replace(/\s+$/, '');
+    var add = (kept ? [] : [kbbLine]).concat(parts.slice(1));
+    return (own && add.length ? own + '\n' : own) + add.join('\n');
   };
   var saveButton = function (t) {
     var box = t;
@@ -75,11 +85,11 @@
         var text = merged(t.value, note);
         if (text === t.value) { continue; }
         tries[vin] = (tries[vin] || 0) + 1;
-        say('Lot Analyzer: пишу расчёт в Notes — ' + vin + '…');
+        say('Lot Analyzer: пишу KBB и замечания аукциона в Notes — ' + vin + '…');
         await write(t, text);
         done += 1;
       }
-      if (done) { say('Lot Analyzer: расчёт записан в Notes у ' + done + ' машин.', 6000); }
+      if (done) { say('Lot Analyzer: KBB и замечания аукциона записаны в Notes у ' + done + ' машин.', 6000); }
     } finally { busy = false; }
   };
   setTimeout(run, 3000);

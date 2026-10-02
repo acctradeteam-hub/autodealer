@@ -409,6 +409,7 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
             # Из списка — заметки покупателя, статус и объявления (они свежее).
             for key in ("lot_url", "photo_main_url"):
                 row[key] = row.get(key) or card_row[key]
+            row["auction_notes"] = card_row["auction_notes"]
             for key in ("no_photos", "carfax_autocheck", "my_proxy_usd", "retail_estimate_usd", "kbb_private_party_usd", "mmr_adjusted_usd", "auction_retail_usd", "lot_description"):
                 if card_row.get(key):
                     row[key] = card_row[key]

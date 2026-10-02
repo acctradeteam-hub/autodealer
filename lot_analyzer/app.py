@@ -169,7 +169,8 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     saved_kbb = load_kbb()
     kbb_cfg = costs.get("kbb_page") or {}
     condition = kbb_cfg.get("condition", "good")
-    kbb_pages = [r for r in (cache.kbb(p) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
+    kbb_pages = [{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))}
+                 for p, r in ((p, cache.kbb(p)) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
         for row in cache.rows(path):
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
@@ -183,11 +184,13 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
                 row["kbb_private_party_usd"] = f"{float(own['usd']):.0f}"
                 row["kbb_entered"] = " ".join(x for x in (own.get("source", "вручную"), own.get("note", ""), own.get("date", "")) if x)
                 row["kbb_url"] = own.get("url", "")
+                row["kbb_date"] = own.get("date", "")
             elif not row.get("kbb_private_party_usd"):
                 page = next((r for r in kbb_pages if kbb_page.matches(r, row, int(kbb_cfg.get("max_miles_gap", 3000)))), None)
                 if page and page["private_party"].get(condition):
                     row["kbb_private_party_usd"] = str(page["private_party"][condition])
                     row["kbb_entered"] = f"страница KBB: {kbb_page.describe(page)}"
+                    row["kbb_date"] = page.get("_date", "")
                     if page["zip"] != str(kbb_cfg.get("zip", "92620")):
                         row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), f"KBB для ZIP {page['zip']}, не {kbb_cfg.get('zip', '92620')}") if x)
             if kbb and not (row.get("kbb_private_party_usd") or row.get("retail_estimate_usd")):

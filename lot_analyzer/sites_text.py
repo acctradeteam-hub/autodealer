@@ -448,6 +448,7 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     row["sale_date"] = card.get("start", "")
     announcements = card.get("announcements", "")
     row["defects"] = announcements
+    row["auction_notes"] = announcements or "no announcements"   # замечания самого аукциона — в Notes на сайте
     row["condition_report"] = announcements
     row["history_page"] = announcements
     row["title_type"] = "; ".join(x for x in announcements.split(", ") if re.search(r"title|227", x, re.I))[:80] or "без замечаний по титулу (CarMax)"
