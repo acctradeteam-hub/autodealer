@@ -45,6 +45,38 @@ class TestBookmarklet(unittest.TestCase):
         self.assertNotIn("XMLHttpRequest", self.source)
         self.assertNotIn("sendBeacon", self.source)
 
+    def test_carmax_loads_all_vehicles(self) -> None:
+        # CarMax: жмём «Show more / Показать следующие», фильтры «More 2» (aria-label «see more») не трогаем.
+        self.assertIn("auction === 'CarMax'", self.source)
+        self.assertIn("show|load|see|view", self.source)
+        self.assertIn("следующие машины", self.source)
+        self.assertIn("see more$/i.test(el.getAttribute('aria-label')", self.source)
+        self.assertIn("save(null, null, cmOrder.length)", self.source)
+
+    def test_carmax_hidden_cards_are_parsed(self) -> None:
+        # Карточки, убранные сайтом при прокрутке, закладка кладёт в скрытый блок — разбор их видит.
+        import re
+        from lot_analyzer.sites_text import find_carmax_cards
+        page = (Path(__file__).parent / "fixtures" / "carmax_watchlist.html").read_text(encoding="utf-8")
+        before = find_carmax_cards(page)
+        vin = before[0]["vin"]
+        start = page.index('copy-vin-button')
+        card_id = re.findall(r'<div[^>]* id="(\d{5,})"', page[:start])[-1]
+        open_at = page.rindex(f'id="{card_id}"', 0, start)
+        open_at = page.rindex("<div", 0, open_at)
+        depth, i = 0, open_at
+        for m in re.finditer(r"<(/?)div\b", page[open_at:]):
+            depth += -1 if m.group(1) else 1
+            if depth == 0:
+                i = open_at + m.end()
+                break
+        card = page[open_at:page.index(">", i) + 1]
+        extra = card.replace(vin, "1HGCM82633A999999").replace(f'id="{card_id}"', 'id="99999999"')
+        saved = page.replace("</body>", f'<div id="lot-analyzer-carmax-all" style="display:none">{extra}</div></body>')
+        after = find_carmax_cards(saved)
+        self.assertEqual(len(after), len(before) + 1)
+        self.assertIn("1HGCM82633A999999", [c["vin"] for c in after])
+
 
 if __name__ == "__main__":
     unittest.main()

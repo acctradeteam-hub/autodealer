@@ -20,7 +20,7 @@
     say('Это окно программы — здесь сохранять не нужно. Нажимайте закладку на странице аукциона или KBB.', 6000);
     return;
   }
-  var save = function (parts, lot) {
+  var save = function (parts, lot, total) {
   var live = document.documentElement;
   var copy = live.cloneNode(true);
   /* Текущий текст заметок и полей ввода — в разметку: cloneNode его не переносит. */
@@ -71,7 +71,7 @@
   setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 2000);
   var vins = {};
   (document.body.innerText.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) || []).forEach(function (v) { vins[v] = 1; });
-  var count = parts ? parts.length : Object.keys(vins).length;
+  var count = total || (parts ? parts.length : Object.keys(vins).length);
   say('Сохранено: ' + name + (count ? (parts ? ' — машин со всех страниц: ' : ' — VIN на странице: ') + count : ''), 5000);
   };
   /* Manheim показывает по 100 машин на странице. Режим «все страницы»: листаем кнопкой «следующая»,
@@ -317,7 +317,68 @@
     })();
     return;
   }
-  var hasPages = auction === 'Manheim' && document.querySelector('.pagination__control--next') && document.querySelector('.stockwave-vehicle-info');
+  /* CarMax показывает часть машин и кнопку «Show more / Показать следующие машины». Жмём её, пока машин
+     прибавляется; если кнопки нет — прокручиваем вниз (подгрузка при прокрутке). Карточки запоминаем по VIN:
+     если сайт уберёт верхние при прокрутке, в файл они всё равно попадут. */
+  if (auction === 'CarMax' && document.querySelector('[data-testid="copy-vin-button"]')) {
+    var cmCards = {};
+    var cmOrder = [];
+    var cmGrab = function () {
+      var btns = document.querySelectorAll('[data-testid="copy-vin-button"]');
+      for (var i = 0; i < btns.length; i++) {
+        var vin = (btns[i].parentNode.textContent || '').replace(/\s+/g, '').toUpperCase();
+        var card = btns[i].parentNode;
+        while (card && !(card.tagName === 'DIV' && /^\d{5,}$/.test(card.id || ''))) { card = card.parentNode; }
+        if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin) || !card || card.closest('[role="presentation"]')) { continue; }
+        if (!cmCards[vin]) { cmOrder.push(vin); }
+        cmCards[vin] = card.outerHTML;
+      }
+      return cmOrder.length;
+    };
+    var cmVisible = function (el) { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !el.disabled && el.getAttribute('aria-disabled') !== 'true'; };
+    var cmMoreButton = function () {
+      var all = document.querySelectorAll('button, a, [role="button"]');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length > 60 || el.closest('[role="presentation"], [role="dialog"]')) { continue; }
+        if (/^(more|ещё|еще)\s*\d*$/i.test(text) || /^see more$/i.test(el.getAttribute('aria-label') || '')) { continue; }
+        if (/^(show|load|see|view)\s+(more|next)|more (vehicles|cars|results)|next \d+ (vehicles|cars|results)|показать (ещё|еще|больше|следующ)|загрузить (ещё|еще)|следующие машины/i.test(text) && cmVisible(el)) { return el; }
+      }
+      return null;
+    };
+    var cmClicks = 0;
+    var cmScrolls = 0;
+    var cmStep = function () {
+      var before = cmGrab();
+      say('CarMax: загружено машин ' + before + '… не трогайте страницу');
+      var more = cmMoreButton();
+      if (more && cmClicks < 200) { cmClicks += 1; more.scrollIntoView({ block: 'center' }); more.click(); } else if (cmScrolls < 3) { cmScrolls += 1; window.scrollTo(0, document.body.scrollHeight); } else { cmFinish(); return; }
+      var waited = 0;
+      var poll = function () {
+        waited += 500;
+        if (cmGrab() > before) { cmScrolls = 0; setTimeout(cmStep, 600); } else if (more && waited >= 20000) { cmFinish(); } else if (!more && waited >= 2500) { setTimeout(cmStep, 0); } else { setTimeout(poll, 500); }
+      };
+      setTimeout(poll, 500);
+    };
+    var cmFinish = function () {
+      cmGrab();
+      /* Карточки, которых уже нет на странице, — в скрытый блок, чтобы файл содержал все машины. */
+      var box = document.createElement('div');
+      box.id = 'lot-analyzer-carmax-all';
+      box.setAttribute('style', 'display:none');
+      var onPage = {};
+      var btns = document.querySelectorAll('[data-testid="copy-vin-button"]');
+      for (var i = 0; i < btns.length; i++) { onPage[(btns[i].parentNode.textContent || '').replace(/\s+/g, '').toUpperCase()] = 1; }
+      box.innerHTML = cmOrder.filter(function (v) { return !onPage[v]; }).map(function (v) { return cmCards[v]; }).join('');
+      if (box.innerHTML) { document.body.appendChild(box); }
+      save(null, null, cmOrder.length);
+      if (box.parentNode) { box.parentNode.removeChild(box); }
+    };
+    cmStep();
+    return;
+  }
+  var hasPages = auction === 'Manheim' &&document.querySelector('.pagination__control--next') && document.querySelector('.stockwave-vehicle-info');
   if (hasPages && confirm('Manheim: собрать ВСЕ страницы результатов в один файл?\nОК — все страницы (около 3 секунд на страницу), Отмена — только эту.')) {
     var back = document.querySelector('.pagination__control--page-1');
     if (back && !/selected/.test(back.className)) { var b0 = firstKey(); back.click(); var w0 = 0; var wait0 = function () { w0 += 400; if (firstKey() !== b0 || w0 > 15000) { setTimeout(collectAll, 800); } else { setTimeout(wait0, 400); } }; setTimeout(wait0, 400); } else { collectAll(); }
