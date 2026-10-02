@@ -439,7 +439,7 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
                                    - m - auction_fee(m, auction, costs))
         if result.profit_items:                             # последние две статьи — покупка и сборы по этому рынку
             result.profit_items = result.profit_items[:-2] + [
-                [f"Покупка по рынку ({result.market_source}; лоты с таким объявлением уходят дешевле)", -round(m)],
+                [f"Средняя цена покупки на аукционе ({result.market_source}; лоты с таким объявлением уходят дешевле)", -round(m)],
                 [f"Сборы аукциона {auction or ''} при цене {_usd(m)}".replace("  ", " "), -round(auction_fee(m, auction, costs))]]
     market = market_config(data.auction, costs, data.location)
     base_kind = _market_base(data, market)
@@ -450,12 +450,12 @@ def calculate(data: BidInput, costs: dict) -> BidResult:
     verdict = f"ОСМОТР: до {_usd(bid)}, если дефект не подтвердится"
     verdict += f" (подтвердится — до {_usd(confirmed.max_bid)})" if confirmed.max_bid else " (подтвердится — не брать)"
     if result.market_price:
-        verdict += f"; рынок ≈ {_usd(result.market_price)} — лоты с таким объявлением уходят дешевле"
+        verdict += f"; средняя цена покупки ≈ {_usd(result.market_price)} — лоты с таким объявлением уходят дешевле"
         if result.win_chance is not None:
             verdict += f", выигрывает ~{result.win_chance:.0%} похожих"
     if data.current_bid and data.current_bid > bid:
         verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)} (даже без дефекта)"
-    rest = [x for x in result.verdict.split("; ")[1:] if not x.startswith("рынок ≈")]
+    rest = [x for x in result.verdict.split("; ")[1:] if not x.startswith("средняя цена покупки ≈")]
     result.verdict = "; ".join([verdict] + rest)
     result.lines.append(f"если дефект подтвердится: потолок {_usd(confirmed.max_bid) if confirmed.max_bid else 'нет'}")
     return result
@@ -585,7 +585,7 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         # Сколько останется, если купить по обычной цене торгов: продажа − история − расходы − (рынок + сборы).
         market_fee = auction_fee(market, auction, costs)
         result.profit_at_market = sale - discount - fixed_total - market - market_fee
-        lines.append(f"прибыль при покупке по рынку {_usd(market)}: {_usd(result.profit_at_market)} (сборы {_usd(market_fee)})")
+        lines.append(f"прибыль при покупке по средней цене {_usd(market)}: {_usd(result.profit_at_market)} (сборы {_usd(market_fee)})")
         # Статьи для окна: каждая сумма с подписью, из чего сложилась прибыль.
         days = float(costs.get("days_to_sell", 0)) + flags.extra_days
         labels = {
@@ -616,7 +616,7 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         base_label = (f"MMR {_usd(data.mmr)}" if market_source.startswith("MMR") and data.mmr else
                       f"KBB {_usd(data.kbb_private_party)}" if data.kbb_private_party else "")
         share = re.search(r"× ([\d.]+)", market_source)
-        market_label = "Покупка по рынку: " + (f"{base_label} × {share.group(1)}" if base_label and share else market_source) + \
+        market_label = "Средняя цена покупки на аукционе: " + (f"{base_label} × {share.group(1)}" if base_label and share else market_source) + \
                        (" (с тяжёлыми дефектами дешевле)" if "тяжёлыми" in market_source and "без" not in market_source else "")
         items += [[market_label, -round(market)],
                   [f"Сборы аукциона {auction or ''} при цене {_usd(market)}".replace("  ", " "), -round(market_fee)]]
@@ -629,11 +629,11 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
     chance = win_chance(bid, base_value, points) if base_value else None
     result.win_chance = chance
     if market:
-        lines.append(f"рынок ≈ {_usd(market)} ({market_source})")
+        lines.append(f"средняя цена покупки ≈ {_usd(market)} ({market_source})")
         if bid < market * 0.95:
-            verdict += f"; рынок ≈ {_usd(market)} — потолок ниже на {_usd(market - bid)}, выиграть вряд ли"
+            verdict += f"; средняя цена покупки ≈ {_usd(market)} — потолок ниже на {_usd(market - bid)}, выиграть вряд ли"
         else:
-            verdict += f"; рынок ≈ {_usd(market)} — шанс есть"
+            verdict += f"; средняя цена покупки ≈ {_usd(market)} — шанс есть"
         if chance is not None:
             verdict += f" (выигрывает ~{chance:.0%} похожих лотов)"
     elif data.mmr:
