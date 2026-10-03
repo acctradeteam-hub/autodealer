@@ -1,20 +1,44 @@
 {
   "manifest_version": 3,
   "name": "Lot Analyzer KBB",
-  "version": "1.1",
-  "description": "KBB Private Party для машин из окна программы lot_analyzer (вкладка kbb.com закрывается сама по окончании) и запись расчёта в Notes карточек CarMax.",
-  "background": {"service_worker": "background.js"},
-  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "version": "1.2",
+  "description": "lot_analyzer: KBB Private Party для машин из окна программы (вкладка kbb.com открывается в фоне и закрывается сама), ссылки окна — в фоновых вкладках, запись KBB и замечаний аукциона в Notes карточек CarMax.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:8765/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://www.kbb.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.kbb.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.carmaxauctions.com/*"],
-      "js": ["carmax_notes.js"],
+      "matches": [
+        "https://www.carmaxauctions.com/*"
+      ],
+      "js": [
+        "carmax_notes.js"
+      ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1:8765/*"
+      ],
+      "js": [
+        "app_bridge.js"
+      ],
+      "run_at": "document_start"
     }
+  ],
+  "permissions": [
+    "storage"
   ]
 }

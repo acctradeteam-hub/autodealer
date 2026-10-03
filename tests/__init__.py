@@ -7,8 +7,9 @@ from pathlib import Path
 
 os.environ.setdefault("LOT_ANALYZER_HISTORY", os.path.join(os.path.dirname(__file__), "no_history.csv"))
 
-from lot_analyzer import analytics, results  # noqa: E402
+from lot_analyzer import analytics, app, results  # noqa: E402
 
 _TMP = Path(tempfile.mkdtemp(prefix="lot_analyzer_tests_"))
 analytics.KBB_LOG_PATH = _TMP / "kbb_history.csv"
 results.HISTORY_PATH = _TMP / "auction_results.csv"
+app.BIDS_PATH = _TMP / "my_bids.json"

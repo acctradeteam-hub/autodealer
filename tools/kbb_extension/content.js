@@ -1,5 +1,10 @@
 /* Собрано из tools/bookmarklet/save_auction_page.js (python3 tools/bookmarklet/build.py) — не править вручную. */
 window.lotAnalyzerAuto = true;
+/* Вкладку открыло окно программы в фоне: машины для автопилота хранит фон расширения — спрашиваем его. */
+(function (run) {
+  if (/[#&]la=/.test(location.hash) || /^la(-run)?=/.test(window.name || '')) { run(); return; }
+  try { chrome.runtime.sendMessage({ type: 'la-cars' }, function (reply) { void chrome.runtime.lastError; if (reply && reply.cars) { window.name = 'la=' + reply.cars; } run(); }); } catch (e) { run(); }
+})(function () {
 /* Закладка «Сохранить для анализа»: один клик на странице аукциона (watch list,
    карточка лота) — и страница сохраняется в «Загрузки» как .html для lot_analyzer.
    Работает в вашем браузере, под вашим входом на сайт; никуда ничего не отправляет.
@@ -416,3 +421,4 @@ window.lotAnalyzerAuto = true;
     if (back && !/selected/.test(back.className)) { var b0 = firstKey(); back.click(); var w0 = 0; var wait0 = function () { w0 += 400; if (firstKey() !== b0 || w0 > 15000) { setTimeout(collectAll, 800); } else { setTimeout(wait0, 400); } }; setTimeout(wait0, 400); } else { collectAll(); }
   } else { save(null); }
 })();
+});

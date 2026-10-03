@@ -197,6 +197,20 @@ def find(row: dict, by_vin: dict, by_ymm: dict) -> dict | None:
     return sorted(found, key=lambda r: (r["date"], r["outcome"] == "Sold"))[-1]
 
 
+def short(rec: dict) -> str:
+    """«был 9/29/26 CarMax Chino — продана $10,250»."""
+    try:
+        y, m, d = rec["date"][:10].split("-")
+        when = f"{int(m)}/{int(d)}/{y[2:]}"
+    except ValueError:
+        when = rec.get("date", "")
+    price = _num(rec.get("price"))
+    outcome = rec.get("outcome", "")
+    what = (f"продана ${price:,.0f}" if outcome == "Sold" and price else f"IF ${price:,.0f}, не продана" if outcome.lower().startswith("if") and price
+            else "не продана" if outcome == "No Sale" else outcome.lower() or "итога нет")
+    return f"был на аукционе {when} {rec.get('auction', '')} — {what}"
+
+
 def describe(rec: dict, mmr: float | None = None) -> str:
     mmr = mmr or _num(rec.get("mmr"))
     price = _num(rec.get("price"))

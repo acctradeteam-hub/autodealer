@@ -146,7 +146,11 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
     new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])]
     changed = results.merge(history, new)
     by_vin, by_ymm = results.index(history)
+    today = time.strftime("%Y-%m-%d")
     for row in rows:
+        # Эта машина (VIN) уже была на торгах — по вашей базе: когда, где и чем кончилось.
+        past = sorted((r for r in by_vin.get(row.get("vin", ""), []) if r.get("date") and r["date"] < today), key=lambda r: r["date"])
+        row["seen_before"] = "; ".join(results.short(r) for r in past)
         rec = results.find(row, by_vin, by_ymm)
         if not rec:
             continue
@@ -180,6 +184,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     saved_kbb = load_kbb()
+    bids = load_bids()
     kbb_cfg = costs.get("kbb_page") or {}
     condition = kbb_cfg.get("condition", "good")
     kbb_pages = [{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))}
@@ -192,6 +197,10 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
             if only_no_photos and row.get("no_photos") != "да":
                 continue
             seen.add(key)
+            bid = bids.get(row.get("vin", ""))
+            if bid:                           # ставка, вписанная в окне, — главнее «MP …» из заметки
+                row["my_proxy_usd"] = str(bid["usd"])
+                row["my_bid_from_window"] = "1"
             own = saved_kbb.get(row.get("vin", ""))
             if own:                          # вписан в окне по этому VIN — главнее всего
                 row["kbb_private_party_usd"] = f"{float(own['usd']):.0f}"
@@ -223,8 +232,29 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     for r in rows:
         r["popular"] = "да" if popular.is_popular(r, costs) else ""
         r["group"] = "popular" if r["popular"] else "truck" if popular.is_pickup(r) else "ev" if is_electric(r) else "other"
-    rows.sort(key=lambda r: (GROUPS.index(r["group"]), RANK.get(r.get("calc_verdict", "").split(" ")[0].rstrip(":"), 5), -expected_gain(r)))
+    rows.sort(key=lambda r: (GROUPS.index(r["group"]), verdict_rank(r.get("calc_verdict", "")), -expected_gain(r)))
     return rows
+
+
+BIDS_PATH = Path("data/my_bids.json")
+
+
+def load_bids() -> dict[str, dict]:
+    try:
+        return json.loads(BIDS_PATH.read_text(encoding="utf-8")) if BIDS_PATH.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_bid(vin: str, usd: float | None) -> None:
+    """Ваша ставка по VIN (вписана в окне); пустое значение — стереть."""
+    bids = load_bids()
+    if usd:
+        bids[vin] = {"usd": round(usd), "date": time.strftime("%Y-%m-%d")}
+    else:
+        bids.pop(vin, None)
+    BIDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BIDS_PATH.write_text(json.dumps(bids, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def load_kbb() -> dict[str, dict]:
@@ -243,6 +273,13 @@ def save_kbb(vin: str, usd: float | None, miles: str = "", source: str = "вру
         values.pop(vin, None)
     KBB_PATH.parent.mkdir(parents=True, exist_ok=True)
     KBB_PATH.write_text(json.dumps(values, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def verdict_rank(verdict: str) -> float:
+    """Место вердикта в сортировке. «РИСК: рама …; МОЖНО до …» — по тому, что после риска: машину с выгодой — наверх."""
+    if verdict.startswith("РИСК") and "; " in verdict:
+        verdict = verdict.split("; ", 1)[1]
+    return RANK.get(verdict.split(" ")[0].rstrip(":"), 5)
 
 
 def expected_gain(row: dict[str, str]) -> float:
@@ -298,7 +335,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "exterior_color", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
-           "sale_date", "lot_url", "vin", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
+           "sale_date", "lot_url", "vin", "my_proxy_usd", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
 
 
 def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
@@ -352,6 +389,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     files.append(item)
                 costs_now = load_costs(costs_path)
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
+                                     "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "seen_before": r.get("seen_before", ""),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
                                     for r in rows], "files": files, "total": total, "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
@@ -382,6 +420,17 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(b'{"error":"not found"}', status=404)
 
         def do_POST(self) -> None:
+            if urlparse(self.path).path == "/api/bid":
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                vin = str(data.get("vin", "")).strip().upper()
+                value = str(data.get("usd", "")).replace("$", "").replace(",", "").strip()
+                if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) or (value and not value.replace(".", "", 1).isdigit()):
+                    self._send(b'{"error":"need vin and number"}', status=400)
+                    return
+                save_bid(vin, float(value) if value else None)
+                self._send(b'{"ok":true}')
+                return
             if urlparse(self.path).path == "/api/kbb":
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -448,6 +497,7 @@ input.kbb{width:80px;min-width:0;padding:4px 6px;text-align:right}
 td.kbbcell,th.kbbcell{width:96px;max-width:96px;white-space:normal;overflow-wrap:anywhere}td.kbbcell .muted{font-size:11px;line-height:1.25}
 .tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}button.tab{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:600}
 button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
+div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
@@ -471,7 +521,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
 <div class="card"><div id="tabs" class="tabs"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
-<th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th>Ставка</th><th class="kbbcell">KBB</th><th>Продажа</th><th class="w110" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов)">Средняя цена покупки<br>на аукционе</th><th class="w110">Прибыль при покупке<br>по средней цене</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
+<th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов)">Средняя цена покупки<br>на аукционе</th><th class="w110">Прибыль при покупке<br>по средней цене</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
 </main><script>
@@ -490,7 +540,11 @@ function resultCell(x){if(!x.auction_result)return '';const p=Number(x.auction_r
 /* CR grade Manheim (0–5): 4+ хорошо, 3–4 средне, ниже 3 — много вложений */
 const crCls=g=>{const n=parseFloat(g);return isNaN(n)?'':n>=4?'v-ok':n>=3?'v-mid':'v-bad'};
 const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
-function cls(v){return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
+/* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
+const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
+function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
+function vRest(v){return vParts(v).slice(vN(v)).join(';')}
+function cls(v){if(v.startsWith('РИСК'))return 'v-mid';return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
 function kbbShort(s){s=String(s||'').replace(/^страница KBB: /,'');return s.length>34?s.slice(0,32)+'…':s}
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
@@ -509,19 +563,21 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_u
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
 <div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
 <td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
-<td class="num">${x.condition_grade?`<span class="pill ${crCls(x.condition_grade)}">${esc(x.condition_grade.split(' ')[0])}</span>`:'—'}${x.cr_url?`<div><a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a></div>`:''}</td>
-<td class="num">${money(x.current_bid_usd)}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
+<td class="num">${x.condition_grade?`<span class="pill ${crCls(x.condition_grade)}">${esc(x.condition_grade.split(' ')[0])}</span>`:(x.seen_before?'':'—')}${x.seen_before?`<div class="seen" title="Эта машина (VIN) уже была на торгах — по вашей базе итогов">${esc(x.seen_before).replace(/; /g,'<br>')}</div>`:''}${x.cr_url?`<div><a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a></div>`:''}</td>
+<td class="num kbbcell">${x.vin?`<input class="kbb bid" data-vin="${esc(x.vin)}" value="${esc(x.my_proxy_usd)}" placeholder="ставка" inputmode="numeric" title="Ваша ставка (proxy bid). Enter — сохранить и пересчитать" onchange="saveBid(this)">`:money(x.my_proxy_usd)}${x.profit_at_my_bid_usd?`<div class="muted">прибыль <b class="${Number(x.profit_at_my_bid_usd)<0?'neg':'pos'}">${signed(x.profit_at_my_bid_usd)}</b></div>`:''}${x.current_bid_usd?`<div class="muted">на сайте ${money(x.current_bid_usd)}</div>`:''}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
 <div class="muted" title="${esc(x.kbb_entered)}">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена: ${esc(x.kbb_entered)}">${esc(kbbShort(x.kbb_entered))} ↗</a>`:esc(kbbShort(x.kbb_entered))}</div>${x.vin&&x.odometer_miles?`<div><a class="muted" href="${esc(laUrl([x]))}" onclick="openKbb([shown[${i}]]);return false" title="Откроется kbb.com и сам получит KBB (расширение «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»): комплектация, пробег ${esc(x.odometer_miles)}, 92620, Private Party, Good">${x.kbb_private_party_usd?'обновить ↗':'получить KBB ↗'}</a></div>`:''}</td>
-<td class="num" title="Цена продажи на Facebook: KBB Private Party, без вычета на торг — запас на торг решаете сами (без KBB — грубо по MMR)">${money(x.sale_estimate_usd)}${x.kbb_private_party_usd?'':'<div class="muted">по MMR</div>'}</td>
+
 <td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}</td>
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
-<td><span class="pill ${cls(x.calc_verdict||'')}">${esc((x.calc_verdict||'').split(';')[0])}</span><div class="muted">${esc((x.calc_verdict||'').split(';').slice(1).join(';'))}</div>
-<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="12" class="muted">${d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;
+<td><span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
+<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
 $('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны лучшие ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · сверху — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`;
 $('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
+async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
+try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 let shown=[];
@@ -535,7 +591,12 @@ if(!list.length){alert('У машин на экране KBB уже есть');re
 openKbb(list);
 $('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
 /* Машины передаются и в адресе (#la=…), и в имени вкладки — на случай, если kbb.com при переадресации потеряет хвост адреса. */
-function openKbb(list){const url=laUrl(list);window.open(url,'la='+url.split('#la=')[1])}
+/* С расширением «Lot Analyzer KBB» ссылки открываются соседней вкладкой в фоне — вы остаётесь в окне программы. */
+const hasExt=()=>document.documentElement.dataset.laExt==='1';
+function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',url,cars:cars||''},'*');return true}
+document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[target="_blank"]');
+ if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0||!/^https:/.test(a.href)||!hasExt())return;e.preventDefault();openBg(a.href)},true);
+function openKbb(list){const url=laUrl(list),cars=url.split('#la=')[1];if(openBg(url,cars))return;window.open(url,'la='+cars)}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();
 $('links').innerHTML=d.map(x=>`<a class="btn ${x.kind.startsWith('страница')?'sec':''}" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
 '<span class="muted" style="align-self:center">затем на каждой вкладке — закладка «💾 Сохранить для анализа»</span>'}

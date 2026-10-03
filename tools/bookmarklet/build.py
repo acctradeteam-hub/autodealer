@@ -100,7 +100,12 @@ def main() -> None:
     extension.mkdir(exist_ok=True)
     (extension / "content.js").write_text(
         "/* Собрано из tools/bookmarklet/save_auction_page.js (python3 tools/bookmarklet/build.py) — не править вручную. */\n"
-        "window.lotAnalyzerAuto = true;\n" + source, encoding="utf-8")
+        "window.lotAnalyzerAuto = true;\n"
+        "/* Вкладку открыло окно программы в фоне: машины для автопилота хранит фон расширения — спрашиваем его. */\n"
+        "(function (run) {\n"
+        "  if (/[#&]la=/.test(location.hash) || /^la(-run)?=/.test(window.name || '')) { run(); return; }\n"
+        "  try { chrome.runtime.sendMessage({ type: 'la-cars' }, function (reply) { void chrome.runtime.lastError; if (reply && reply.cars) { window.name = 'la=' + reply.cars; } run(); }); } catch (e) { run(); }\n"
+        "})(function () {\n" + source + "});\n", encoding="utf-8")
     print(f"bookmarklet.txt: {len(url)} символов\ninstall.html готов\nkbb_extension/content.js готов")
 
 

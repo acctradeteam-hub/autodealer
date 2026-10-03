@@ -32,15 +32,22 @@
   var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: )/;
   var merged = function (current, note) {
     var parts = note.split('\n');
-    var kbbLine = parts[0];
-    var num = (/^KBB ([\d,]+)\$/.exec(kbbLine) || [])[1] || '';
-    var same = new RegExp('^\\s*KBB\\s*(PP\\s*)?\\$?\\s*' + num.replace(/,/g, ',?') + '\\s*\\$?(\\s|$)', 'i');
+    var kbbLine = parts.filter(function (l) { return /^KBB /.test(l); })[0] || '';
+    var mpLine = parts.filter(function (l) { return /^MP /.test(l); })[0] || '';
+    var rest = parts.filter(function (l) { return l !== kbbLine && l !== mpLine; });
     var lines = current.split('\n').filter(function (l) { return !OWN.test(l); });
-    /* Тот же KBB уже записан с датой — оставляем как есть (дата — когда посчитали впервые). */
-    var kept = lines.some(function (l) { return same.test(l) && /\d{1,2}\/\d{1,2}/.test(l); });
-    if (!kept) { lines = lines.filter(function (l) { return !same.test(l); }); }
+    var add = [];
+    if (kbbLine) {
+      var num = (/^KBB ([\d,]+)\$/.exec(kbbLine) || [])[1] || '';
+      var same = new RegExp('^\\s*KBB\\s*(PP\\s*)?\\$?\\s*' + num.replace(/,/g, ',?') + '\\s*\\$?(\\s|$)', 'i');
+      /* Тот же KBB уже записан с датой — оставляем как есть (дата — когда посчитали впервые). */
+      var kept = lines.some(function (l) { return same.test(l) && /\d{1,2}\/\d{1,2}/.test(l); });
+      if (!kept) { lines = lines.filter(function (l) { return !same.test(l); }); add.push(kbbLine); }
+    }
+    /* Ставка из окна программы заменяет прежние строки «MP …». */
+    if (mpLine) { lines = lines.filter(function (l) { return !/^\s*MP\s*\$?\s*[\d,]+\s*\$?\s*$/i.test(l); }); add.push(mpLine); }
     var own = lines.join('\n').replace(/\s+$/, '');
-    var add = (kept ? [] : [kbbLine]).concat(parts.slice(1));
+    add = add.concat(rest);
     return (own && add.length ? own + '\n' : own) + add.join('\n');
   };
   var saveButton = function (t) {
@@ -85,11 +92,11 @@
         var text = merged(t.value, note);
         if (text === t.value) { continue; }
         tries[vin] = (tries[vin] || 0) + 1;
-        say('Lot Analyzer: пишу KBB и замечания аукциона в Notes — ' + vin + '…');
+        say('Lot Analyzer: пишу KBB, ставку и замечания аукциона в Notes — ' + vin + '…');
         await write(t, text);
         done += 1;
       }
-      if (done) { say('Lot Analyzer: KBB и замечания аукциона записаны в Notes у ' + done + ' машин.', 6000); }
+      if (done) { say('Lot Analyzer: KBB, ставка и замечания аукциона записаны в Notes у ' + done + ' машин.', 6000); }
     } finally { busy = false; }
   };
   setTimeout(run, 3000);

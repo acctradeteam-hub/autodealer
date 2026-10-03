@@ -384,6 +384,7 @@ class BidInput:
     history_text: str = ""               # титул, Carfax, CR, повреждения — одной строкой
     defects_text: str = ""               # описание дефектов для оценки ремонта
     electric: bool = False               # электромобиль: смог-тест не нужен
+    consider: bool = False               # вы посмотрели KBB — считаем и при стоп-факторах (рама, титул), вердикт «РИСК»
 
 
 @dataclass
@@ -417,7 +418,18 @@ MAJOR_DEFECT_RE = re.compile(r"major\s+(engine|transmission)\s+defect", re.I)
 
 
 def calculate(data: BidInput, costs: dict) -> BidResult:
-    """Потолок ставки. Для «Major Engine/Transmission Defect» — два сценария и пометка «личный осмотр»."""
+    """Потолок ставки. Стоп-фактор (рама, титул …) у машины, по которой вы смотрели KBB, не обрывает расчёт:
+    всё считается как обычно, а вердикт начинается с «РИСК: …» — решаете сами."""
+    result = _calculate_scenarios(data, costs)
+    if data.consider:
+        risks = assess_history(data.history_text, costs).skip
+        if risks:
+            result.verdict = "РИСК: " + ", ".join(risks) + "; " + result.verdict
+    return result
+
+
+def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
+    """Для «Major Engine/Transmission Defect» — два сценария и пометка «личный осмотр»."""
     inspect: list[str] = []
     if data.no_photos:
         inspect.append("без фото")
@@ -476,7 +488,7 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
 
     # 0. Стоп-факторы — до всего остального: такую машину не берём при любой цене.
     flags = assess_history(data.history_text, costs)
-    if flags.skip:
+    if flags.skip and not data.consider:
         result.verdict = "ПРОПУСТИТЬ: " + ", ".join(flags.skip)
         lines.append("стоп-факторы в истории")
         return result
@@ -704,6 +716,7 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         history_text=history,
         defects_text=" | ".join(squeeze(row.get(k, "")) for k in ("defects", "lot_description") if squeeze(row.get(k, ""))),
         electric=is_electric(row),
+        consider=bool(parse_money(row.get("kbb_private_party_usd"))) and not row.get("kbb_from_window_field"),
     )
 
 
@@ -754,6 +767,13 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
+        # Прибыль при вашей ставке: от потолка к ставке со своими сборами аукциона.
+        proxy = parse_money(row.get("my_proxy_usd"))
+        row["profit_at_my_bid_usd"] = ""
+        if proxy and result.max_bid and result.profit_at_max is not None:
+            auction = resolve_auction(data.auction, costs)
+            fee = (lambda bid: auction_fee(bid, auction, costs)) if auction else (lambda bid: 0.0)
+            row["profit_at_my_bid_usd"] = f"{result.profit_at_max + result.max_bid - proxy + fee(result.max_bid) - fee(proxy):.0f}"
         real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
         if costs.get("require_kbb") and not real_kbb and result.max_bid:
             # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.

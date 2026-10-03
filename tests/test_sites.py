@@ -190,7 +190,11 @@ class TestCarMaxWatchlist(unittest.TestCase):
 
     def test_verdicts(self) -> None:
         verdict = {lot: calculate(input_from_row(r), COSTS).verdict for lot, r in self.by_lot.items()}
-        self.assertTrue(verdict["A/88"].startswith("ПРОПУСТИТЬ"))       # Structural damage
+        # Structural damage, но KBB вы уже смотрели (в заметке) — считаем, вердикт «РИСК: …»
+        self.assertTrue(verdict["A/88"].startswith("РИСК: повреждение рамы"), verdict["A/88"])
+        self.assertIsNotNone(calculate(input_from_row(self.by_lot["A/88"]), COSTS).max_bid)
+        no_kbb = dict(self.by_lot["A/88"], kbb_private_party_usd="")
+        self.assertTrue(calculate(input_from_row(no_kbb), COSTS).verdict.startswith("ПРОПУСТИТЬ"))   # без KBB — как раньше
         self.assertTrue(verdict["B/10"].startswith("ПРОПУСТИТЬ"))       # Not actual miles
         self.assertTrue(verdict["A/70"].startswith("ОСМОТР"))           # KBB из заметки, «Major transmission defect»
         self.assertTrue(verdict["A/9"].startswith("НЕТ ОЦЕНКИ"))        # KBB не вписан

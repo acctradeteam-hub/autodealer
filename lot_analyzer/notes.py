@@ -3,8 +3,9 @@
 Пишется только машинам с настоящим KBB Private Party. Расширение «Lot Analyzer KBB» берёт
 эти тексты у окна программы (/api/notes) и вписывает их в Notes на carmaxauctions.com.
 
-Формат — две строки:
+Формат:
     KBB 19,530$ 10/2/26                            ← KBB Private Party и дата, на которую он посчитан
+    MP 15000                                       ← ваша ставка, вписанная в окне («Наша ставка»)
     CarMax: Major transmission defect, Prior rental ← замечания самого аукциона (announcements)
 Замечания аукциона нужны потом, при разборе итогов торгов: дешёвая продажа с «Major engine defect» —
 не показатель цены. Строку «KBB …$» окно читает обратно; строку аукциона при чтении заметки пропускает
@@ -29,11 +30,16 @@ def _date(iso: str = "") -> str:
 
 
 def lot_note(row: dict) -> str:
-    """KBB с датой и замечания аукциона. Пусто, если настоящего KBB нет."""
+    """KBB с датой, ваша ставка из окна («MP 5600») и замечания аукциона. Пусто, если нет ни KBB, ни ставки."""
     kbb = str(row.get("kbb_private_party_usd") or "").replace(",", "")
-    if not kbb.replace(".", "", 1).isdigit() or float(kbb) <= 0:
+    has_kbb = kbb.replace(".", "", 1).isdigit() and float(kbb) > 0 and not row.get("kbb_from_window_field")
+    bid = str(row.get("my_proxy_usd") or "").replace(",", "") if row.get("my_bid_from_window") else ""
+    has_bid = bid.replace(".", "", 1).isdigit() and float(bid) > 0
+    if not has_kbb and not has_bid:
         return ""
-    lines = [f"KBB {float(kbb):,.0f}$ {_date(row.get('kbb_date', ''))}"]
+    lines = [f"KBB {float(kbb):,.0f}$ {_date(row.get('kbb_date', ''))}"] if has_kbb else []
+    if has_bid:
+        lines.append(f"MP {float(bid):.0f}")
     remarks = str(row.get("auction_notes") or "").strip()
     if remarks:
         lines.append(f"{row.get('auction') or 'Auction'}: {remarks}")
@@ -46,7 +52,7 @@ def strip_own(text: str) -> str:
 
 
 def notes_for(rows: list[dict]) -> dict[str, str]:
-    """VIN → текст заметки, для машин с настоящим KBB."""
+    """VIN → текст заметки, для машин с настоящим KBB или со ставкой, вписанной в окне."""
     out = {}
     for row in rows:
         vin = row.get("vin", "")
