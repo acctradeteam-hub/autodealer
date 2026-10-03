@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Lot Analyzer KBB",
-  "version": "1.2",
-  "description": "lot_analyzer: KBB Private Party для машин из окна программы (вкладка kbb.com открывается в фоне и закрывается сама), ссылки окна — в фоновых вкладках, запись KBB и замечаний аукциона в Notes карточек CarMax.",
+  "version": "1.3",
+  "description": "lot_analyzer: KBB Private Party для машин из окна программы (вкладка kbb.com открывается в фоне и закрывается сама), ссылки окна — в фоновых вкладках, запись KBB и замечаний аукциона в Notes карточек CarMax; ставка из окна — в форму «Set early bid» на CarMax (Place bid нажимаете сами).",
   "background": {
     "service_worker": "background.js"
   },
@@ -36,6 +36,15 @@
         "app_bridge.js"
       ],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.carmaxauctions.com/vehicledetail/*"
+      ],
+      "js": [
+        "carmax_bid.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "permissions": [

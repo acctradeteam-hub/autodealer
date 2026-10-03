@@ -238,8 +238,18 @@ class CarmaxTilesTest(unittest.TestCase):
         html = (Path(__file__).parent / "fixtures" / "carmax_tiles.html").read_text(encoding="utf-8")
         html = html.replace("</button></div></div><div class=\"MuiCardMedia-root", "</button></div></div><img src=\"https://img.carmax.test/70272833/1.jpg\"><div class=\"MuiCardMedia-root", 1)
         first = find_carmax_cards(html)[0]
-        self.assertEqual(first["lot_url"], "https://www.carmaxauctions.com/search?view=tile&stockNum=70272833")
+        self.assertEqual(first["lot_url"], "https://www.carmaxauctions.com/vehicledetail/70272833")
         self.assertEqual(first["photo"], "https://img.carmax.test/70272833/1.jpg")
-        self.assertEqual(carmax_lot_url("123", "https://www.carmaxauctions.com/mylist?view=detailed&stockNum=9"),
-                         "https://www.carmaxauctions.com/mylist?view=detailed&stockNum=123")
-        self.assertEqual(carmax_lot_url("123"), "https://www.carmaxauctions.com/search?stockNum=123")
+        self.assertEqual(carmax_lot_url("123"), "https://www.carmaxauctions.com/vehicledetail/123")
+
+
+class CarmaxDetailTest(unittest.TestCase):
+    def test_vehicledetail_page(self):
+        from lot_analyzer.parsers import parse_page
+        html = (Path(__file__).parent / "fixtures" / "carmax_vehicledetail.html").read_text(encoding="utf-8")
+        row = parse_page(html, source_name="CarMax_2012_Honda_Civic_LX.html")[0]
+        self.assertEqual((row["vin"], row["year"], row["make"], row["model"], row["trim"]), ("19XFB2F53CE012089", "2012", "Honda", "Civic", "LX"))
+        self.assertEqual((row["odometer_miles"], row["lot_number"], row["location"], row["exterior_color"]), ("125712", "B/158", "Murrieta", "Black"))
+        self.assertEqual(row["lot_url"], "https://www.carmaxauctions.com/vehicledetail/70227019")
+        self.assertTrue(row["photo_main_url"].startswith("https://img2.carmax.com/assets/70227019/"))
+        self.assertTrue(row["sale_date"].startswith("10/5/2026"))

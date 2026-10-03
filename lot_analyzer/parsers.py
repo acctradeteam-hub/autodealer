@@ -394,6 +394,15 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
             rows.append(row)
         return rows
 
+    detail = sites_text.carmax_detail(html)
+    if detail and detail["vin"]:                # страница самого лота CarMax (vehicledetail)
+        row = empty_row()
+        row["source_file"], row["parsed_at"] = source_name, stamp
+        notes = sites_text.row_from_carmax_card(row, detail) + _vin_notes(row)
+        row["exterior_color"] = detail.get("color", "")
+        row["needs_review"] = clean_cell("; ".join(notes), 600)
+        return [row]
+
     cards = sites_text.find_carmax_cards(html)
     if not cards:
         return [parse_lot(html, source_name=source_name, auction_hint=auction_hint)]

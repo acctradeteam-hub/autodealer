@@ -324,15 +324,13 @@ def _carmax_page_url(html: str) -> str:
 
 
 def carmax_lot_url(stock: str, page_url: str = "") -> str:
-    """Ссылка на конкретный лот: та же страница CarMax с stockNum — сайт сразу открывает карточку машины."""
-    if not stock:
-        return ""
-    if not page_url:
-        return f"https://www.carmaxauctions.com/search?stockNum={stock}"
-    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-    parts = urlsplit(page_url)
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "stockNum"] + [("stockNum", stock)]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+    """Страница лота CarMax: все фото, отчёт и кнопка ставки «Bid early»."""
+    return f"https://www.carmaxauctions.com/vehicledetail/{stock}" if stock else ""
+
+
+def carmax_photo_url(stock: str) -> str:
+    """Главное фото CarMax по номеру машины (так их отдаёт сам сайт)."""
+    return f"https://img2.carmax.com/assets/{stock}/image/DSIDE.jpg?width=400&height=300" if stock else ""
 
 
 def _carmax_photo(card, page_url: str) -> str:
@@ -371,7 +369,7 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         if card is None or card.find_parent(attrs={"role": "presentation"}) is not None:
             continue
         seen.add(vin)
-        info: dict[str, str] = {"vin": vin, "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url)}
+        info: dict[str, str] = {"vin": vin, "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url) or carmax_photo_url(card["id"])}
         caption = card.find("p", class_=re.compile("caption"))
         head = squeeze(caption.get_text(" ", strip=True)) if caption else ""
         lane_run, _, location = head.partition("•")
@@ -414,7 +412,7 @@ def _carmax_tiles(soup, page_url: str = "") -> list[dict[str, str]]:
         if not head or not title:
             continue
         lane_run, _, location = head.partition("•")
-        info = {"vin": "", "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url), "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
+        info = {"vin": "", "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url) or carmax_photo_url(card["id"]), "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
         spec = next((t for t in texts if re.match(r"[\d,]+ mi\b", t)), "")
         info["miles"] = spec.split(" mi")[0].replace(",", "") if spec else ""
         info["drive"] = " • ".join(spec.split(" • ")[1:]) if spec else ""
@@ -483,3 +481,32 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     if not card["vin"]:
         notes.append("VIN нет: страница сохранена в виде «плитка» — VIN видны в виде «Detailed table»")
     return notes
+
+
+def carmax_detail(html: str) -> dict[str, str] | None:
+    """Страница лота CarMax (carmaxauctions.com/vehicledetail/<номер>) → те же поля, что у карточки списка."""
+    head = html[:3000]
+    found = re.search(r"carmaxauctions\.com/vehicledetail/(\d+)", head)
+    if not found:
+        return None
+    stock = found.group(1)
+    soup = BeautifulSoup(html, "lxml")
+    title = squeeze(soup.title.get_text(" ", strip=True)) if soup.title else ""
+    notes = soup.find("textarea")
+    for junk in soup.select('[role="dialog"], [role="presentation"], header, footer, nav, script, style'):
+        junk.decompose()
+    text = " | ".join(t for t in (squeeze(x) for x in soup.body.stripped_strings) if t) if soup.body else ""
+    pick = lambda pattern: (re.search(pattern, text) or [None, ""])[1].strip()
+    vin = pick(r"\bVIN \| ([A-HJ-NPR-Z0-9]{17})\b") or pick(r"\b([A-HJ-NPR-Z0-9]{17})\b")
+    announcements = pick(r"Announcements \| (.*?) \| Add a note")
+    announcements = "" if announcements.startswith("No announcement") else ", ".join(x.strip() for x in announcements.split(" | ") if x.strip())
+    lane, run = pick(r"Lane \| ([A-Z]{1,2})\b"), pick(r"Run Number \| (\d+)")
+    drive = " • ".join(x for x in (pick(r"Drive Type \| ([^|]+)"), pick(r"Transmission \| ([^|]+)"), pick(r"Engine \| ([^|]+)")) if x)
+    date, time_ = pick(r"\bDate \| (\d{1,2}/\d{1,2}/\d{4})"), pick(r"\bTime \| ([^|]+)")
+    photo = next((img.get("src") for img in soup.find_all("img") if "img2.carmax.com/assets/" in (img.get("src") or "")), "") or carmax_photo_url(stock)
+    return {"vin": vin, "stock": stock, "lot_url": carmax_lot_url(stock), "photo": photo,
+            "lane_run": f"{lane}/{run}" if lane and run else "", "location": pick(r"Auction information \| ([^|]+)"),
+            "title": title.split("|")[0].strip(), "miles": pick(r"\bMiles \| ([\d,]+)").replace(",", ""), "drive": drive,
+            "announcements": announcements, "notes": squeeze(strip_own(notes.get_text())) if notes else "",
+            "status": "", "start": f"{date} {time_}".strip(), "your_bid": "",
+            "color": pick(r"Ext/Int Color \| ([^|/]+)")}
