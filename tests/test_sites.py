@@ -253,3 +253,16 @@ class CarmaxDetailTest(unittest.TestCase):
         self.assertEqual(row["lot_url"], "https://www.carmaxauctions.com/vehicledetail/70227019")
         self.assertTrue(row["photo_main_url"].startswith("https://img2.carmax.com/assets/70227019/"))
         self.assertTrue(row["sale_date"].startswith("10/5/2026"))
+
+
+class CarmaxAnyLayoutTest(unittest.TestCase):
+    def test_cards_found_by_vin(self):
+        from lot_analyzer.sites_text import find_carmax_cards
+        rows = "".join(f'<div class="row"><a href="/vehicledetail/7030000{i}"><span>201{i} Honda Civic LX</span></a><span>A/{i + 1} • Murrieta, CA</span>'
+                       f'<span>{40 + i},000 mi • 2WD</span><span>19XFB2F5{i}CE01208{i}</span>{"<span>Major engine defect</span>" if i == 1 else ""}</div>' for i in range(3))
+        html = f'<!-- saved-by: lot_analyzer bookmarklet; url: https://www.carmaxauctions.com/auction/murrieta --><html><body><h1>CarMax</h1>{rows}</body></html>'
+        cards = find_carmax_cards(html)
+        self.assertEqual([c["vin"] for c in cards], ["19XFB2F50CE012080", "19XFB2F51CE012081", "19XFB2F52CE012082"])
+        self.assertEqual((cards[1]["title"], cards[1]["miles"], cards[1]["lane_run"], cards[1]["location"]), ("2011 Honda Civic LX", "41000", "A/2", "Murrieta, CA"))
+        self.assertEqual(cards[1]["lot_url"], "https://www.carmaxauctions.com/vehicledetail/70300001")
+        self.assertEqual(cards[1]["announcements"], "Major engine defect")

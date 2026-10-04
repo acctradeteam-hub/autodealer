@@ -340,7 +340,7 @@ window.lotAnalyzerAuto = true;
   /* CarMax показывает часть машин и кнопку «Show more / Показать следующие машины». Жмём её, пока машин
      прибавляется; если кнопки нет — прокручиваем вниз (подгрузка при прокрутке). Карточки запоминаем по VIN:
      если сайт уберёт верхние при прокрутке, в файл они всё равно попадут. */
-  if (auction === 'CarMax' && document.querySelector('[data-click-event="VehicleClickPosition"], [data-testid="copy-vin-button"]')) {
+  if (auction === 'CarMax' && !/\/vehicledetail\//.test(location.pathname)) {
     var cmCards = {};
     var cmOrder = [];
     /* Карточка CarMax — блок с номером машины в id; ключ — VIN (вид «Detailed table»), иначе этот номер. */
@@ -354,6 +354,29 @@ window.lotAnalyzerAuto = true;
         var vin = btn ? (btn.parentNode.textContent || '').replace(/\s+/g, '').toUpperCase() : '';
         out.push({ key: /^[A-HJ-NPR-Z0-9]{17}$/.test(vin) ? vin : 'id' + card.id, el: card });
       }
+      return out.length ? out : cmByVin();
+    };
+    /* Страница другого вида (список аукциона, таблица): карточка — самый большой блок вокруг VIN, где этот VIN один. */
+    var isVin = function (v) { return /\d/.test(v) && /[A-Z]/.test(v); };
+    var cmByVin = function () {
+      var out = [];
+      var seen = {};
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      var node = walker.nextNode();
+      for (; node; node = walker.nextNode()) {
+        var found = /\b[A-HJ-NPR-Z0-9]{17}\b/.exec(node.nodeValue || '');
+        if (!found || !isVin(found[0]) || seen[found[0]]) { continue; }
+        var el = node.parentNode;
+        if (!el || !el.closest || el.closest('[role="presentation"], [role="dialog"], script, style, textarea')) { continue; }
+        while (el.parentNode && el.parentNode !== document.body) {
+          var text = el.parentNode.textContent || '';
+          var vins = (text.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) || []).filter(isVin);
+          if (vins.some(function (v) { return v !== found[0]; }) || text.length > 5000) { break; }
+          el = el.parentNode;
+        }
+        seen[found[0]] = 1;
+        out.push({ key: found[0], el: el });
+      }
       return out;
     };
     var cmGrab = function () {
@@ -365,16 +388,36 @@ window.lotAnalyzerAuto = true;
       return cmOrder.length;
     };
     var cmVisible = function (el) { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !el.disabled && el.getAttribute('aria-disabled') !== 'true'; };
+    /* Кнопка «ещё машины»: обычная, своя CarMax (hzn-button) или «следующая страница» постраничного списка. */
     var cmMoreButton = function () {
-      var all = document.querySelectorAll('button, a, [role="button"]');
+      var all = document.querySelectorAll('button, a, [role="button"], hzn-button, hzn-text-link');
       for (var i = 0; i < all.length; i++) {
         var el = all[i];
         var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!text || text.length > 60 || el.closest('[role="presentation"], [role="dialog"]')) { continue; }
-        if (/^(more|ещё|еще)\s*\d*$/i.test(text) || /^see more$/i.test(el.getAttribute('aria-label') || '')) { continue; }
-        if (/^(show|load|see|view)\s+(more|next)|more (vehicles|cars|results)|next \d+ (vehicles|cars|results)|показать (ещё|еще|больше|следующ)|загрузить (ещё|еще)|следующие машины/i.test(text) && cmVisible(el)) { return el; }
+        var label = el.getAttribute('aria-label') || '';
+        if (text.length > 60 || el.closest('[role="presentation"], [role="dialog"]') || el.hasAttribute('disabled') || /disabled/i.test(el.className || '')) { continue; }
+        if (/^(more|ещё|еще)\s*\d*$/i.test(text) || /^see more$/i.test(label)) { continue; }
+        if ((/^(show|load|see|view)\s+(more|next)|more (vehicles|cars|results)|next \d+ (vehicles|cars|results)|показать (ещё|еще|больше|следующ)|загрузить (ещё|еще)|следующие машины|следующие \d+/i.test(text) ||
+             /go to next page|^next page$|следующая страница/i.test(label)) && cmVisible(el)) { return el; }
       }
       return null;
+    };
+    var cmPress = function (el) {
+      var inner = el.shadowRoot && el.shadowRoot.querySelector('button');
+      (inner || el).click();
+    };
+    /* Прокрутка до последней карточки — и страницы, и внутренней области списка, если он прокручивается сам. */
+    var cmScrollDown = function () {
+      var list = cmList();
+      var last = list.length ? list[list.length - 1].el : null;
+      if (last) {
+        last.scrollIntoView({ block: 'end' });
+        for (var box = last.parentNode; box && box !== document.body; box = box.parentNode) {
+          var style = getComputedStyle(box);
+          if (box.scrollHeight > box.clientHeight + 20 && /auto|scroll/.test(style.overflowY)) { box.scrollTop = box.scrollHeight; }
+        }
+      }
+      window.scrollTo(0, document.body.scrollHeight);
     };
     var cmClicks = 0;
     var cmScrolls = 0;
@@ -382,7 +425,7 @@ window.lotAnalyzerAuto = true;
       var before = cmGrab();
       say('CarMax: загружено машин ' + before + '… не трогайте страницу');
       var more = cmMoreButton();
-      if (more && cmClicks < 200) { cmClicks += 1; more.scrollIntoView({ block: 'center' }); more.click(); } else if (cmScrolls < 3) { cmScrolls += 1; window.scrollTo(0, document.body.scrollHeight); } else { cmFinish(); return; }
+      if (more && cmClicks < 200) { cmClicks += 1; more.scrollIntoView({ block: 'center' }); cmPress(more); } else if (cmScrolls < 3) { cmScrolls += 1; cmScrollDown(); } else { cmFinish(); return; }
       var waited = 0;
       var poll = function () {
         waited += 500;

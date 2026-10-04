@@ -402,7 +402,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 kbb_cfg = load_costs(costs_path).get("kbb_page") or {}
                 files = []
                 for p in pages:
-                    item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime))}
+                    item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime)), "cars": len(cache.rows(p))}
                     record = cache.kbb(p)
                     if record and "results" in record:
                         recs = record["results"]
@@ -619,7 +619,7 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_u
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
 $('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны лучшие ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · сверху — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`;
-$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
+$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?'':` <b class="${f.cars?'':'neg'}">(машин: ${f.cars||0})</b>`)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
 async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;

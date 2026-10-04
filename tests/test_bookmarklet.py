@@ -50,7 +50,9 @@ class TestBookmarklet(unittest.TestCase):
         self.assertIn("auction === 'CarMax'", self.source)
         self.assertIn("show|load|see|view", self.source)
         self.assertIn("следующие машины", self.source)
-        self.assertIn("see more$/i.test(el.getAttribute('aria-label')", self.source)
+        self.assertIn("/^see more$/i.test(label)", self.source)
+        self.assertIn("go to next page", self.source)                      # постраничный список
+        self.assertIn("hzn-button", self.source)                           # кнопки CarMax (web components)
         self.assertIn("save(null, null, cmOrder.length)", self.source)
 
     def test_carmax_hidden_cards_are_parsed(self) -> None:

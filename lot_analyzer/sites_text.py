@@ -397,7 +397,7 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         bid = card.find(string=re.compile(r"^\s*\$[\d,]+\s*$"))
         info["your_bid"] = squeeze(bid) if bid and card.find(string=re.compile("Your bid")) else ""
         cards.append(info)
-    return cards or _carmax_tiles(soup, page_url)
+    return cards or _carmax_tiles(soup, page_url) or _carmax_by_vin(soup, page_url)
 
 
 def _carmax_tiles(soup, page_url: str = "") -> list[dict[str, str]]:
@@ -510,3 +510,43 @@ def carmax_detail(html: str) -> dict[str, str] | None:
             "announcements": announcements, "notes": squeeze(strip_own(notes.get_text())) if notes else "",
             "status": "", "start": f"{date} {time_}".strip(), "your_bid": "",
             "color": pick(r"Ext/Int Color \| ([^|/]+)")}
+
+
+_VIN = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b")
+_REMARK = re.compile(r"defect|damage|prior|title|227|rental|lease|fleet|airbag|frame|salvage|odometer|flood|runner|arbx|recall|smoke|noise", re.I)
+
+
+def _carmax_by_vin(soup, page_url: str = "") -> list[dict[str, str]]:
+    """Страница CarMax другого вида (список аукциона, таблица): карточка — самый большой блок вокруг VIN,
+    в котором этот VIN один. Берём, что видно: машину, пробег, дорожку/номер, площадку, объявления."""
+    cards: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for text in soup.find_all(string=_VIN):
+        vin = next((v for v in _VIN.findall(str(text)) if re.search(r"\d", v) and re.search(r"[A-Z]", v)), "")
+        el = text.parent
+        if not vin or vin in seen or el is None or el.find_parent(["script", "style", "textarea"]) or el.find_parent(attrs={"role": ["presentation", "dialog"]}):
+            continue
+        while el.parent is not None and el.parent.name not in ("body", "[document]"):
+            inner = el.parent.get_text(" ", strip=True)
+            if len(inner) > 5000 or any(v != vin for v in _VIN.findall(inner) if re.search(r"\d", v) and re.search(r"[A-Z]", v)):
+                break
+            el = el.parent
+        seen.add(vin)
+        texts = [squeeze(t) for t in el.stripped_strings if squeeze(t)]
+        title = next((t for t in texts if re.match(r"(19|20)\d\d [A-Z][A-Za-z-]+ \S", t)), "")
+        spec = next((t for t in texts if re.match(r"[\d,]+\s*mi\b", t)), "")
+        head = next((t for t in texts if re.match(r"[A-Z]{1,2}/\d+\s*•", t)), "")
+        lane_run, _, location = head.partition("•")
+        if not lane_run:
+            lane = next((m.group(1) for t in texts for m in [re.match(r"Lane\s*[:|]?\s*([A-Z]{1,2})$", t)] if m), "")
+            run = next((m.group(1) for t in texts for m in [re.match(r"Run(?: Number| #)?\s*[:|]?\s*(\d+)$", t)] if m), "")
+            lane_run = f"{lane}/{run}" if lane and run else ""
+        link = el.find("a", href=re.compile(r"/vehicledetail/(\d+)"))
+        stock = (re.search(r"/vehicledetail/(\d+)", link["href"]).group(1) if link else
+                 next((x.get("data-vehicle-id") for x in el.find_all(attrs={"data-vehicle-id": True})), "") or "")
+        cards.append({"vin": vin, "stock": stock, "lot_url": carmax_lot_url(stock), "photo": _carmax_photo(el, page_url) or carmax_photo_url(stock),
+                      "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title,
+                      "miles": re.sub(r"\D", "", spec.split("mi")[0]) if spec else "", "drive": " • ".join(spec.split(" • ")[1:]) if spec else "",
+                      "announcements": ", ".join(dict.fromkeys(t for t in texts if _REMARK.search(t) and len(t) < 120 and t != title)),
+                      "notes": "", "status": "", "start": "", "your_bid": ""})
+    return cards
