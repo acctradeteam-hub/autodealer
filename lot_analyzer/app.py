@@ -230,6 +230,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
         rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid]
     # Вкладки окна: популярные модели (Civic, Camry, RAV4 …), электромобили, пикапы, остальные; в каждой — сверху самые выгодные.
     for r in rows:
+        r["place"] = place_of_row(r)
         r["popular"] = "да" if popular.is_popular(r, costs) else ""
         r["group"] = "popular" if r["popular"] else "truck" if popular.is_pickup(r) else "ev" if is_electric(r) else "other"
     rows.sort(key=lambda r: (GROUPS.index(r["group"]), verdict_rank(r.get("calc_verdict", "")), -expected_gain(r)))
@@ -273,6 +274,38 @@ def save_kbb(vin: str, usd: float | None, miles: str = "", source: str = "вру
         values.pop(vin, None)
     KBB_PATH.parent.mkdir(parents=True, exist_ok=True)
     KBB_PATH.write_text(json.dumps(values, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def place_of_row(row: dict) -> str:
+    """Площадка лота одним названием: «CarMax Murrieta», «CarMax Oceanside», «Manheim California» …"""
+    auction = str(row.get("auction", "")).strip()
+    place = str(row.get("location", "")).strip()
+    if " - " in place:                         # Manheim: «CA - Manheim California»
+        place = place.split(" - ", 1)[1]
+    place = place.split(",")[0].strip()        # CarMax: «Chino, CA»
+    if auction and place.lower().startswith(auction.lower()):
+        return place
+    if auction == "Manheim" and place:         # машина стоит у продавца (Santa Ana, Anaheim …), не на площадке Manheim
+        return "Manheim — у продавца (не на площадке)"
+    return f"{auction} {place}".strip() or "—"
+
+
+def picked(row: dict) -> bool:
+    """Отобранная вами машина: есть настоящий KBB (вы его смотрели) или ваша ставка."""
+    return bool((row.get("kbb_private_party_usd") and not row.get("kbb_from_window_field")) or row.get("my_bid_from_window"))
+
+
+def by_place(rows: list[dict], q: dict) -> tuple[list[dict], list[list]]:
+    """Отбор по площадке (q["place"]) и «только отобранные» (q["picked"]); плюс список площадок со счётчиками."""
+    if q.get("picked") == "1":
+        rows = [r for r in rows if picked(r)]
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["place"]] = counts.get(r["place"], 0) + 1
+    places = sorted(([name, n] for name, n in counts.items()), key=lambda x: (-x[1], x[0]))
+    if q.get("place"):
+        rows = [r for r in rows if r["place"] == q["place"]]
+    return rows, places
 
 
 def verdict_rank(verdict: str) -> float:
@@ -361,6 +394,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
                                    only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
+                rows, places = by_place(rows, q)
                 total = len(rows)
                 all_rows = rows
                 # По SHOW_ROWS из каждой части: одна не вытесняет другие.
@@ -391,7 +425,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
                                      "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "seen_before": r.get("seen_before", ""),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
-                                    for r in rows], "files": files, "total": total, "popular_total": sum(1 for r in all_rows if r.get("popular")),
+                                    for r in rows], "files": files, "total": total, "places": places, "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders],
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
@@ -401,7 +435,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None, max_bid=num("maxbid"))
-                title = "На осмотр" + (f" — {q['q']}" if q.get("q") else " — все машины из файлов")
+                rows, _ = by_place(rows, q)
+                title = ("На осмотр" + (f" — {q['place']}" if q.get("place") else "") + (" — отобранные" if q.get("picked") == "1" else "")
+                         + (f" — {q['q']}" if q.get("q") else "" if q.get("place") or q.get("picked") == "1" else " — все машины из файлов"))
                 self._send(render_html(rows, title).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
@@ -496,7 +532,7 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 input.kbb{width:80px;min-width:0;padding:4px 6px;text-align:right}
 td.kbbcell,th.kbbcell{width:96px;max-width:96px;white-space:normal;overflow-wrap:anywhere}td.kbbcell .muted{font-size:11px;line-height:1.25}
 .tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}button.tab{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:600}
-button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
+button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}#places button.tab{font-weight:500;padding:5px 10px;font-size:13px}label.pickl{flex-direction:row;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--fg)}label.pickl input{min-width:auto;width:18px;height:18px}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
@@ -520,7 +556,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="tabs" class="tabs"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="tabs" class="tabs"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов)">Средняя цена покупки<br>на аукционе</th><th class="w110">Прибыль при покупке<br>по средней цене</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -539,7 +575,11 @@ function resultCell(x){if(!x.auction_result)return '';const p=Number(x.auction_r
  return `<div class="result"><b>${esc(x.auction_result.split(' · ')[0])}</b><div class="muted">${esc(x.auction_result.split(' · ').slice(1).join(' · '))}</div>${vs}</div>`}
 /* CR grade Manheim (0–5): 4+ хорошо, 3–4 средне, ниже 3 — много вложений */
 const crCls=g=>{const n=parseFloat(g);return isNaN(n)?'':n>=4?'v-ok':n>=3?'v-mid':'v-bad'};
-const params=()=>new URLSearchParams({q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+let place='';try{place=localStorage.getItem('la-place')||''}catch(e){}
+try{$('picked').checked=localStorage.getItem('la-picked')==='1'}catch(e){}
+function setPlace(p){place=p;try{localStorage.setItem('la-place',p)}catch(e){}refresh()}
+function setPicked(on){try{localStorage.setItem('la-picked',on?'1':'')}catch(e){}refresh()}
+const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -556,6 +596,10 @@ let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}
 async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;lastData=d;render(d)}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
 function render(d){shown=d.rows;const gt=d.group_total||{};
+if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='';try{localStorage.setItem('la-place','')}catch(e){};refresh();return}
+$('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
+ (d.places||[]).map(([p,n])=>`<button type="button" class="tab${p===place?' on':''}" onclick="setPlace(this.dataset.p)" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
+ `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · сверху самые выгодные</div>`;

@@ -164,3 +164,16 @@ class PickupTest(unittest.TestCase):
             self.assertTrue(is_pickup({"make": mk, "model": md, "trim": tr}), md)
         for mk, md, tr in [("Toyota", "RAV4", "XLE"), ("Ford", "Explorer", "XLT"), ("Jeep", "Wrangler", "Sport"), ("BMW", "3 Series", "330i")]:
             self.assertFalse(is_pickup({"make": mk, "model": md, "trim": tr}), md)
+
+
+class PlaceTest(unittest.TestCase):
+    def test_place_names_and_filter(self):
+        self.assertEqual(app.place_of_row({"auction": "CarMax", "location": "Murrieta"}), "CarMax Murrieta")
+        self.assertEqual(app.place_of_row({"auction": "CarMax", "location": "Chino, CA"}), "CarMax Chino")
+        self.assertEqual(app.place_of_row({"auction": "Manheim", "location": "CA - Manheim California"}), "Manheim California")
+        self.assertEqual(app.place_of_row({"auction": "Manheim", "location": "CA - SANTA ANA"}), "Manheim — у продавца (не на площадке)")
+        rows = [{"place": "CarMax Murrieta", "kbb_private_party_usd": "9000"}, {"place": "CarMax Murrieta"}, {"place": "CarMax Oceanside"}]
+        only, places = app.by_place(rows, {"place": "CarMax Murrieta"})
+        self.assertEqual(len(only), 2)
+        self.assertEqual(places, [["CarMax Murrieta", 2], ["CarMax Oceanside", 1]])
+        self.assertEqual(len(app.by_place(rows, {"place": "CarMax Murrieta", "picked": "1"})[0]), 1)
