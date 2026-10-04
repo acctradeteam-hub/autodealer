@@ -28,3 +28,13 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   }
   return false;
 });
+
+/* После установки / обновления (⟳) расширения уже открытое окно программы его «не видит», пока вкладку не обновить.
+   Подключаемся к нему сами, чтобы ссылки сразу открывались в фоне. */
+chrome.runtime.onInstalled.addListener(function () {
+  chrome.tabs.query({ url: 'http://127.0.0.1:8765/*' }, function (tabs) {
+    (tabs || []).forEach(function (tab) {
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['app_bridge.js'] }, function () { void chrome.runtime.lastError; });
+    });
+  });
+});

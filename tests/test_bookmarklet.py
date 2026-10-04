@@ -55,6 +55,14 @@ class TestBookmarklet(unittest.TestCase):
         self.assertIn("hzn-button", self.source)                           # кнопки CarMax (web components)
         self.assertIn("save(null, null, cmOrder.length)", self.source)
 
+    def test_kbb_trim_rules(self) -> None:
+        # «Range» не решает (Standard / Long Range у Tesla), дорогие версии — только если они у лота; не нашли — базовая.
+        self.assertIn("w !== 'range'", self.source)
+        self.assertIn("var premium = /^(long|performance|plaid|dual|awd", self.source)
+        self.assertIn("комплектация по умолчанию", self.source)
+        # ACV / ADESA: весь список, по ссылкам на лоты
+        self.assertIn("var lotList = function", self.source)
+
     def test_carmax_hidden_cards_are_parsed(self) -> None:
         # Карточки, убранные сайтом при прокрутке, закладка кладёт в скрытый блок — разбор их видит.
         import re

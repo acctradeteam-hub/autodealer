@@ -167,14 +167,26 @@ window.lotAnalyzerAuto = true;
     /* Комплектация KBB под трим лота. Вопросов не задаём (автопилот работает без присмотра):
        при равенстве — самый частый кузов: седан, SUV, пикап, хэтчбек, универсал, минивэн, купе, кабриолет. */
     var bodyOrder = ['sedan', 'sport-utility', 'suv', 'crew-cab', 'pickup', 'hatchback', 'wagon', 'minivan', 'van', 'coupe', 'convertible'];
+    var premium = /^(long|performance|plaid|dual|awd|4wd|4x4|limited|platinum|signature|prestige|launch|first|edition|gt|gts|turbo|hybrid|plug|prime|max)$/;
+    /* Комплектация «по умолчанию», если трим лота на KBB не нашёлся: самая простая (без дорогих версий). */
+    var baseTrim = function (trims) {
+      var cost = function (trim) {
+        var words = slugOf(trim.name).split('-');
+        var body = bodyOrder.findIndex(function (b) { return slugOf(trim.name).indexOf(b) >= 0; });
+        return words.filter(function (w) { return premium.test(w); }).length * 100 + words.filter(function (w) { return !styleWords.test(w); }).length * 2 + (body < 0 ? bodyOrder.length : body);
+      };
+      return trims.slice().sort(function (a, b) { return cost(a) - cost(b); })[0];
+    };
     var pickTrim = function (trims, want) {
       if (trims.length === 1) { return trims[0]; }
-      var wanted = slugOf(want).replace('2-5i', '25i').replace('2-0t', '20t').replace('1-5t', '15t').split('-').filter(function (w) { return w && w !== 'base' && w !== 'w'; });
+      /* «Range» сам по себе ничего не значит (Standard Range / Long Range у Tesla) — решают «standard» / «long». */
+      var wanted = slugOf(want).replace('2-5i', '25i').replace('2-0t', '20t').replace('1-5t', '15t').split('-').filter(function (w) { return w && w !== 'base' && w !== 'w' && w !== 'range'; });
       var score = function (trim) {
         var slug = slugOf(trim.name);
         var words = slug.split('-');
         var hits = wanted.filter(function (w) { return words.indexOf(w) >= 0; }).length;
-        var extra = words.filter(function (w) { return wanted.indexOf(w) < 0 && !styleWords.test(w); }).length;
+        /* Дорогие версии (Long Range, Performance, AWD …) — только если они есть у лота: иначе сильный штраф. */
+        var extra = words.filter(function (w) { return wanted.indexOf(w) < 0 && !styleWords.test(w); }).reduce(function (sum, w) { return sum + (premium.test(w) ? 15 : 1); }, 0);
         var body = bodyOrder.findIndex(function (b) { return slug.indexOf(b) >= 0; });
         return hits * 1000 - extra * 20 - (body < 0 ? bodyOrder.length : body);
       };
@@ -243,7 +255,9 @@ window.lotAnalyzerAuto = true;
       }
       if (!trims.length) { throw new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную'); }
       var trim = pickTrim(trims, car.t);
-      if (!trim) { throw new Error('комплектация «' + (car.t || '?') + '» не найдена на KBB (есть: ' + trims.map(function (t) { return t.name; }).join(', ') + ') — впишите KBB вручную'); }
+      var byDefault = !trim;
+      if (byDefault) { trim = baseTrim(trims); }
+      var trimLabel = trim.name + (byDefault ? ' (комплектация по умолчанию — у лота «' + (car.t || '?') + '», проверьте)' : '');
       /* Страница цены: пробуем несколько адресов, сохраняем только ту, где есть Private Party Good для пробега лота. */
       var base = '/' + slugOf(car.mk) + '/' + modelSlug + '/' + car.y + '/' + slugOf(trim.name) + '/';
       var tail = 'mileage=' + car.mi + '&zipcode=92620';
@@ -253,12 +267,12 @@ window.lotAnalyzerAuto = true;
         var page = '';
         try { page = await getText(urls[u]); } catch (e) { tried.push(e.message); continue; }
         var price = privateParty(page, car.mi, urls[u]);
-        if (price) { saveFile(page, urls[u], car); return trim.name + ': $' + price.toLocaleString('en-US'); }
+        if (price) { saveFile(page, urls[u], car); return trimLabel + ': $' + price.toLocaleString('en-US'); }
         tried.push('нет цены для ' + car.mi + ' миль');
         if (u < urls.length - 1) { await pause(1500); }
       }
       /* В скачанной странице цены нет — KBB рисует её в браузере. Расширение откроет страницу цены во вкладке и дождётся её. */
-      if (window.lotAnalyzerAuto) { return { navigate: urls[2], trim: trim.name }; }
+      if (window.lotAnalyzerAuto) { return { navigate: urls[2], trim: trimLabel }; }
       throw new Error(trim.name + ' — ' + tried.join(', ') + ' (поставьте расширение «Lot Analyzer KBB» — оно дождётся цены на странице)');
     };
     /* Мы на странице цены после перехода: ждём, пока KBB нарисует цену «Sell it yourself» для пробега лота. */
@@ -340,7 +354,9 @@ window.lotAnalyzerAuto = true;
   /* CarMax показывает часть машин и кнопку «Show more / Показать следующие машины». Жмём её, пока машин
      прибавляется; если кнопки нет — прокручиваем вниз (подгрузка при прокрутке). Карточки запоминаем по VIN:
      если сайт уберёт верхние при прокрутке, в файл они всё равно попадут. */
-  if (auction === 'CarMax' && !/\/vehicledetail\//.test(location.pathname)) {
+  var listPage = auction === 'CarMax' ? !/\/vehicledetail\//.test(location.pathname) :
+    (auction === 'ACV' || auction === 'ADESA') && !/\/details\//.test(location.pathname) && document.querySelectorAll(auction === 'ACV' ? 'a[href*="/auction/"]' : 'a[href*="/details/"]').length >= 2;
+  if (listPage) {
     var cmCards = {};
     var cmOrder = [];
     /* Карточка CarMax — блок с номером машины в id; ключ — VIN (вид «Detailed table»), иначе этот номер. */
@@ -355,6 +371,28 @@ window.lotAnalyzerAuto = true;
         out.push({ key: /^[A-HJ-NPR-Z0-9]{17}$/.test(vin) ? vin : 'id' + card.id, el: card });
       }
       return out.length ? out : cmByVin();
+    };
+    /* ACV / ADESA: карточка — самый большой блок вокруг ссылки на лот, где других лотов нет. */
+    var lotRe = auction === 'ACV' ? /\/auction\/(\d+)/ : /\/details\/([0-9a-f]{8,})/;
+    var lotList = function () {
+      var out = [];
+      var seen = {};
+      var links = document.querySelectorAll('a[href]');
+      for (var i = 0; i < links.length; i++) {
+        var m = lotRe.exec(links[i].getAttribute('href') || '');
+        if (!m || seen[m[1]] || links[i].closest('[role="presentation"], [role="dialog"], #auction-detail, [data-testid="ds-carousel-wrapper"]')) { continue; }
+        var el = links[i];
+        while (el.parentNode && el.parentNode !== document.body) {
+          var inner = el.parentNode.querySelectorAll('a[href]');
+          var other = false;
+          for (var j = 0; j < inner.length && !other; j++) { var mm = lotRe.exec(inner[j].getAttribute('href') || ''); other = !!(mm && mm[1] !== m[1]); }
+          if (other) { break; }
+          el = el.parentNode;
+        }
+        seen[m[1]] = 1;
+        out.push({ key: m[1], el: el });
+      }
+      return out;
     };
     /* Страница другого вида (список аукциона, таблица): карточка — самый большой блок вокруг VIN, где этот VIN один. */
     var isVin = function (v) { return /\d/.test(v) && /[A-Z]/.test(v); };
@@ -379,8 +417,9 @@ window.lotAnalyzerAuto = true;
       }
       return out;
     };
+    var cards = function () { return auction === 'CarMax' ? cmList() : lotList(); };
     var cmGrab = function () {
-      var list = cmList();
+      var list = cards();
       for (var i = 0; i < list.length; i++) {
         if (!cmCards[list[i].key]) { cmOrder.push(list[i].key); }
         cmCards[list[i].key] = list[i].el.outerHTML;
@@ -406,24 +445,27 @@ window.lotAnalyzerAuto = true;
       var inner = el.shadowRoot && el.shadowRoot.querySelector('button');
       (inner || el).click();
     };
-    /* Прокрутка до последней карточки — и страницы, и внутренней области списка, если он прокручивается сам. */
+    /* Прокрутка вниз шагами (не прыжком в конец): списки, которые рисуют только видимые машины (ACV), иначе
+       пропускают середину. Сначала — до последней видимой карточки; если сдвига нет — на экран вниз. */
     var cmScrollDown = function () {
-      var list = cmList();
+      var list = cards();
       var last = list.length ? list[list.length - 1].el : null;
-      if (last) {
-        last.scrollIntoView({ block: 'end' });
-        for (var box = last.parentNode; box && box !== document.body; box = box.parentNode) {
-          var style = getComputedStyle(box);
-          if (box.scrollHeight > box.clientHeight + 20 && /auto|scroll/.test(style.overflowY)) { box.scrollTop = box.scrollHeight; }
-        }
+      var box = null;
+      for (var up = last && last.parentNode; up && up !== document.body; up = up.parentNode) {
+        if (up.scrollHeight > up.clientHeight + 20 && /auto|scroll/.test(getComputedStyle(up).overflowY)) { box = up; break; }
       }
-      window.scrollTo(0, document.body.scrollHeight);
+      var before = box ? box.scrollTop : window.scrollY;
+      if (last) { last.scrollIntoView({ block: 'end' }); }
+      var after = box ? box.scrollTop : window.scrollY;
+      if (Math.abs(after - before) < 40) {
+        if (box) { box.scrollTop += Math.max(200, box.clientHeight * 0.8); } else { window.scrollBy(0, Math.max(200, window.innerHeight * 0.8)); }
+      }
     };
     var cmClicks = 0;
     var cmScrolls = 0;
     var cmStep = function () {
       var before = cmGrab();
-      say('CarMax: загружено машин ' + before + '… не трогайте страницу');
+      say(auction + ': загружено машин ' + before + '… не трогайте страницу');
       var more = cmMoreButton();
       if (more && cmClicks < 200) { cmClicks += 1; more.scrollIntoView({ block: 'center' }); cmPress(more); } else if (cmScrolls < 3) { cmScrolls += 1; cmScrollDown(); } else { cmFinish(); return; }
       var waited = 0;
@@ -440,7 +482,7 @@ window.lotAnalyzerAuto = true;
       box.id = 'lot-analyzer-carmax-all';
       box.setAttribute('style', 'display:none');
       var onPage = {};
-      cmList().forEach(function (c) { onPage[c.key] = 1; });
+      cards().forEach(function (c) { onPage[c.key] = 1; });
       box.innerHTML = cmOrder.filter(function (v) { return !onPage[v]; }).map(function (v) { return cmCards[v]; }).join('');
       if (box.innerHTML) { document.body.appendChild(box); }
       save(null, null, cmOrder.length);
@@ -449,7 +491,7 @@ window.lotAnalyzerAuto = true;
     /* В виде «плитка» CarMax не показывает VIN — переключаем на «Detailed table» и ждём VIN в карточках. */
     var detailed = document.querySelector('[data-testid="detailed"]');
     var hasVins = function () { return cmList().some(function (c) { return c.key.slice(0, 2) !== 'id'; }); };
-    if (detailed && detailed.getAttribute('aria-pressed') !== 'true' && !hasVins()) {
+    if (auction === 'CarMax' && detailed && detailed.getAttribute('aria-pressed') !== 'true' && !hasVins()) {
       say('CarMax: переключаю на вид «Detailed table», чтобы были VIN…');
       detailed.click();
       var waitedView = 0;

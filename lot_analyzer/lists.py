@@ -114,6 +114,7 @@ def adesa_card(card: Tag) -> dict[str, str]:
     link = card.find("a", href=re.compile(r"/details/"))
     info["url"] = "https://marketplace.adesa.com" + link["href"] if link else ""
     info["lot"] = info["url"].rstrip("/").split("/")[-1][:12] if info["url"] else info.get("run", "")
+    info["photo"] = _photo(card)
     return info
 
 
@@ -121,6 +122,15 @@ def adesa_card(card: Tag) -> dict[str, str]:
 
 # Синий значок стоит почти у каждого лота ACV — его смысл по списку не определить, не трактуем.
 ACV_LIGHTS = {"green": "зелёный", "yellow": "жёлтый", "red": "красный"}
+
+
+def _photo(card: Tag) -> str:
+    """Главное фото карточки (адрес в интернете; локальные копии «Сохранить как» не берём)."""
+    for img in card.find_all("img"):
+        src = img.get("src") or (img.get("srcset") or "").split(" ")[0]
+        if src.startswith("https://") and not src.endswith(".svg"):
+            return src
+    return ""
 
 
 def acv_card(card: Tag) -> dict[str, str]:
@@ -145,6 +155,7 @@ def acv_card(card: Tag) -> dict[str, str]:
     info["lot"] = lot.group(1) if lot else ""
     info["url"] = f"https://app.acvauctions.com/auction/{info['lot']}" if info["lot"] else ""
     info["seller"] = next((x for x in lines if ":" in x and "Reseller" in x), "")
+    info["photo"] = _photo(card)
     return info
 
 
@@ -183,6 +194,7 @@ def row_from_card(row: dict[str, str], info: dict[str, str]) -> list[str]:
     row["odometer_miles"] = info.get("miles", "")
     row["sale_date"] = info.get("when", "")
     row["lot_url"] = info.get("url", "")
+    row["photo_main_url"] = info.get("photo", "")
     bid = parse_money(info.get("bid"))
     row["current_bid_usd"] = f"{bid:.0f}" if bid else ""
     retail = parse_money(info.get("retail"))
