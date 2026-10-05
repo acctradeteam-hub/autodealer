@@ -212,29 +212,46 @@ def _sold_from_lists(rows: list[dict[str, str]]) -> list[dict]:
     return out
 
 
-def sold_for_kbb(costs: dict, days: int = 14, limit: int = 40) -> list[dict[str, str]]:
-    """Проданные недавно популярные машины (и Tesla Model 3 2022–2023) без KBB — для кнопки «KBB для проданных»."""
+SOLD_DAYS = 14          # столько дней после торгов проданная машина ждёт KBB в списке «Проданные»
+
+
+def sold_recent(costs: dict, days: int = SOLD_DAYS) -> list[dict[str, str]]:
+    """Проданные за `days` дней популярные машины (и Tesla Model 3 2022–2023) из итогов торгов — с KBB и без.
+    Для списка «Проданные» в окне и кнопки «KBB для проданных»."""
     from .normalize import split_model
 
     since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
     known = analytics.load_kbb_log()
     out = []
     for rec in sorted(results.load_history().values(), key=lambda r: r.get("date", ""), reverse=True):
-        if rec.get("outcome") != "Sold" or not rec.get("price") or rec.get("kbb") or not rec.get("vin") or rec.get("date", "") < since:
+        if rec.get("outcome") != "Sold" or not rec.get("price") or not rec.get("vin") or rec.get("date", "") < since:
             continue
-        if rec["vin"] in known or not rec.get("miles") or not rec.get("year"):
+        if not rec.get("miles") or not rec.get("year"):
             continue
         model, trim = split_model(rec.get("model", ""))
         car = {"vin": rec["vin"], "year": rec["year"], "make": rec.get("make", ""), "model": model, "trim": trim,
-               "odometer_miles": rec["miles"], "auction": rec.get("auction", ""), "date": rec.get("date", "")}
+               "odometer_miles": rec["miles"], "auction": rec.get("auction", ""), "date": rec.get("date", ""),
+               "lot": rec.get("lot", ""), "price": rec["price"], "kbb": rec.get("kbb") or (known.get(rec["vin"]) or {}).get("kbb", "")}
         if not popular.is_stats_target(car, costs):
             continue
+        try:
+            car["until"] = (dt.date.fromisoformat(car["date"]) + dt.timedelta(days=days)).isoformat()
+            car["share"] = f"{float(car['price']) / float(car['kbb']):.2f}" if car["kbb"] else ""
+        except ValueError:
+            car.setdefault("until", "")
+            car["share"] = ""
         car["kbb_open"] = kbb_site.browser_url(costs, car["year"], car["make"], car["model"], car["odometer_miles"])
         tracked = popular.is_popular(car, {**costs, "popular_models": costs.get("stats_models") or popular.STATS_DEFAULT})
-        car["_first"] = 0 if tracked else 1                          # отдельно отслеживаемые (Tesla Model 3 2022–2023) — первыми
+        car["tracked"] = "1" if tracked else ""
         out.append(car)
-    out.sort(key=lambda c: c.pop("_first"))
-    return out[:limit]
+    return out
+
+
+def sold_for_kbb(costs: dict, days: int = SOLD_DAYS, limit: int = 40) -> list[dict[str, str]]:
+    """Проданные недавно популярные машины (и Tesla Model 3 2022–2023) без KBB — для кнопки «KBB для проданных»."""
+    need = [c for c in sold_recent(costs, days) if not c["kbb"]]
+    need.sort(key=lambda c: 0 if c["tracked"] else 1)                # отдельно отслеживаемые (Tesla Model 3 2022–2023) — первыми
+    return need[:limit]
 
 
 def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCache, costs: dict) -> dict:
@@ -577,7 +594,11 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send("Нет файла tools/bookmarklet/install.html — скачайте программу заново.".encode("utf-8"), "text/plain; charset=utf-8", 404)
             elif url.path == "/api/sold_for_kbb":     # проданные без KBB — для своей статистики
                 search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")   # свежие итоги — в базу
-                self._send(json.dumps(sold_for_kbb(load_costs(costs_path)), ensure_ascii=False).encode("utf-8"))
+                costs = load_costs(costs_path)
+                if q.get("all") == "1":                   # список «Проданные» в окне: все, с KBB и без
+                    self._send(json.dumps(sold_recent(costs), ensure_ascii=False).encode("utf-8"))
+                else:
+                    self._send(json.dumps(sold_for_kbb(costs), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/inbox":            # состояние отправки Claude (токен не показывается)
                 self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
@@ -708,6 +729,9 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
 <button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
+<details id="soldbox" style="margin-top:8px" ontoggle="if(this.open)loadSoldAll()"><summary id="soldsum">Проданные на торгах (из файлов итогов) — популярные и Tesla Model 3 2022–2023</summary>
+<div class="muted" style="margin:6px 0">Машины из файлов итогов торгов в «Загрузках» (например carmax_auction_results … .csv). Каждая стоит здесь 14 дней после торгов: до даты в колонке «В списке до» для неё можно запросить KBB кнопкой «KBB для проданных». Полученный KBB и цена продажи остаются в вашей базе навсегда.</div>
+<div class="wrap" style="max-height:420px;overflow:auto"><table><thead><tr><th>Торги</th><th>Аукцион</th><th>Лот</th><th>Машина</th><th>Пробег</th><th>Продана за</th><th>KBB</th><th>Продажа ÷ KBB</th><th>В списке до</th></tr></thead><tbody id="soldrows"><tr><td colspan="9" class="muted">—</td></tr></tbody></table></div></details>
 <details style="margin-top:8px"><summary>Свой сохранённый поиск для этой машины</summary>
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
@@ -788,7 +812,10 @@ let shown=[];
 function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.model,t:x.trim,mi:String(x.odometer_miles).replace(/\D/g,'')}));
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
 let soldList=[];
-async function loadSold(){try{soldList=await (await fetch('/api/sold_for_kbb')).json();$('soldbtn').textContent='KBB для проданных ('+soldList.length+')';$('soldbtn').disabled=!soldList.length}catch(e){}}
+async function loadSold(){try{soldList=await (await fetch('/api/sold_for_kbb')).json();$('soldbtn').textContent='KBB для проданных ('+soldList.length+')';$('soldbtn').disabled=!soldList.length;if($('soldbox').open)loadSoldAll()}catch(e){}}
+async function loadSoldAll(){try{const d=await (await fetch('/api/sold_for_kbb?all=1')).json();const m=v=>v?'$'+Number(v).toLocaleString('en-US'):'—';
+ $('soldsum').textContent=`Проданные на торгах за 14 дней — ${d.length} популярных, из них без KBB: ${d.filter(x=>!x.kbb).length}`;
+ $('soldrows').innerHTML=d.length?d.map(x=>`<tr><td>${esc(x.date)}</td><td>${esc(x.auction)}</td><td>${esc(x.lot)}</td><td>${esc(x.year+' '+x.make+' '+x.model+' '+(x.trim||''))}</td><td>${Number(x.odometer_miles).toLocaleString('en-US')}</td><td>${m(x.price)}</td><td>${x.kbb?m(x.kbb):'<span class="muted">нет</span>'}</td><td>${esc(x.share||'—')}</td><td>${esc(x.until)}</td></tr>`).join(''):'<tr><td colspan="9" class="muted">Итогов торгов за 14 дней нет — скачайте с сайта аукциона файл итогов (он попадёт в «Загрузки»)</td></tr>'}catch(e){}}
 function kbbSold(){if(!soldList.length){alert('Проданных без KBB за 14 дней нет — положите итоги торгов в «Загрузки»');return}
  openKbb(soldList);$('stat').textContent=`KBB для ${soldList.length} проданных машин: вкладка kbb.com работает в фоне, цены попадут в вашу базу итогов (цена продажи ÷ KBB).`;setTimeout(loadSold,60000)}
 function kbbTop(){const need=x=>(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
