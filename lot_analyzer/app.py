@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs
 from .normalize import parse_money
 from .inspection import render_html
-from . import analytics, kbb_page, kbb_site, manheim_csv, notes, popular, results
+from . import analytics, inbox, kbb_page, kbb_site, manheim_csv, notes, popular, results
 from .pages import read_page
 from .parsers import parse_page
 
@@ -448,6 +448,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 search_rows(pages, cache, load_costs(costs_path), "")      # свежие файлы — в базу
                 self._send(analytics.render(results.load_history(), analytics.load_kbb_log()).encode("utf-8"), "text/html; charset=utf-8")
+            elif url.path == "/api/inbox":            # состояние отправки Claude (токен не показывается)
+                self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 rows = search_rows(pages, cache, load_costs(costs_path), "")
@@ -458,6 +460,16 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(b'{"error":"not found"}', status=404)
 
         def do_POST(self) -> None:
+            if urlparse(self.path).path == "/api/inbox":
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                repo = str(data.get("repo", "")).strip()
+                if data.get("enabled") and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+                    self._send('{"error":"репозиторий в виде владелец/имя"}'.encode(), status=400)
+                    return
+                inbox.save_settings(repo, data.get("token") or None, bool(data.get("enabled")))
+                self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
+                return
             if urlparse(self.path).path == "/api/bid":
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -503,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     folders = [Path(p).expanduser() for p in args.watch] or [Path.home() / "Downloads", Path("samples")]
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(folders, Path(args.costs), PageCache()))
+    # Отправка Claude (если включена в окне): новые файлы из «Загрузок» — в ваш закрытый репозиторий GitHub.
+    inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")])
     address = f"http://127.0.0.1:{args.port}"
     print(f"Одно окно: {address}   (папки: {', '.join(map(str, folders))}; остановить — Ctrl+C)")
     if not args.no_browser:
@@ -526,7 +540,7 @@ main{max-width:1400px;margin:0 auto;padding:20px 16px 40px}h1{font-size:22px;mar
 form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
 input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:90px}
 input#q{min-width:240px}button,a.btn{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
-a.btn.sec{background:transparent;color:var(--acc)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+a.btn.sec,button.btn.sec{background:transparent;color:var(--acc)}button.btn.bad{border-color:var(--bad);color:var(--bad)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-align:right;white-space:nowrap}.wrap{overflow-x:auto}
 .v-ok{background:var(--okbg);color:var(--ok)}.v-bad{background:var(--badbg);color:var(--bad)}.v-mid{background:var(--midbg);color:var(--mid)}
@@ -540,7 +554,13 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
-<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
+<div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (data/inbox.json).</div>
+<form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
+<label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
+<label>Включено<input id="inon" type="checkbox" style="min-width:auto;width:20px;height:20px"></label><button>Сохранить</button></form>
+<div id="instate" class="muted" style="margin-top:6px">—</div></div>
+<div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
 <div class="card"><form id="f" onsubmit="event.preventDefault();refresh();loadLinks()">
 <label>Машина<input id="q" placeholder="Honda Civic" autofocus></label>
 <label>Год от<input id="y1" inputmode="numeric" placeholder="2013"></label><label>до<input id="y2" inputmode="numeric" placeholder="2016"></label>
@@ -642,6 +662,13 @@ const hasExt=()=>document.documentElement.dataset.laExt==='1';
 function extState(){const e=$('extstate');if(!e)return;if(hasExt()){e.className='pill v-ok';e.textContent='расширение подключено — ссылки и KBB в фоне'}
  else{e.className='pill v-bad';e.textContent='расширение не подключено — вкладки откроются поверх: обновите его (⟳ на chrome://extensions) и эту страницу'}}
 window.addEventListener('la-ext',extState);setTimeout(extState,800);
+function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: '+(st.enabled&&st.status==='включена'?'вкл ✓ ('+st.sent+')':st.enabled?st.status:'выкл');
+ $('inboxbtn').className='btn sec jump'+(st.error?' bad':'');if(!$('inrepo').value)$('inrepo').value=st.repo||'';$('inon').checked=!!st.enabled;
+ $('instate').textContent=(st.enabled?'Включено':'Выключено')+(st.repo?' · '+st.repo:'')+(st.has_token?' · токен сохранён':' · токена нет')+' · отправлено файлов: '+(st.sent||0)+(st.error?' · ⚠ '+st.error:'')}
+async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json())}catch(e){}}
+async function saveInbox(){const r=await fetch('/api/inbox',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:$('inrepo').value,token:$('intoken').value,enabled:$('inon').checked})});
+ const d=await r.json();if(d.error){alert(d.error);return}$('intoken').value='';showInbox(d)}
+loadInbox();setInterval(loadInbox,15000);
 function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',url,cars:cars||''},'*');return true}
 /* «поставить на CarMax» (a.fg) открывается обычно — там вы сами нажимаете «Place bid». */
 document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[target="_blank"]:not(.fg)');
