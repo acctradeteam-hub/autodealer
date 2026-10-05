@@ -41,7 +41,7 @@ SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
-BOOKMARKLET_VERSION = "2026-10-05"
+BOOKMARKLET_VERSION = "2026-10-05.2"
 
 
 def bookmarklet_version(path: Path) -> str | None:
@@ -55,7 +55,7 @@ def bookmarklet_version(path: Path) -> str | None:
         return None
     if "saved-by: lot_analyzer bookmarklet" not in head:
         return None
-    found = re.search(r"saved-by: lot_analyzer bookmarklet; version: ([\d-]+);", head)
+    found = re.search(r"saved-by: lot_analyzer bookmarklet; version: ([\d.-]+);", head)
     return found.group(1) if found else ""
 RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 

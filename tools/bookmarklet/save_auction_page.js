@@ -5,7 +5,7 @@
    build.py склеивает код в одну строку. */
 (function () {
   /* Версия закладки: пишется в сохранённый файл — окно программы предупредит, если закладка устарела. */
-  var LA_VERSION = '2026-10-05';
+  var LA_VERSION = '2026-10-05.2';
   var host = location.hostname.toLowerCase();
   var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
@@ -452,15 +452,20 @@
     var cmScrollDown = function () {
       var list = cards();
       var last = list.length ? list[list.length - 1].el : null;
+      /* Область, которая прокручивается: и обычная, и со своей полосой прокрутки (perfect-scrollbar у ACV: overflow hidden). */
       var box = null;
-      for (var up = last && last.parentNode; up && up !== document.body; up = up.parentNode) {
-        if (up.scrollHeight > up.clientHeight + 20 && /auto|scroll/.test(getComputedStyle(up).overflowY)) { box = up; break; }
+      for (var up = last && last.parentNode; up && up !== document.body && up !== document.documentElement; up = up.parentNode) {
+        if (up.scrollHeight > up.clientHeight + 40 && up.clientHeight > 100 && !/visible/.test(getComputedStyle(up).overflowY)) { box = up; break; }
       }
-      var before = box ? box.scrollTop : window.scrollY;
+      var pos = function () { return (box ? box.scrollTop : 0) + window.scrollY; };
+      var before = pos();
       if (last) { last.scrollIntoView({ block: 'end' }); }
-      var after = box ? box.scrollTop : window.scrollY;
-      if (Math.abs(after - before) < 40) {
+      if (Math.abs(pos() - before) < 40) {
         if (box) { box.scrollTop += Math.max(200, box.clientHeight * 0.8); } else { window.scrollBy(0, Math.max(200, window.innerHeight * 0.8)); }
+      }
+      /* Не сдвинулось — «колесо мыши» над списком: так прокручиваются свои полосы прокрутки. */
+      if (Math.abs(pos() - before) < 40 && last) {
+        last.dispatchEvent(new WheelEvent('wheel', { deltaY: 900, deltaMode: 0, bubbles: true, cancelable: true }));
       }
     };
     var cmClicks = 0;
