@@ -138,7 +138,10 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
         if not folder.is_dir():
             continue
         for path in folder.iterdir():
-            if not path.is_file() or path.stat().st_mtime < cutoff:
+            if not path.is_file():
+                continue
+            # Итоги торгов — за 30 дней, что бы ни стояло в «Файлы за, часов»: программу могли открыть через день-два.
+            if path.stat().st_mtime < cutoff and not (path.stat().st_mtime >= time.time() - 30 * 86400 and results.is_results_file(path)):
                 continue
             if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)
                     or results.is_results_file(path)) and not is_own_window(path):
@@ -745,7 +748,7 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
 /* Вкладки: в каждой — только свои машины, сверху самые выгодные. Выбранная вкладка запоминается. */
-const TABS=[['popular','★ Популярные','Corolla, Civic, Camry, Accord, Mazda3, CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR'],
+const TABS=[['popular','★ Популярные','Corolla, Civic, Camry, Accord, Mazda3, CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Honda Clarity, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR'],
  ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}

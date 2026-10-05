@@ -125,8 +125,10 @@ def read_carmax_table(path: Path) -> list[dict]:
     Дата — из имени файла (…_10052026.csv), иначе дата файла."""
     from .normalize import split_model
 
-    found = re.search(r"(\d{2})(\d{2})(20\d{2})", path.stem)
-    date = f"{found.group(3)}-{found.group(1)}-{found.group(2)}" if found else dt.date.fromtimestamp(path.stat().st_mtime).isoformat()
+    # Дата из имени: «…_10052026», «… 10:05:2026» (так Mac хранит «10/05/2026»), «…_10-05-2026».
+    found = re.search(r"(\d{1,2})[^\d]?(\d{1,2})[^\d]?(20\d{2})(?!\d)", path.stem)
+    date = (f"{found.group(3)}-{int(found.group(1)):02d}-{int(found.group(2)):02d}" if found
+            else dt.date.fromtimestamp(path.stat().st_mtime).isoformat())
     out = []
     with path.open(encoding="utf-8-sig", newline="") as handle:
         for r in csv.DictReader(handle):
