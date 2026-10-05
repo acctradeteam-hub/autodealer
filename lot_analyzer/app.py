@@ -372,7 +372,7 @@ def search_links(query: str, year_from: int | None, year_to: int | None) -> list
             url = url.replace("&year=-", "")          # годы не заданы
             links.append({"auction": auction, "url": url, "kind": "поиск по шаблону"})
         else:
-            links.append({"auction": auction, "url": spec.get("home", ""), "kind": "страница поиска — впишите модель или сохраните свой поиск"})
+            links.append({"auction": auction, "url": spec.get("home", ""), "kind": spec.get("home_title") or "страница поиска — впишите модель или сохраните свой поиск"})
     return links
 
 

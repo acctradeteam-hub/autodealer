@@ -1,8 +1,16 @@
 {
   "_about": "Ссылки поиска для «одного окна». template — адрес с подстановками {make} {model} {query} {query_plus} {year_from} {year_to}; home — страница поиска, если шаблона нет. Свои сохранённые поиски по конкретной машине запоминаются в окне (data/search_links.json) и открываются вместо шаблона.",
-  "CarMax": {"home": "https://www.carmaxauctions.com/"},
-  "ACV": {"home": "https://app.acvauctions.com/marketplace"},
-  "Manheim": {"home": "https://search.manheim.com/results"},
+  "CarMax": {
+    "home": "https://www.carmaxauctions.com/"
+  },
+  "ACV": {
+    "home": "https://app.acvauctions.com/marketplace?p=all&o=acv_estimate_delta&s=%5B10257618%5D",
+    "_home": "ваш сохранённый поиск ACV «500 miles 92620» (id 10257618), все лоты, по оценке ACV. Без s=… ACV открывает первый сохранённый поиск (у вас — «2022-2024 Tesla 3»).",
+    "home_title": "ваш сохранённый поиск ACV «500 miles 92620»"
+  },
+  "Manheim": {
+    "home": "https://search.manheim.com/results"
+  },
   "ADESA": {
     "template": "https://marketplace.adesa.com/browse?make-model-trim={make}%3A{model}&year={year_from}-{year_to}&q={query_plus}&sort-by=Closest+to",
     "home": "https://marketplace.adesa.com/browse",
