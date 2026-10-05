@@ -2,6 +2,9 @@
   "_about": "Настройки расчёта максимальной ставки. Все суммы в долларах. Поля, начинающиеся с «_», — пояснения, программа их не читает.",
 
   "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Camry (и Hybrid), Accord, Mazda3; CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Lexus CT 200h, RX (и 450h), IS, ES; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация».",
+  "_stats_models": "Кроме популярных — что ещё собирать в свою статистику (кнопка «KBB для проданных»): Tesla Model 3 2022–2023, все комплектации.",
+  "stats_models": [{"make": "Tesla", "model": "^model\\s*3\\b", "years": [2022, 2023]}],
+
   "popular_models": [
     {"make": "Toyota", "model": "^corolla(?!\\s*cross)"},
     {"make": "Honda", "model": "^civic(?!.*type\\s*r)"},

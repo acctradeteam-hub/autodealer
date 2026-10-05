@@ -177,3 +177,25 @@ class PlaceTest(unittest.TestCase):
         self.assertEqual(len(only), 2)
         self.assertEqual(places, [["CarMax Murrieta", 2], ["CarMax Oceanside", 1]])
         self.assertEqual(len(app.by_place(rows, {"place": "CarMax Murrieta", "picked": "1"})[0]), 1)
+
+
+class PassedTest(unittest.TestCase):
+    def test_auction_passed_after_noon(self):
+        import datetime as dt
+        from lot_analyzer.schedule import passed
+        saved = dt.datetime(2026, 10, 4, 15, 52)                          # список сохранён в воскресенье
+        monday_morning, monday_noon = dt.datetime(2026, 10, 5, 11, 0), dt.datetime(2026, 10, 5, 12, 30)
+        self.assertEqual(passed({"sale_date": "Oct 5, 9:00am PT"}, saved, monday_morning), "")
+        self.assertTrue(passed({"sale_date": "Oct 5, 9:00am PT"}, saved, monday_noon))          # понедельник после 12:00
+        self.assertEqual(passed({"sale_date": "Oct 6, 9:00am PT"}, saved, monday_noon), "")      # завтрашние — остаются
+        self.assertTrue(passed({"sale_date": "Ends Mon 10/05 11:00 a.m."}, saved, monday_morning.replace(hour=11, minute=30)))
+        self.assertEqual(passed({"sale_date": "Make Offer", "lot_status": "Make Offer"}, saved, monday_noon), "")
+        self.assertTrue(passed({"sale_date": "16:48:07"}, saved, monday_noon))                   # ACV: отсчёт от сохранения
+
+    def test_stats_targets(self):
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, load_costs
+        from lot_analyzer.popular import is_stats_target
+        costs = load_costs(DEFAULT_COSTS_PATH)
+        self.assertTrue(is_stats_target({"year": "2023", "make": "Tesla", "model": "Model 3", "trim": "Long Range"}, costs))
+        self.assertTrue(is_stats_target({"year": "2014", "make": "Honda", "model": "Civic", "trim": "LX"}, costs))
+        self.assertFalse(is_stats_target({"year": "2020", "make": "Tesla", "model": "Model 3", "trim": "Long Range"}, costs))

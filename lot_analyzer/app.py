@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import re
 import threading
@@ -28,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs
 from .normalize import parse_money
 from .inspection import render_html
-from . import analytics, inbox, kbb_page, kbb_site, manheim_csv, notes, popular, results
+from . import analytics, inbox, kbb_page, schedule, kbb_site, manheim_csv, notes, popular, results
 from .pages import read_page
 from .parsers import parse_page
 from .paths import DATA_DIR
@@ -162,6 +163,23 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
     return True
 
 
+def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> None:
+    """row["passed"] — почему аукцион лота уже прошёл (окно такие по умолчанию скрывает): дата торгов в прошлом
+    (день торгов — после 12:00) или итог этой машины уже есть в базе после сохранения списка."""
+    now = now or dt.datetime.now()
+    history_by_vin: dict[str, str] = {}
+    for rec in results.load_history().values():
+        if rec.get("vin") and rec.get("date", "") > history_by_vin.get(rec["vin"], ""):
+            history_by_vin[rec["vin"]] = rec["date"]
+    for row in rows:
+        saved = dt.datetime.fromtimestamp(float(row.get("_saved") or now.timestamp()))
+        reason = schedule.passed(row, saved, now)
+        result_day = history_by_vin.get(row.get("vin", ""), "")
+        if not reason and result_day and result_day >= saved.strftime("%Y-%m-%d") and row.get("lot_status") != "Make Offer":
+            reason = f"итог торгов {result_day} уже в базе"
+        row["passed"] = reason
+
+
 def lot_status_notes(rows: list[dict[str, str]]) -> None:
     """После расчёта: проданные из списка (ACV «Sold») — вниз и «купить нельзя»; Make Offer — пометка."""
     for row in rows:
@@ -191,12 +209,47 @@ def _sold_from_lists(rows: list[dict[str, str]]) -> list[dict]:
     return out
 
 
+def sold_for_kbb(costs: dict, days: int = 14, limit: int = 40) -> list[dict[str, str]]:
+    """Проданные недавно популярные машины (и Tesla Model 3 2022–2023) без KBB — для кнопки «KBB для проданных»."""
+    from .normalize import split_model
+
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    known = analytics.load_kbb_log()
+    out = []
+    for rec in sorted(results.load_history().values(), key=lambda r: r.get("date", ""), reverse=True):
+        if rec.get("outcome") != "Sold" or not rec.get("price") or rec.get("kbb") or not rec.get("vin") or rec.get("date", "") < since:
+            continue
+        if rec["vin"] in known or not rec.get("miles") or not rec.get("year"):
+            continue
+        model, trim = split_model(rec.get("model", ""))
+        car = {"vin": rec["vin"], "year": rec["year"], "make": rec.get("make", ""), "model": model, "trim": trim,
+               "odometer_miles": rec["miles"], "auction": rec.get("auction", ""), "date": rec.get("date", "")}
+        if not popular.is_stats_target(car, costs):
+            continue
+        car["kbb_open"] = kbb_site.browser_url(costs, car["year"], car["make"], car["model"], car["odometer_miles"])
+        tracked = popular.is_popular(car, {**costs, "popular_models": costs.get("stats_models") or popular.STATS_DEFAULT})
+        car["_first"] = 0 if tracked else 1                          # отдельно отслеживаемые (Tesla Model 3 2022–2023) — первыми
+        out.append(car)
+    out.sort(key=lambda c: c.pop("_first"))
+    return out[:limit]
+
+
 def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCache, costs: dict) -> dict:
     """Итоги торгов: копит их в data/auction_results.csv, пишет «Итог торгов» в строки лотов
     и возвращает настройки с «рынком» площадок, у которых набралось достаточно своих продаж."""
     history = results.load_history()
     new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])] + _sold_from_lists(rows)
     changed = results.merge(history, new)
+    # KBB, полученный кнопкой «KBB для проданных» (страница KBB с VIN проданной машины), — к её итогу.
+    condition = (costs.get("kbb_page") or {}).get("condition", "good")
+    for p in pages:
+        page = cache.kbb(p)
+        if not page or not page.get("vin") or not (page.get("private_party") or {}).get(condition):
+            continue
+        for rec in history.values():
+            if rec.get("vin") == page["vin"] and not rec.get("kbb"):
+                rec["kbb"] = str(page["private_party"][condition])
+                changed = True
     by_vin, by_ymm = results.index(history)
     today = time.strftime("%Y-%m-%d")
     for row in rows:
@@ -242,7 +295,9 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     kbb_pages = [{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))}
                  for p, r in ((p, cache.kbb(p)) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
+        saved_at = path.stat().st_mtime
         for row in cache.rows(path):
+            row["_saved"] = saved_at
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
             if key in seen or not matches(row, query, year_from, year_to, max_miles):
                 continue
@@ -277,6 +332,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
         analytics.save_kbb_log(kbb_log)
     costs = attach_results(rows, pages, cache, costs)
     lot_status_notes(rows)
+    mark_passed(rows)
     # Машинам без KBB — предварительная цена продажи по вашей базе (KBB ÷ MMR той же модели), а не MMR × 1.3.
     apply_to_rows(rows, costs, estimator=analytics.OwnKbb(kbb_log))
     if max_bid:                              # дороже своего бюджета — не показываем
@@ -449,6 +505,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
                                    only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
+                passed_total = sum(1 for r in rows if r.get("passed"))
+                if q.get("passed") != "1":       # прошедшие торги — скрыты (галочка «показать прошедшие»)
+                    rows = [r for r in rows if not r.get("passed")]
                 rows, places = by_place(rows, q)
                 total = len(rows)
                 all_rows = rows
@@ -483,9 +542,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     files.append(item)
                 costs_now = load_costs(costs_path)
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
-                                     "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "seen_before": r.get("seen_before", ""),
+                                     "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "seen_before": r.get("seen_before", ""), "passed": r.get("passed", ""),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
-                                    for r in rows], "files": files, "total": total, "places": places, "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
+                                    for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders],
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
@@ -495,6 +554,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None, max_bid=num("maxbid"))
+                rows = [r for r in rows if not r.get("passed")]
                 rows, _ = by_place(rows, q)
                 title = ("На осмотр" + (f" — {q['place']}" if q.get("place") else "") + (" — отобранные" if q.get("picked") == "1" else "")
                          + (f" — {q['q']}" if q.get("q") else "" if q.get("place") or q.get("picked") == "1" else " — все машины из файлов"))
@@ -512,6 +572,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(page.read_bytes(), "text/html; charset=utf-8")
                 else:
                     self._send("Нет файла tools/bookmarklet/install.html — скачайте программу заново.".encode("utf-8"), "text/plain; charset=utf-8", 404)
+            elif url.path == "/api/sold_for_kbb":     # проданные без KBB — для своей статистики
+                search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")   # свежие итоги — в базу
+                self._send(json.dumps(sold_for_kbb(load_costs(costs_path)), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/inbox":            # состояние отправки Claude (токен не показывается)
                 self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
@@ -639,7 +702,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label title="Раскрыть у всех машин, из каких сумм сложилась прибыль при покупке по средней цене">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>
-<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button>
+<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
 <button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
 <details style="margin-top:8px"><summary>Свой сохранённый поиск для этой машины</summary>
@@ -669,7 +732,9 @@ let place='';try{place=localStorage.getItem('la-place')||''}catch(e){}
 try{$('picked').checked=localStorage.getItem('la-picked')==='1'}catch(e){}
 function setPlace(p){place=p;try{localStorage.setItem('la-place',p)}catch(e){}refresh()}
 function setPicked(on){try{localStorage.setItem('la-picked',on?'1':'')}catch(e){}refresh()}
-const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+let showPassed=false;try{showPassed=localStorage.getItem('la-passed')==='1'}catch(e){}
+function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
+const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -689,7 +754,8 @@ function render(d){shown=d.rows;const gt=d.group_total||{};
 if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='';try{localStorage.setItem('la-place','')}catch(e){};refresh();return}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${p===place?' on':''}" onclick="setPlace(this.dataset.p)" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
- `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`;
+ `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`+
+ `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов — после 12:00), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · сверху самые выгодные</div>`;
@@ -704,7 +770,7 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_u
 <td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}</td>
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
-<td><span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
+<td>${x.passed?`<span class="pill v-bad" title="Аукцион этой машины уже прошёл">⏱ ${esc(x.passed)}</span> `:''}<span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
@@ -718,6 +784,10 @@ let shown=[];
 /* Адрес kbb.com для закладки-автопилота: страница модели первой машины + машины лотов в #la=… */
 function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.model,t:x.trim,mi:String(x.odometer_miles).replace(/\D/g,'')}));
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
+let soldList=[];
+async function loadSold(){try{soldList=await (await fetch('/api/sold_for_kbb')).json();$('soldbtn').textContent='KBB для проданных ('+soldList.length+')';$('soldbtn').disabled=!soldList.length}catch(e){}}
+function kbbSold(){if(!soldList.length){alert('Проданных без KBB за 14 дней нет — положите итоги торгов в «Загрузки»');return}
+ openKbb(soldList);$('stat').textContent=`KBB для ${soldList.length} проданных машин: вкладка kbb.com работает в фоне, цены попадут в вашу базу итогов (цена продажи ÷ KBB).`;setTimeout(loadSold,60000)}
 function kbbTop(){const need=x=>(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
 /* Лучшие без KBB: 15 популярных, по 5 электромобилей, пикапов и остальных. */
 const list=[['popular',15],['ev',5],['truck',5],['other',5]].flatMap(([g,n])=>shown.filter(x=>x.group===g&&need(x)).slice(0,n));
@@ -736,14 +806,14 @@ function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: 
 async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json())}catch(e){}}
 async function saveInbox(){const r=await fetch('/api/inbox',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:$('inrepo').value,token:$('intoken').value,enabled:$('inon').checked})});
  const d=await r.json();if(d.error){alert(d.error);return}$('intoken').value='';showInbox(d)}
-loadInbox();setInterval(loadInbox,15000);
+loadInbox();setInterval(loadInbox,15000);loadSold();setInterval(loadSold,120000);
 function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',url,cars:cars||''},'*');return true}
 /* «поставить на CarMax» (a.fg) открывается обычно — там вы сами нажимаете «Place bid». */
 document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[target="_blank"]:not(.fg)');
  if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0||!/^https:/.test(a.href)||!hasExt())return;e.preventDefault();openBg(a.href)},true);
 function openKbb(list){const url=laUrl(list),cars=url.split('#la=')[1];if(openBg(url,cars))return;window.open(url,'la='+cars)}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();
-$('links').innerHTML=d.map(x=>`<a class="btn ${x.kind.startsWith('страница')?'sec':''}" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
+$('links').innerHTML=d.map(x=>`<a class="btn sec" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
 '<span class="muted" style="align-self:center">затем на каждой вкладке — закладка «💾 Сохранить для анализа»</span>'}
 async function saveLink(){await fetch('/api/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:$('q').value,auction:$('la').value,url:$('lu').value})});loadLinks()}
 let seenFiles='';

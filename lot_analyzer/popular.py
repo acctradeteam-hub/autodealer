@@ -56,3 +56,15 @@ def is_pickup(row: dict) -> bool:
         return False
     return bool(PICKUP.search(model) or re.search(r"\b(pickup|crew ?cab|crewmax|supercrew|double cab|quad cab|regular cab|access cab|king cab)\b",
                                                   f"{model} {row.get('trim', '')}", re.I))
+
+
+# Для своей статистики «за сколько продаются»: популярные модели и то, что вы отслеживаете отдельно
+# (настройка stats_models в config/costs.json; по умолчанию — Tesla Model 3 2022–2023, все комплектации).
+STATS_DEFAULT = [{"make": "Tesla", "model": r"^model\s*3\b", "years": [2022, 2023]}]
+
+
+def is_stats_target(row: dict, costs: dict) -> bool:
+    if is_popular(row, costs):
+        return True
+    extra = {**costs, "popular_models": costs.get("stats_models") or STATS_DEFAULT}
+    return is_popular(row, extra)
