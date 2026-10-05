@@ -448,6 +448,12 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 search_rows(pages, cache, load_costs(costs_path), "")      # свежие файлы — в базу
                 self._send(analytics.render(results.load_history(), analytics.load_kbb_log()).encode("utf-8"), "text/html; charset=utf-8")
+            elif url.path == "/install":               # страница установки закладки и расширения
+                page = Path(__file__).resolve().parent.parent / "tools" / "bookmarklet" / "install.html"
+                if page.exists():
+                    self._send(page.read_bytes(), "text/html; charset=utf-8")
+                else:
+                    self._send("Нет файла tools/bookmarklet/install.html — скачайте программу заново.".encode("utf-8"), "text/plain; charset=utf-8", 404)
             elif url.path == "/api/inbox":            # состояние отправки Claude (токен не показывается)
                 self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
@@ -554,7 +560,7 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
-<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
 <label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
