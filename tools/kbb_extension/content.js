@@ -12,7 +12,7 @@ window.lotAnalyzerAuto = true;
    build.py склеивает код в одну строку. */
 (function () {
   /* Версия закладки: пишется в сохранённый файл — окно программы предупредит, если закладка устарела. */
-  var LA_VERSION = '2026-10-05.3';
+  var LA_VERSION = '2026-10-05.4';
   var host = location.hostname.toLowerCase();
   var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
@@ -438,10 +438,13 @@ window.lotAnalyzerAuto = true;
     };
     var cmVisible = function (el) { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !el.disabled && el.getAttribute('aria-disabled') !== 'true'; };
     /* Кнопка «ещё машины»: обычная, своя CarMax (hzn-button) или «следующая страница» постраничного списка. */
+    /* Кнопки, нажатие которых не добавило машин (например «See More» боковой панели ACV): больше не нажимаем, листаем. */
+    var cmDead = [];
     var cmMoreButton = function () {
       var all = document.querySelectorAll('button, a, [role="button"], hzn-button, hzn-text-link');
       for (var i = 0; i < all.length; i++) {
         var el = all[i];
+        if (cmDead.indexOf(el) >= 0) { continue; }
         var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
         var label = el.getAttribute('aria-label') || '';
         if (text.length > 60 || el.closest('[role="presentation"], [role="dialog"]') || el.hasAttribute('disabled') || /disabled/i.test(el.className || '')) { continue; }
@@ -512,7 +515,7 @@ window.lotAnalyzerAuto = true;
       var waited = 0;
       var poll = function () {
         waited += 500;
-        if (cmGrab() > before) { cmScrolls = 0; setTimeout(cmStep, 600); } else if (more && waited >= 20000) { cmFinish(); } else if (!more && waited >= (cmScrolls > 2 ? 4000 : 2500)) { setTimeout(cmStep, 0); } else { setTimeout(poll, 500); }
+        if (cmGrab() > before) { cmScrolls = 0; setTimeout(cmStep, 600); } else if (more && waited >= 12000) { cmDead.push(more); if (diag.length < 40) { diag.push(cmOrder.length + ':кнопка «' + (more.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 30) + '» не добавила машин'); } setTimeout(cmStep, 0); } else if (!more && waited >= (cmScrolls > 2 ? 4000 : 2500)) { setTimeout(cmStep, 0); } else { setTimeout(poll, 500); }
       };
       setTimeout(poll, 500);
     };
