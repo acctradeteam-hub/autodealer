@@ -72,3 +72,18 @@ class ResultsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CarmaxTableTest(unittest.TestCase):
+    def test_carmax_results_table_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "carmax_auction_results_10052026.csv"
+            path.write_text("Location,Lane,Lot #,Year/Make/Model,VIN,Color,Mileage,Status,Sale Price (USD)\n"
+                            "CarMax Oceanside,A,1,2010 Toyota Prius One,JTDKN3DUXA5152011,Gray,150387,Sold,4000\n"
+                            "CarMax Roseville Auction Center,B,7,2017 Tesla Model 3 Long Range,5YJ3E1EB0HF000001,White,90000,No Sale,\n"
+                            "CarMax Oceanside,A,172,2022 Hyundai Tucson Hybrid Blue,KM8JBCA1XNU057213,White,186413,Early Bid,\n", encoding="utf-8")
+            self.assertTrue(results.is_results_file(path))
+            recs = results.read_file(path)
+        self.assertEqual([r["outcome"] for r in recs], ["Sold", "No Sale", "Early Bid"])
+        self.assertEqual((recs[0]["date"], recs[0]["auction"], recs[0]["lot"], recs[0]["price"]), ("2026-10-05", "CarMax Oceanside", "A/1", "4000"))
+        self.assertEqual((recs[1]["auction"], recs[1]["model"]), ("CarMax Roseville", "Model 3 Long Range"))

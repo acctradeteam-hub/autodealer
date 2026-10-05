@@ -109,16 +109,48 @@ def is_carmax_results(path: Path) -> bool:
         return False
     if suffix == ".json":
         return '"vehicles"' in head and ("velocicast" in head.lower() or "final_status" in head or "carmax" in head.lower())
-    return head.startswith("auction_location,") or "final_amount" in head[:600] or "velocicast" in head.lower()
+    return (head.startswith("auction_location,") or "final_amount" in head[:600] or "velocicast" in head.lower()
+            or head.startswith(CARMAX_TABLE_HEAD))
 
 
 def is_results_file(path: Path) -> bool:
     return is_lane_csv(path) or is_postsale_pdf(path) or is_carmax_results(path)
 
 
+CARMAX_TABLE_HEAD = "Location,Lane,Lot #,Year/Make/Model,VIN"
+
+
+def read_carmax_table(path: Path) -> list[dict]:
+    """CSV итогов CarMax «Location, Lane, Lot #, Year/Make/Model, VIN, Color, Mileage, Status, Sale Price (USD)».
+    Дата — из имени файла (…_10052026.csv), иначе дата файла."""
+    from .normalize import split_model
+
+    found = re.search(r"(\d{2})(\d{2})(20\d{2})", path.stem)
+    date = f"{found.group(3)}-{found.group(1)}-{found.group(2)}" if found else dt.date.fromtimestamp(path.stat().st_mtime).isoformat()
+    out = []
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for r in csv.DictReader(handle):
+            ymm = (r.get("Year/Make/Model") or "").replace("(no trim)", "").split()
+            make = ymm[1] if len(ymm) > 1 else ""
+            model, trim = split_model(" ".join(ymm[2:]))
+            place = (r.get("Location") or "").replace(" Auction Center", "").strip()
+            status = (r.get("Status") or "").strip()
+            outcome = {"sold": "Sold", "no sale": "No Sale"}.get(status.lower(), status or "нет итога")
+            rec = {"date": date, "auction": place, "code": "", "lot": f"{r.get('Lane', '')}/{r.get('Lot #', '')}".strip("/"),
+                   "vin": (r.get("VIN") or "").strip().upper(), "year": ymm[0] if ymm else "", "make": make,
+                   "model": f"{model} {trim}".strip(), "miles": re.sub(r"\D", "", r.get("Mileage") or ""), "cr": "", "mmr": "",
+                   "outcome": outcome, "price": str(int(_num(r.get("Sale Price (USD)")) or 0) or ""), "source": path.name,
+                   "remarks": "", "kbb": ""}
+            rec["key"] = _key(rec)
+            out.append(rec)
+    return out
+
+
 def read_carmax(path: Path) -> list[dict]:
     from .market import read_results
 
+    if path.suffix.lower() == ".csv" and path.open(encoding="utf-8-sig", errors="replace").read(200).startswith(CARMAX_TABLE_HEAD):
+        return read_carmax_table(path)
     out = []
     for r in read_results(path):
         make, _, model = r.vehicle.partition(" ")
