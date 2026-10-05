@@ -381,9 +381,14 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         info["drive"] = next((t for t in texts if "•" in t and "Drive" in t), "")
         # Объявления CarMax — подписи (caption) после VIN, кроме пометок «Updated …».
         announcements = []
-        for span in vin_box.find_all_next("span", class_=re.compile("caption")):
-            if card not in span.parents:
-                break
+        # Только внутри карточки: find_all_next шёл бы до конца страницы у каждой машины (минуты на больших списках).
+        after_vin = False
+        for span in card.descendants:
+            if span is vin_box:
+                after_vin = True
+                continue
+            if not after_vin or getattr(span, "name", None) != "span" or not any("caption" in c for c in span.get("class") or []):
+                continue
             text = squeeze(span.get_text(" ", strip=True))
             if text and not text.startswith("Updated") and text != "No announcement(s)":
                 announcements.append(text)

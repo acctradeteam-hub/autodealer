@@ -70,6 +70,7 @@ class PageCache:
         self._cache: dict[Path, tuple[float, list[dict[str, str]]]] = {}
         self._kbb: dict[Path, dict | None] = {}
         self._lock = threading.Lock()
+        self._parse_lock = threading.Lock()     # один разбор за раз: запросы окна не разбирают один файл параллельно
 
     def kbb(self, path: Path) -> dict | None:
         """Значения KBB, если файл — сохранённая страница kbb.com (иначе None)."""
@@ -83,6 +84,14 @@ class PageCache:
             cached = self._cache.get(path)
             if cached and cached[0] == mtime:
                 return [dict(r) for r in cached[1]]
+        with self._parse_lock:
+            with self._lock:
+                cached = self._cache.get(path)
+                if cached and cached[0] == mtime:      # пока ждали, файл разобрал другой запрос
+                    return [dict(r) for r in cached[1]]
+            return self._parse(path, mtime)
+
+    def _parse(self, path: Path, mtime: float) -> list[dict[str, str]]:
         try:
             record = None
             if results.is_results_file(path):
@@ -811,12 +820,25 @@ let shown=[];
 /* Адрес kbb.com для закладки-автопилота: страница модели первой машины + машины лотов в #la=… */
 function laUrl(list){const cars=list.map(x=>({v:x.vin,y:x.year,mk:x.make,md:x.model,t:x.trim,mi:String(x.odometer_miles).replace(/\D/g,'')}));
  return list[0].kbb_open.split('#')[0]+'#la='+encodeURIComponent(JSON.stringify(cars))}
-let soldList=[];
-async function loadSold(){try{soldList=await (await fetch('/api/sold_for_kbb')).json();$('soldbtn').textContent='KBB для проданных ('+soldList.length+')';$('soldbtn').disabled=!soldList.length;if($('soldbox').open)loadSoldAll()}catch(e){}}
-async function loadSoldAll(){try{const d=await (await fetch('/api/sold_for_kbb?all=1')).json();const m=v=>v?'$'+Number(v).toLocaleString('en-US'):'—';
+let soldList=[],soldReady=null;
+/* Первый подсчёт после запуска программы читает все файлы «Загрузок» — до минуты. Кнопка ждёт его, а не говорит «нет». */
+function loadSold(){if(soldReady)return soldReady;
+ if(!soldList.length)$('soldbtn').textContent='KBB для проданных (считаю…)';
+ soldReady=(async()=>{try{const r=await fetch('/api/sold_for_kbb');if(!r.ok)throw new Error('программа ответила '+r.status);
+  soldList=await r.json();$('soldbtn').textContent='KBB для проданных ('+soldList.length+')';if($('soldbox').open)loadSoldAll();return true}
+  catch(e){$('soldbtn').textContent='KBB для проданных (ошибка)';$('soldbtn').title='Не удалось получить список: '+e;return false}
+  finally{soldReady=null}})();
+ return soldReady}
+async function loadSoldAll(){if($('soldrows').textContent.trim()==='—')$('soldrows').innerHTML='<tr><td colspan="9" class="muted">Считаю… (первый раз после запуска — до минуты)</td></tr>';try{const d=await (await fetch('/api/sold_for_kbb?all=1')).json();const m=v=>v?'$'+Number(v).toLocaleString('en-US'):'—';
  $('soldsum').textContent=`Проданные на торгах за 14 дней — ${d.length} популярных, из них без KBB: ${d.filter(x=>!x.kbb).length}`;
  $('soldrows').innerHTML=d.length?d.map(x=>`<tr><td>${esc(x.date)}</td><td>${esc(x.auction)}</td><td>${esc(x.lot)}</td><td>${esc(x.year+' '+x.make+' '+x.model+' '+(x.trim||''))}</td><td>${Number(x.odometer_miles).toLocaleString('en-US')}</td><td>${m(x.price)}</td><td>${x.kbb?m(x.kbb):'<span class="muted">нет</span>'}</td><td>${esc(x.share||'—')}</td><td>${esc(x.until)}</td></tr>`).join(''):'<tr><td colspan="9" class="muted">Итогов торгов за 14 дней нет — скачайте с сайта аукциона файл итогов (он попадёт в «Загрузки»)</td></tr>'}catch(e){}}
-function kbbSold(){if(!soldList.length){alert('Проданных без KBB за 14 дней нет — положите итоги торгов в «Загрузки»');return}
+async function kbbSold(){const btn=$('soldbtn');
+ if(!soldList.length){btn.disabled=true;$('stat').textContent='Считаю проданные машины из файлов итогов в «Загрузках» — первый раз после запуска это до минуты…';
+  const ok=await loadSold();btn.disabled=false;
+  if(!ok){alert('Не удалось получить список проданных: '+btn.title.replace('Не удалось получить список: ','')+'. Проверьте, что окно программы (терминал) запущено.');return}
+  if(!soldList.length){alert('Проданных без KBB за 14 дней нет: у всех популярных проданных машин KBB уже есть, или в «Загрузках» нет файла итогов торгов за последние 14 дней.');return}}
+  /* без расширения Chrome не даст открыть вкладку не сразу после нажатия — просим нажать ещё раз */
+  if(!hasExt()){$('stat').textContent=`Список готов: ${soldList.length} проданных машин без KBB. Нажмите «KBB для проданных» ещё раз.`;return}}
  openKbb(soldList);$('stat').textContent=`KBB для ${soldList.length} проданных машин: вкладка kbb.com работает в фоне, цены попадут в вашу базу итогов (цена продажи ÷ KBB).`;setTimeout(loadSold,60000)}
 function kbbTop(){const need=x=>(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
 /* Лучшие без KBB: 15 популярных, по 5 электромобилей, пикапов и остальных. */
