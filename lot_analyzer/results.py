@@ -18,8 +18,9 @@ import datetime as dt
 import re
 import statistics
 from pathlib import Path
+from .paths import DATA_DIR
 
-HISTORY_PATH = Path("data/auction_results.csv")
+HISTORY_PATH = DATA_DIR / "auction_results.csv"
 # remarks — замечания самого аукциона (Major engine defect, Prior rental …), kbb — KBB Private Party, известный до торгов.
 FIELDS = ("key", "date", "auction", "code", "lot", "vin", "year", "make", "model", "miles", "cr", "mmr", "outcome", "price", "source", "remarks", "kbb")
 # Коды площадок Manheim → название, как оно стоит в списках («CA - Manheim California»).

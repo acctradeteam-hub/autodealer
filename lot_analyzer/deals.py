@@ -17,8 +17,9 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from .bid import auction_fee, load_costs
+from .paths import DATA_DIR
 
-DEALS_PATH = Path(os.environ.get("LOT_ANALYZER_DEALS", "data/deals.csv"))
+DEALS_PATH = Path(os.environ.get("LOT_ANALYZER_DEALS") or DATA_DIR / "deals.csv")
 
 
 @dataclass

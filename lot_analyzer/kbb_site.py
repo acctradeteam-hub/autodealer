@@ -25,9 +25,10 @@ import urllib.request
 from pathlib import Path
 
 from . import kbb_page
+from .paths import DATA_DIR
 
 BASE = "https://www.kbb.com"
-CACHE_PATH = Path("data/kbb_site_cache.json")
+CACHE_PATH = DATA_DIR / "kbb_site_cache.json"
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
 # Кузов по умолчанию, если у комплектации их несколько (седан для легковых, SUV, пикап).

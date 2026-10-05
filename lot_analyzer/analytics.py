@@ -21,8 +21,9 @@ import statistics
 from pathlib import Path
 
 from .market import HEAVY
+from .paths import DATA_DIR
 
-KBB_LOG_PATH = Path("data/kbb_history.csv")
+KBB_LOG_PATH = DATA_DIR / "kbb_history.csv"
 KBB_FIELDS = ("vin", "date", "year", "make", "model", "trim", "miles", "kbb", "mmr", "auction", "location", "remarks", "source")
 
 MIN_MODEL = 3          # KBB ÷ MMR по модели — от стольких машин

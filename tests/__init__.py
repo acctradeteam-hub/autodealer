@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 os.environ.setdefault("LOT_ANALYZER_HISTORY", os.path.join(os.path.dirname(__file__), "no_history.csv"))
+os.environ["LOT_ANALYZER_DATA"] = tempfile.mkdtemp(prefix="lot_analyzer_data_")     # не ~/LotAnalyzer/data
 
 from lot_analyzer import analytics, app, inbox, results  # noqa: E402
 

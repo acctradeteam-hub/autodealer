@@ -22,9 +22,10 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from .normalize import clean_vin, parse_money, squeeze
+from .paths import DATA_DIR
 
 # LOT_ANALYZER_HISTORY — другой файл истории (тесты подставляют несуществующий, чтобы не зависеть от ваших данных).
-HISTORY_PATH = Path(os.environ.get("LOT_ANALYZER_HISTORY", "data/market_history.csv"))
+HISTORY_PATH = Path(os.environ.get("LOT_ANALYZER_HISTORY") or DATA_DIR / "market_history.csv")
 
 # Тяжёлые дефекты: такие машины уходят заметно дешевле, в «чистую» сводку не берём.
 # Проблемы титула (Title Absent, 227) сюда не входят: по торгам 29.09 они снижают цену лишь на ~6%,

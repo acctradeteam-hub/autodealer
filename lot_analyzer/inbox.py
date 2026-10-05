@@ -19,9 +19,10 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from .paths import DATA_DIR
 
-SETTINGS_PATH = Path("data/inbox.json")
-SENT_PATH = Path("data/inbox_sent.json")
+SETTINGS_PATH = DATA_DIR / "inbox.json"
+SENT_PATH = DATA_DIR / "inbox_sent.json"
 API = "https://api.github.com"
 MAX_BYTES = 40 * 1024 * 1024
 

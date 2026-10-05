@@ -31,10 +31,11 @@ from .inspection import render_html
 from . import analytics, inbox, kbb_page, kbb_site, manheim_csv, notes, popular, results
 from .pages import read_page
 from .parsers import parse_page
+from .paths import DATA_DIR
 
 SEARCH_URLS_PATH = Path("config/search_urls.json")
-LINKS_PATH = Path("data/search_links.json")
-KBB_PATH = Path("data/kbb_values.json")            # KBB PP из приложения, вписанный в окне: {VIN: {"usd": …, "miles": …, "date": …}}
+LINKS_PATH = DATA_DIR / "search_links.json"
+KBB_PATH = DATA_DIR / "kbb_values.json"            # KBB PP из приложения, вписанный в окне: {VIN: {"usd": …, "miles": …, "date": …}}
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$", re.I)
 SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
@@ -237,7 +238,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     return rows
 
 
-BIDS_PATH = Path("data/my_bids.json")
+BIDS_PATH = DATA_DIR / "my_bids.json"
 
 
 def load_bids() -> dict[str, dict]:
@@ -520,6 +521,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     folders = [Path(p).expanduser() for p in args.watch] or [Path.home() / "Downloads", Path("samples")]
+    # Данные — в постоянной папке (~/LotAnalyzer/data); прежние из старых папок программы копируются сюда один раз.
+    from . import paths
+    for line in paths.migrate():
+        print("перенесено в", paths.DATA_DIR, ":", line)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(folders, Path(args.costs), PageCache()))
     # Отправка Claude (если включена в окне): новые файлы из «Загрузок» — в ваш закрытый репозиторий GitHub.
     inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")])
@@ -561,7 +566,7 @@ div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weig
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
 <h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
-<div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (data/inbox.json).</div>
+<div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
 <label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
 <label>Включено<input id="inon" type="checkbox" style="min-width:auto;width:20px;height:20px"></label><button>Сохранить</button></form>
@@ -593,7 +598,7 @@ const $=id=>document.getElementById(id);const money=v=>v?('$'+Number(v).toLocale
 const signed=v=>(v===''||v==null)?'—':(Number(v)<0?'−$':'$')+Math.abs(Number(v)).toLocaleString('en-US');
 /* Из чего прибыль по рынку: каждая статья с суммой — продажа, ремонт, детейлинг, сборы, покупка по рынку… */
 function resultsSummary(st){const k=Object.keys(st||{});if(!k.length)return '';
- return '<div><b>История итогов торгов</b> (data/auction_results.csv): '+k.map(a=>`${esc(a)} — ${st[a].n} продаж с MMR, цена ÷ MMR ${st[a].median}`+(st[a].enough?' (рынок этой площадки считается по ней)':' (мало для своего рынка, нужно от 20)')).join('; ')+'</div>'}
+ return '<div><b>История итогов торгов</b> (~/LotAnalyzer/data/auction_results.csv): '+k.map(a=>`${esc(a)} — ${st[a].n} продаж с MMR, цена ÷ MMR ${st[a].median}`+(st[a].enough?' (рынок этой площадки считается по ней)':' (мало для своего рынка, нужно от 20)')).join('; ')+'</div>'}
 function profitItems(x){if(!x.calc_profit_items)return '';let items=[];try{items=JSON.parse(x.calc_profit_items)}catch(e){return ''}
  const rows=items.map(([label,v])=>`<tr><td>${esc(label)}</td><td class="num ${v<0?'neg':''}">${signed(v)}</td></tr>`).join('');
  return `<details class="calc"${$('showcalc').checked?' open':''}><summary>из чего</summary><table>${rows}<tr class="total"><td>Прибыль при покупке по средней цене</td><td class="num">${signed(x.calc_profit_market_usd)}</td></tr></table></details>`}
