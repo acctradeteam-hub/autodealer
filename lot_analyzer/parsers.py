@@ -412,21 +412,16 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
     rows = []
     for card in cards:
         if opened_vin and card["vin"] == opened_vin:
-            row = dict(opened)
-            card_row = empty_row()
-            notes = sites_text.row_from_carmax_card(card_row, card)
-            # Из списка — заметки покупателя, статус и объявления (они свежее).
-            for key in ("lot_url", "photo_main_url"):
-                row[key] = row.get(key) or card_row[key]
-            row["auction_notes"] = card_row["auction_notes"]
-            for key in ("no_photos", "carfax_autocheck", "my_proxy_usd", "retail_estimate_usd", "kbb_private_party_usd", "mmr_adjusted_usd", "auction_retail_usd", "lot_description"):
-                if card_row.get(key):
-                    row[key] = card_row[key]
-            if card_row["defects"] and card_row["defects"] not in row["defects"]:
-                row["defects"] = f"{card_row['defects']} | {row['defects']}"
-                row["condition_report"] = f"{card_row['defects']} | {row['condition_report']}"
-                row["history_page"] = card_row["history_page"]
-            row["needs_review"] = clean_cell("; ".join([row["needs_review"]] + notes if row["needs_review"] else notes), 600)
+            # Карточка этой машины была открыта на странице списка: разбор «всей страницы» тянет фильтры и кнопки
+            # («Make», «Location», «Salvage», «Rebuilt» …). Основа — карточка списка, со страницы — только фото и дата торгов.
+            row = empty_row()
+            row["source_file"], row["parsed_at"] = source_name, stamp
+            notes = sites_text.row_from_carmax_card(row, card) + _vin_notes(row)
+            for key in ("photo_urls", "photo_count", "sale_date"):
+                row[key] = opened.get(key, "") or row.get(key, "")
+            row["needs_review"] = clean_cell("; ".join(notes), 600)
+            rows.append(row)
+            continue
         else:
             row = empty_row()
             row["source_file"], row["parsed_at"] = source_name, stamp

@@ -139,6 +139,7 @@
     var cars = state.cars;
     /* Модели, которые на KBB называются иначе, чем на аукционах. */
     var KBB_MODEL = { 'bolt': 'bolt-ev', 'bolt-euv': 'bolt-euv', 'gti': 'golf-gti', 'golf-gti': 'golf-gti', 'e-golf': 'e-golf', 'leaf-plus': 'leaf', 'ioniq-electric': 'ioniq', 'niro-ev': 'niro-ev', 'kona-electric': 'kona-electric', 'clarity-plug-in-hybrid': 'clarity-plug-in-hybrid', 'prius-prime': 'prius-prime', 'rav4-prime': 'rav4-prime' };
+    var KBB_EXTRA = { 'prius-plug-in-hybrid': 'prius-plug-in', 'prius-plug-in': 'prius-plug-in-hybrid' };
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
     var nextData = function (html) {
@@ -232,18 +233,24 @@
       var query = '?intent=trade-in-sell&mileage=' + car.mi + '&zipcode=92620';
       /* Как модель называется на KBB: аукцион пишет «Bolt», KBB — «Bolt EV»; гибриды у KBB часто отдельной моделью
          («camry-hybrid»). Пробуем варианты по очереди, пока страница не покажет комплектации. */
+      /* Старые строки CarMax: «Model» + трим «X 75D» → модель «Model X». EUV, Plug-in — у KBB отдельные модели. */
+      if (/^model$/i.test(car.md) && /^[3sxy]\b/i.test(car.t || '')) { car.md = 'Model ' + car.t.charAt(0).toUpperCase(); car.t = car.t.slice(1).trim(); }
+      var lead = /^(euv|plug[- ]?in(?: hybrid)?|prime|electric)\b/i.exec(car.t || '');
+      if (lead) { car.md = car.md + ' ' + lead[1]; car.t = car.t.slice(lead[0].length).trim(); }
       var md = slugOf(car.md);
       var hybrid = /hybrid/i.test(car.md + ' ' + car.t);
-      var models = [KBB_MODEL[md] || '', hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
-        md + '-ev', md.split('-')[0] + (hybrid ? '-hybrid' : '-ev')].filter(function (m, i, all) { return m && all.indexOf(m) === i; });
+      var models = [KBB_MODEL[md] || '', (KBB_EXTRA[md] || '')].concat([hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
+        md + '-ev', md.split('-')[0] + (hybrid ? '-hybrid' : '-ev')]).filter(function (m, i, all) { return m && all.indexOf(m) === i; });
       var trims = [];
       var modelSlug = '';
       for (var n = 0; n < models.length && !trims.length; n++) {
         var path = '/' + slugOf(car.mk) + '/' + models[n] + '/' + car.y + '/';
         var html = location.pathname === path ? document.documentElement.outerHTML : await getText(path + query).catch(function () { return ''; });
         trims = trimsOf(nextData(html));
-        /* Гибрид не подменяем бензиновой версией: у модели без гибридных комплектаций ищем дальше. */
-        if (hybrid && trims.length && !trims.some(function (t) { return /hybrid/i.test(t.name); }) && models[n].indexOf('hybrid') < 0) { trims = []; }
+        /* Гибрид, EUV, Plug-in, Prime, Electric не подменяем другой версией: страница должна быть именно этой модели
+           (в адресе модели или в названиях комплектаций). Иначе ищем дальше. */
+        var must = (/(hybrid|euv|plug|prime|electric)/i.exec(car.md + ' ' + car.t) || [])[1];
+        if (must && trims.length && models[n].indexOf(must.toLowerCase()) < 0 && !trims.some(function (t) { return new RegExp(must, 'i').test(t.name); })) { trims = []; }
         modelSlug = models[n];
       }
       if (!trims.length) { throw new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную'); }

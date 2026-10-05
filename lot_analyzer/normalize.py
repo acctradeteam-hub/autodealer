@@ -220,3 +220,21 @@ _PLACEHOLDERS = {
 def is_placeholder(value: str | None) -> bool:
     """True для значений-заглушек, которые на странице означают «данных нет»."""
     return squeeze(value).lower().strip(" .:") in _PLACEHOLDERS
+
+
+# Модели из двух-трёх слов: «Tesla Model X 75D» — модель «Model X», а не «Model» + трим «X 75D».
+_MULTIWORD_MODEL = re.compile(
+    r"^(model [3sxy]|grand (cherokee|caravan|marquis|vitara)|range rover( (sport|evoque|velar))?|santa (fe|cruz)|town & country|"
+    r"monte carlo|crown victoria|land cruiser|mustang mach-e|bolt euv|prius (prime|plug-in( hybrid)?|plug in hybrid|c|v)|"
+    r"rav4 (prime|hybrid)|cr-v hybrid|camry hybrid|accord hybrid|niro ev|kona electric|ioniq (5|6|electric)|id\.4|e-tron( gt)?|"
+    r"f-150 lightning|silverado ev|sierra ev)\b", re.I)
+
+
+def split_model(rest: str) -> tuple[str, str]:
+    """«Model X 75D» → («Model X», «75D»); «Civic LX» → («Civic», «LX»)."""
+    rest = squeeze(rest)
+    found = _MULTIWORD_MODEL.match(rest)
+    if found:
+        return rest[:found.end()], rest[found.end():].strip()
+    model, _, trim = rest.partition(" ")
+    return model, trim

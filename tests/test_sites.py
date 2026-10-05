@@ -266,3 +266,14 @@ class CarmaxAnyLayoutTest(unittest.TestCase):
         self.assertEqual((cards[1]["title"], cards[1]["miles"], cards[1]["lane_run"], cards[1]["location"]), ("2011 Honda Civic LX", "41000", "A/2", "Murrieta, CA"))
         self.assertEqual(cards[1]["lot_url"], "https://www.carmaxauctions.com/vehicledetail/70300001")
         self.assertEqual(cards[1]["announcements"], "Major engine defect")
+
+
+class MultiwordModelTest(unittest.TestCase):
+    def test_split_model(self):
+        from lot_analyzer.normalize import split_model
+        self.assertEqual(split_model("Model X 75D"), ("Model X", "75D"))
+        self.assertEqual(split_model("Model 3 Standard Range Plus"), ("Model 3", "Standard Range Plus"))
+        self.assertEqual(split_model("Bolt EUV Premier"), ("Bolt EUV", "Premier"))
+        self.assertEqual(split_model("Grand Cherokee Laredo"), ("Grand Cherokee", "Laredo"))
+        self.assertEqual(split_model("Civic LX"), ("Civic", "LX"))
+        self.assertEqual(split_model("CR-V EX-L"), ("CR-V", "EX-L"))

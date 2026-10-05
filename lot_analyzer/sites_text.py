@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from bs4 import BeautifulSoup, Tag
 
-from .normalize import parse_money, squeeze
+from .normalize import parse_money, split_model, squeeze
 from .notes import strip_own
 
 MONEY_RE = re.compile(r"^\$\s?[\d,]+(\.\d\d)?$")
@@ -439,7 +439,7 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     match = HEADER_RE.match(card.get("title", ""))
     if match:
         year, make, rest = match.groups()
-        model, _, trim = rest.partition(" ")
+        model, trim = split_model(rest)
         row.update(year=year, make=make, model=model, trim=trim)
     if card.get("miles", "").isdigit():
         row["odometer_miles"] = card["miles"]
