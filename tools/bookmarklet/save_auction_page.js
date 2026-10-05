@@ -5,7 +5,7 @@
    build.py склеивает код в одну строку. */
 (function () {
   /* Версия закладки: пишется в сохранённый файл — окно программы предупредит, если закладка устарела. */
-  var LA_VERSION = '2026-10-05.2';
+  var LA_VERSION = '2026-10-05.3';
   var host = location.hostname.toLowerCase();
   var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
@@ -22,6 +22,7 @@
     say('Это окно программы — здесь сохранять не нужно. Нажимайте закладку на странице аукциона или KBB.', 6000);
     return;
   }
+  var saveDiag = '';
   var save = function (parts, lot, total) {
   var live = document.documentElement;
   var copy = live.cloneNode(true);
@@ -63,7 +64,7 @@
   var stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes());
   var kind = (document.title.split('|')[0] || 'page').trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'page';
   var name = lot ? lot.name : auction + '_' + kind + (parts ? '_all' + parts.length : '') + '_' + stamp + '.html';
-  var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; version: ' + LA_VERSION + '; saved-at: ' + now.toISOString() + (lot ? '; lot-vin: ' + lot.vin : '') + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
+  var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; version: ' + LA_VERSION + '; saved-at: ' + now.toISOString() + (saveDiag ? '; diag: ' + saveDiag.replace(/--/g, '-').replace(/>/g, ')') : '') + (lot ? '; lot-vin: ' + lot.vin : '') + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   var link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -449,24 +450,41 @@
     };
     /* Прокрутка вниз шагами (не прыжком в конец): списки, которые рисуют только видимые машины (ACV), иначе
        пропускают середину. Сначала — до последней видимой карточки; если сдвига нет — на экран вниз. */
+    /* Прокрутка шагами: каждый блок от карточки до самой страницы, у которого ниже есть содержимое
+       (обычная прокрутка, своя полоса прокрутки ACV, сама страница), + «колесо мыши» над списком.
+       Что и насколько сдвинулось — в diag (пишется в сохранённый файл, чтобы разобрать, если не долистало). */
+    var diag = [];
+    var nameOf = function (el) { return el === document.scrollingElement ? 'page' : el.tagName + (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''); };
     var cmScrollDown = function () {
       var list = cards();
       var last = list.length ? list[list.length - 1].el : null;
-      /* Область, которая прокручивается: и обычная, и со своей полосой прокрутки (perfect-scrollbar у ACV: overflow hidden). */
-      var box = null;
-      for (var up = last && last.parentNode; up && up !== document.body && up !== document.documentElement; up = up.parentNode) {
-        if (up.scrollHeight > up.clientHeight + 40 && up.clientHeight > 100 && !/visible/.test(getComputedStyle(up).overflowY)) { box = up; break; }
+      var boxes = [];
+      for (var up = last && last.parentNode; up && up.nodeType === 1; up = up.parentNode) {
+        if (up.scrollHeight > up.clientHeight + 40 && up.clientHeight > 100) { boxes.push(up); }
       }
-      var pos = function () { return (box ? box.scrollTop : 0) + window.scrollY; };
-      var before = pos();
+      var root = document.scrollingElement || document.documentElement;
+      if (boxes.indexOf(root) < 0) { boxes.push(root); }
+      var tops = function () { return boxes.map(function (box) { return box.scrollTop; }); };
+      var shift = function (was) { var now = tops(); return now.reduce(function (sum, v, i) { return sum + Math.abs(v - was[i]); }, 0); };
+      var moved = [];
+      var was = tops();
+      /* 1) к последней показанной карточке: обычный список — сразу в конец (там сайт подгружает следующие). */
       if (last) { last.scrollIntoView({ block: 'end' }); }
-      if (Math.abs(pos() - before) < 40) {
-        if (box) { box.scrollTop += Math.max(200, box.clientHeight * 0.8); } else { window.scrollBy(0, Math.max(200, window.innerHeight * 0.8)); }
+      if (shift(was) >= 40) { moved.push('к последней ' + Math.round(shift(was))); }
+      /* 2) сдвинулось мало (виртуальный список: последняя карточка уже почти видна) — на экран вниз каждый блок с прокруткой. */
+      if (shift(was) < window.innerHeight * 0.5) {
+        boxes.forEach(function (box) {
+          var from = box.scrollTop;
+          box.scrollTop = from + Math.max(200, Math.min(box.clientHeight, window.innerHeight) * 0.8);
+          if (box.scrollTop !== from) { moved.push(nameOf(box) + ' ' + Math.round(from) + '→' + Math.round(box.scrollTop)); }
+        });
       }
-      /* Не сдвинулось — «колесо мыши» над списком: так прокручиваются свои полосы прокрутки. */
-      if (Math.abs(pos() - before) < 40 && last) {
+      /* 3) и это не помогло — «колесо мыши» над списком (свои полосы прокрутки). */
+      if (!moved.length && last) {
         last.dispatchEvent(new WheelEvent('wheel', { deltaY: 900, deltaMode: 0, bubbles: true, cancelable: true }));
+        moved.push('wheel');
       }
+      if (diag.length < 40) { diag.push(cmOrder.length + ':' + moved.join(',')); }
     };
     var cmClicks = 0;
     var cmScrolls = 0;
@@ -501,6 +519,7 @@
       cards().forEach(function (c) { onPage[c.key] = 1; });
       box.innerHTML = cmOrder.filter(function (v) { return !onPage[v]; }).map(function (v) { return cmCards[v]; }).join('');
       if (box.innerHTML) { document.body.appendChild(box); }
+      saveDiag = 'expected ' + cmExpected() + ', got ' + cmOrder.length + ', clicks ' + cmClicks + ', steps ' + diag.join(' | ');
       save(null, null, cmOrder.length);
       if (box.parentNode) { box.parentNode.removeChild(box); }
     };

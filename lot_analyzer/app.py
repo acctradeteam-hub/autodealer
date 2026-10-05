@@ -41,7 +41,7 @@ SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
-BOOKMARKLET_VERSION = "2026-10-05.2"
+BOOKMARKLET_VERSION = "2026-10-05.3"
 
 
 def bookmarklet_version(path: Path) -> str | None:
