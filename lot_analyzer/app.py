@@ -57,7 +57,7 @@ def bookmarklet_version(path: Path) -> str | None:
         return None
     found = re.search(r"saved-by: lot_analyzer bookmarklet; version: ([\d.-]+);", head)
     return found.group(1) if found else ""
-RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
+RANK = {"ПРОДАНА": 4.5, "НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
 # ---------------------------------------------------------------- файлы из «Загрузок»
@@ -100,6 +100,11 @@ class PageCache:
                         record = {"report": report.get_text("\n", strip=True) if report else ""}
                 else:
                     rows = parse_page(html, source_name=path.name)
+                    # ACV: проданные из боковой панели «Watch list» — итоги торгов для вашей базы.
+                    from .lists import acv_watchlist_sold
+                    sold = acv_watchlist_sold(html, time.strftime("%Y-%m-%d", time.localtime(mtime)))
+                    if sold:
+                        record = {"results": sold, "with_rows": True}
         except Exception as error:  # битый файл не должен ронять окно
             record = None
             rows = [{"auction": "?", "source_file": path.name, "needs_review": f"не разобрано: {error}"}]
@@ -157,11 +162,40 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
     return True
 
 
+def lot_status_notes(rows: list[dict[str, str]]) -> None:
+    """После расчёта: проданные из списка (ACV «Sold») — вниз и «купить нельзя»; Make Offer — пометка."""
+    for row in rows:
+        status = row.get("lot_status", "")
+        if status == "Sold":
+            price = row.get("auction_result_price")
+            row["calc_verdict"] = (f"ПРОДАНА за ${float(price):,.0f} — купить нельзя" if price else "ПРОДАНА — купить нельзя") + \
+                                  "; цена продажи сохранена в вашу базу итогов"
+        elif status in ("Make Offer", "Ended") and row.get("calc_verdict"):
+            row["calc_verdict"] += "; торги прошли без продажи (Make Offer) — можно предложить цену продавцу" if status == "Make Offer" else "; торги закончились"
+
+
+def _sold_from_lists(rows: list[dict[str, str]]) -> list[dict]:
+    """Проданные машины из списков (ACV «Sold $8,000») — в базу итогов, как итоги торгов."""
+    out = []
+    today = time.strftime("%Y-%m-%d")
+    for row in rows:
+        if row.get("lot_status") != "Sold" or not row.get("auction_result_price"):
+            continue
+        rec = {"date": today, "auction": row.get("auction", ""), "code": "", "lot": row.get("lot_number", ""), "vin": row.get("vin", ""),
+               "year": row.get("year", ""), "make": row.get("make", ""), "model": row.get("model", ""),
+               "miles": re.sub(r"\D", "", str(row.get("odometer_miles", ""))), "cr": row.get("condition_grade", ""), "mmr": "",
+               "outcome": "Sold", "price": row["auction_result_price"], "source": row.get("source_file", ""),
+               "remarks": (row.get("defects") or "")[:300], "kbb": ""}
+        rec["key"] = f"{rec['auction']}|lot:{rec['lot']}" if rec["lot"] else results._key(rec)
+        out.append(rec)
+    return out
+
+
 def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCache, costs: dict) -> dict:
     """Итоги торгов: копит их в data/auction_results.csv, пишет «Итог торгов» в строки лотов
     и возвращает настройки с «рынком» площадок, у которых набралось достаточно своих продаж."""
     history = results.load_history()
-    new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])]
+    new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])] + _sold_from_lists(rows)
     changed = results.merge(history, new)
     by_vin, by_ymm = results.index(history)
     today = time.strftime("%Y-%m-%d")
@@ -170,7 +204,7 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
         past = sorted((r for r in by_vin.get(row.get("vin", ""), []) if r.get("date") and r["date"] < today), key=lambda r: r["date"])
         row["seen_before"] = "; ".join(results.short(r) for r in past)
         rec = results.find(row, by_vin, by_ymm)
-        if not rec:
+        if not rec or row.get("lot_status") == "Sold":
             continue
         mmr = parse_money(row.get("mmr_adjusted_usd"))
         if mmr and not rec.get("mmr"):                     # в PDF итогов MMR нет — берём из списка до торгов
@@ -242,6 +276,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     if analytics.record_kbb(rows, kbb_log):            # каждый настоящий KBB — в свою базу
         analytics.save_kbb_log(kbb_log)
     costs = attach_results(rows, pages, cache, costs)
+    lot_status_notes(rows)
     # Машинам без KBB — предварительная цена продажи по вашей базе (KBB ÷ MMR той же модели), а не MMR × 1.3.
     apply_to_rows(rows, costs, estimator=analytics.OwnKbb(kbb_log))
     if max_bid:                              # дороже своего бюджета — не показываем
@@ -388,7 +423,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "exterior_color", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
-           "sale_date", "lot_url", "vin", "my_proxy_usd", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
+           "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review")
 
 
 def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
@@ -427,7 +462,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     if version is not None and version < BOOKMARKLET_VERSION and not p.name.startswith("KBB_"):
                         item["old"] = "старая закладка — машин может быть не все: переустановите её (кнопка «🔖 Закладка») и сохраните снова"
                     record = cache.kbb(p)
-                    if record and "results" in record:
+                    if record and record.get("with_rows"):
+                        item["note"] = f"+ {len(record['results'])} проданных из вашего watch list ACV — в базу итогов"
+                    elif record and "results" in record:
                         recs = record["results"]
                         sold = sum(1 for r in recs if r["outcome"] == "Sold")
                         where = ", ".join(sorted({f"{r['auction']} {r['date']}" for r in recs}))
@@ -637,7 +674,7 @@ const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',q:
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
 function vRest(v){return vParts(v).slice(vN(v)).join(';')}
-function cls(v){if(v.startsWith('РИСК'))return 'v-mid';return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
+function cls(v){if(v.startsWith('РИСК'))return 'v-mid';if(v.startsWith('ПРОДАНА'))return 'v-bad';return v.startsWith('МОЖНО')?(v.includes('вряд ли')?'v-mid':'v-ok'):(v.startsWith('ПРОПУСТИТЬ')||v.startsWith('НЕВЫГОДНО')||v.startsWith('ДОРОЖЕ'))?'v-bad':'v-mid'}
 function kbbShort(s){s=String(s||'').replace(/^страница KBB: /,'');return s.length>34?s.slice(0,32)+'…':s}
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
@@ -672,7 +709,7 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_u
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
 $('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны лучшие ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · сверху — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`;
-$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?'':` <b class="${f.cars?'':'neg'}">(машин: ${f.cars||0})</b>`)+(f.old?` <span class="neg">⚠ ${esc(f.old)}</span>`:'')+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
+$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?'':` <b class="${f.cars?'':'neg'}">(машин: ${f.cars||0})</b>`)+(f.note?` <span class="muted">${esc(f.note)}</span>`:'')+(f.old?` <span class="neg">⚠ ${esc(f.old)}</span>`:'')+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
 async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;

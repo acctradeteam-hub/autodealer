@@ -156,6 +156,17 @@ def acv_card(card: Tag) -> dict[str, str]:
     info["url"] = f"https://app.acvauctions.com/auction/{info['lot']}" if info["lot"] else ""
     info["seller"] = next((x for x in lines if ":" in x and "Reseller" in x), "")
     info["photo"] = _photo(card)
+    # Состояние лота в режиме «All»: идут торги, Make Offer (торги прошли без продажи), продана (с ценой), закончены.
+    if "Sold" in lines:
+        info["status"] = "Sold"
+        at = lines.index("Sold")
+        info["sold_price"] = next((x for x in lines[at + 1:at + 3] if MONEY_RE.match(x)), "")
+    elif "Make Offer" in lines:
+        info["status"] = "Make Offer"
+    elif "Ended" in lines:
+        info["status"] = "Ended"
+    elif info["bid"]:
+        info["status"] = "Live"
     return info
 
 
@@ -195,6 +206,11 @@ def row_from_card(row: dict[str, str], info: dict[str, str]) -> list[str]:
     row["sale_date"] = info.get("when", "")
     row["lot_url"] = info.get("url", "")
     row["photo_main_url"] = info.get("photo", "")
+    row["lot_status"] = info.get("status", "")
+    sold = parse_money(info.get("sold_price"))
+    if info.get("status") == "Sold":
+        row["auction_result"] = f"Продано ${sold:,.0f} · {info['auction']} (по списку)" if sold else f"Продано · {info['auction']} (по списку)"
+        row["auction_result_price"] = f"{sold:.0f}" if sold else ""
     bid = parse_money(info.get("bid"))
     row["current_bid_usd"] = f"{bid:.0f}" if bid else ""
     retail = parse_money(info.get("retail"))
@@ -225,3 +241,30 @@ def row_from_card(row: dict[str, str], info: dict[str, str]) -> list[str]:
     row["lot_description"] = "; ".join(extra)
     notes.append("из списка: повреждения и история — в карточке лота")
     return notes
+
+
+def acv_watchlist_sold(html: str, date: str = "") -> list[dict]:
+    """Боковая панель ACV «Watch list»: проданные машины с ценой — это итоги торгов (в вашу базу для аналитики)."""
+    if "acvauctions" not in html[:600_000].lower() or "watch-list" not in html:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    out = []
+    for panel in soup.select(".watch-list"):
+        for card in find_cards(panel):
+            lines = _lines(card)
+            if "Sold" not in lines:
+                continue
+            year, make, model, _ = _title(lines)
+            at = lines.index("Sold")
+            price = parse_money(next((x for x in lines[at + 1:at + 3] if MONEY_RE.match(x)), ""))
+            odo = next((ODOMETER_RE.match(x) for x in lines if ODOMETER_RE.match(x)), None)
+            link = card.find("a", href=re.compile(r"/(?:marketplace|auction)/\d+"))
+            lot = re.search(r"/(\d+)", link["href"]).group(1) if link else ""
+            if not (year and price and lot):
+                continue
+            sub = next((x for x in lines if "•" in x), "")
+            out.append({"key": f"ACV|lot:{lot}", "date": date, "auction": "ACV", "code": "", "lot": lot, "vin": "",
+                        "year": year, "make": make, "model": f"{model} {sub.split('•')[0].strip()}".strip(),
+                        "miles": odo.group(1).replace(",", "") if odo else "", "cr": "", "mmr": "", "outcome": "Sold",
+                        "price": f"{price:.0f}", "source": "ACV watch list", "remarks": next((x for x in lines if x in ("No Reserve", "Low Reserve", "Reserve Met")), ""), "kbb": ""})
+    return out

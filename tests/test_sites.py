@@ -277,3 +277,16 @@ class MultiwordModelTest(unittest.TestCase):
         self.assertEqual(split_model("Grand Cherokee Laredo"), ("Grand Cherokee", "Laredo"))
         self.assertEqual(split_model("Civic LX"), ("Civic", "LX"))
         self.assertEqual(split_model("CR-V EX-L"), ("CR-V", "EX-L"))
+
+
+class AcvWatchlistTest(unittest.TestCase):
+    def test_sold_in_watchlist_become_results(self):
+        from lot_analyzer.lists import acv_watchlist_sold
+        card = ('<div><a href="/marketplace/16518411?was_recommendation=false"><span>2013 Honda Civic</span></a><div>EX • FWD • 4cyl</div>'
+                '<div>140,989 miles</div><div>No Reserve</div><span>schedule</span><span>Sold</span><span>$4,750</span></div>')
+        live = '<div><a href="/marketplace/16518412"><span>2014 Honda Civic</span></a><div>LX • FWD</div><div>90,000 miles</div><span>Current Bid</span><span>$3,000</span></div>'
+        html = f'<html><body>app.acvauctions.com<div class="sidebar-section watch-list">{card}{live}</div></body></html>'
+        recs = acv_watchlist_sold(html, "2026-10-04")
+        self.assertEqual(len(recs), 1)
+        self.assertEqual((recs[0]["year"], recs[0]["make"], recs[0]["model"], recs[0]["miles"], recs[0]["price"], recs[0]["outcome"]),
+                         ("2013", "Honda", "Civic EX", "140989", "4750", "Sold"))
