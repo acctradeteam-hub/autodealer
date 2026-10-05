@@ -11,6 +11,8 @@ window.lotAnalyzerAuto = true;
    Правила записи: только полные строки-комментарии, после каждой команды «;» —
    build.py склеивает код в одну строку. */
 (function () {
+  /* Версия закладки: пишется в сохранённый файл — окно программы предупредит, если закладка устарела. */
+  var LA_VERSION = '2026-10-05';
   var host = location.hostname.toLowerCase();
   var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
@@ -68,7 +70,7 @@ window.lotAnalyzerAuto = true;
   var stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes());
   var kind = (document.title.split('|')[0] || 'page').trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'page';
   var name = lot ? lot.name : auction + '_' + kind + (parts ? '_all' + parts.length : '') + '_' + stamp + '.html';
-  var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: ' + now.toISOString() + (lot ? '; lot-vin: ' + lot.vin : '') + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
+  var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; version: ' + LA_VERSION + '; saved-at: ' + now.toISOString() + (lot ? '; lot-vin: ' + lot.vin : '') + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   var link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -227,7 +229,7 @@ window.lotAnalyzerAuto = true;
     };
     var saveFile = function (html, url, car) {
       var body = html.replace(/<script[^>]*\bsrc=[^>]*>\s*<\/script>/gi, '').replace(/<link[^>]*>/gi, '');
-      var head = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; saved-at: ' + new Date().toISOString() + '; lot-vin: ' + car.v + '; url: https://www.kbb.com' + url + ' -->\n';
+      var head = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; version: ' + LA_VERSION + '; saved-at: ' + new Date().toISOString() + '; lot-vin: ' + car.v + '; url: https://www.kbb.com' + url + ' -->\n';
       var blob = new Blob([head + body], { type: 'text/html;charset=utf-8' });
       var link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
@@ -470,15 +472,24 @@ window.lotAnalyzerAuto = true;
     };
     var cmClicks = 0;
     var cmScrolls = 0;
+    /* Сколько машин обещает сам сайт («171 / 15,695 results» у ACV, «28 live» у CarMax): пока не собрали — листаем терпеливее. */
+    var cmExpected = function () {
+      var text = document.body.innerText || '';
+      var m = /(\d[\d,]*)\s*\/\s*[\d,]+\s*results/i.exec(text) || /(\d[\d,]*)\s+live\s*\|/i.exec(text) || /(\d[\d,]*)\s+(?:results|vehicles)\b/i.exec(text);
+      return m ? Number(m[1].replace(/,/g, '')) : 0;
+    };
+    var cmPatience = function () { var want = cmExpected(); return want && cmOrder.length < want ? 8 : 3; };
     var cmStep = function () {
       var before = cmGrab();
       say(auction + ': загружено машин ' + before + '… не трогайте страницу');
       var more = cmMoreButton();
-      if (more && cmClicks < 200) { cmClicks += 1; more.scrollIntoView({ block: 'center' }); cmPress(more); } else if (cmScrolls < 3) { cmScrolls += 1; cmScrollDown(); } else { cmFinish(); return; }
+      var want = cmExpected();
+      if (want) { say(auction + ': загружено машин ' + before + ' из ' + want + '… не трогайте страницу'); }
+      if (more && cmClicks < 400) { cmClicks += 1; more.scrollIntoView({ block: 'center' }); cmPress(more); } else if (cmScrolls < cmPatience()) { cmScrolls += 1; cmScrollDown(); } else { cmFinish(); return; }
       var waited = 0;
       var poll = function () {
         waited += 500;
-        if (cmGrab() > before) { cmScrolls = 0; setTimeout(cmStep, 600); } else if (more && waited >= 20000) { cmFinish(); } else if (!more && waited >= 2500) { setTimeout(cmStep, 0); } else { setTimeout(poll, 500); }
+        if (cmGrab() > before) { cmScrolls = 0; setTimeout(cmStep, 600); } else if (more && waited >= 20000) { cmFinish(); } else if (!more && waited >= (cmScrolls > 2 ? 4000 : 2500)) { setTimeout(cmStep, 0); } else { setTimeout(poll, 500); }
       };
       setTimeout(poll, 500);
     };

@@ -55,6 +55,12 @@ class TestBookmarklet(unittest.TestCase):
         self.assertIn("hzn-button", self.source)                           # кнопки CarMax (web components)
         self.assertIn("save(null, null, cmOrder.length)", self.source)
 
+    def test_version_matches_window(self) -> None:
+        import re
+        from lot_analyzer.app import BOOKMARKLET_VERSION
+        self.assertEqual(re.search(r"var LA_VERSION = '([\d-]+)';", self.source).group(1), BOOKMARKLET_VERSION)
+        self.assertIn("saved-by: lot_analyzer bookmarklet; version: ' + LA_VERSION", self.source)
+
     def test_kbb_trim_rules(self) -> None:
         # «Range» не решает (Standard / Long Range у Tesla), дорогие версии — только если они у лота; не нашли — базовая.
         self.assertIn("w !== 'range'", self.source)

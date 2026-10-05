@@ -40,6 +40,23 @@ SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.
 SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
 GROUPS = ("popular", "ev", "truck", "other")
+# Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
+BOOKMARKLET_VERSION = "2026-10-05"
+
+
+def bookmarklet_version(path: Path) -> str | None:
+    """Версия закладки, сохранившей файл: «2026-10-05», «» — старая (без версии), None — файл не закладки."""
+    if path.suffix.lower() not in (".html", ".htm"):
+        return None
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(700).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    if "saved-by: lot_analyzer bookmarklet" not in head:
+        return None
+    found = re.search(r"saved-by: lot_analyzer bookmarklet; version: ([\d-]+);", head)
+    return found.group(1) if found else ""
 RANK = {"НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР:": 0, "ОСМОТР": 0, "ДОРОЖЕ": 1, "НЕТ": 2, "НЕВЫГОДНО": 3, "ПРОПУСТИТЬ": 4}
 
 
@@ -406,6 +423,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 files = []
                 for p in pages:
                     item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime)), "cars": len(cache.rows(p))}
+                    version = bookmarklet_version(p)
+                    if version is not None and version < BOOKMARKLET_VERSION and not p.name.startswith("KBB_"):
+                        item["old"] = "старая закладка — машин может быть не все: переустановите её (кнопка «🔖 Закладка») и сохраните снова"
                     record = cache.kbb(p)
                     if record and "results" in record:
                         recs = record["results"]
@@ -652,7 +672,7 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_u
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
 $('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны лучшие ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · сверху — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`;
-$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?'':` <b class="${f.cars?'':'neg'}">(машин: ${f.cars||0})</b>`)+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
+$('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?'':` <b class="${f.cars?'':'neg'}">(машин: ${f.cars||0})</b>`)+(f.old?` <span class="neg">⚠ ${esc(f.old)}</span>`:'')+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
 async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
