@@ -1,6 +1,7 @@
 """Популярные модели — идут в окне первыми (настройка popular_models в config/costs.json).
 
-Правило: марка, регулярное выражение для «модель + комплектация» (без учёта регистра), необязательно год.
+Правило: марка, регулярное выражение для «модель + комплектация» (без учёта регистра), необязательно
+годы списком (years) или «с такого-то года» (year_from).
 """
 
 from __future__ import annotations
@@ -12,12 +13,13 @@ DEFAULT = [
     {"make": "Honda", "model": r"^civic(?!.*type\s*r)"},
     {"make": "Toyota", "model": r"^camry"},
     {"make": "Honda", "model": r"^accord"},
-    {"make": "Mazda", "model": r"^(mazda\s*)?3\b"},
+    {"make": "Mazda", "model": r"^(mazda\s*)?3\b", "year_from": 2012},
     {"make": "Honda", "model": r"^cr-?v"},
     {"make": "Toyota", "model": r"^rav\s*4"},
     {"make": "Mazda", "model": r"^cx-?5\b"},
     {"make": "Toyota", "model": r"^prius(?!\s*[cv]\b)"},
     {"make": "Honda", "model": r"^clarity\b"},
+    {"make": "Honda", "model": r"^insight\b"},
     {"make": "Lexus", "model": r"^ct\s*\d*h?\b"},
     {"make": "Lexus", "model": r"^rx\s*\d*h?\b"},
     {"make": "Lexus", "model": r"^is\s*\d*\b"},
@@ -38,6 +40,8 @@ def is_popular(row: dict, costs: dict) -> bool:
         if make != rule["make"].lower():
             continue
         if rule.get("years") and year not in {str(y) for y in rule["years"]}:
+            continue
+        if rule.get("year_from") and not (year.isdigit() and int(year) >= int(rule["year_from"])):
             continue
         if re.search(rule["model"], text, re.I):
             return True

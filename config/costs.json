@@ -1,7 +1,7 @@
 {
   "_about": "Настройки расчёта максимальной ставки. Все суммы в долларах. Поля, начинающиеся с «_», — пояснения, программа их не читает.",
 
-  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Camry (и Hybrid), Accord, Mazda3; CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Honda Clarity; Lexus CT 200h, RX (и 450h), IS, ES; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация».",
+  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Honda Clarity, Honda Insight; Lexus CT 200h, RX (и 450h), IS, ES; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года.",
   "_stats_models": "Кроме популярных — что ещё собирать в свою статистику (кнопка «KBB для проданных»): Tesla Model 3 2022–2023, все комплектации.",
   "stats_models": [{"make": "Tesla", "model": "^model\\s*3\\b", "years": [2022, 2023]}],
 
@@ -10,12 +10,13 @@
     {"make": "Honda", "model": "^civic(?!.*type\\s*r)"},
     {"make": "Toyota", "model": "^camry"},
     {"make": "Honda", "model": "^accord"},
-    {"make": "Mazda", "model": "^(mazda\\s*)?3\\b"},
+    {"make": "Mazda", "model": "^(mazda\\s*)?3\\b", "year_from": 2012},
     {"make": "Honda", "model": "^cr-?v"},
     {"make": "Toyota", "model": "^rav\\s*4"},
     {"make": "Mazda", "model": "^cx-?5\\b"},
     {"make": "Toyota", "model": "^prius(?!\\s*[cv]\\b)"},
     {"make": "Honda", "model": "^clarity\\b"},
+    {"make": "Honda", "model": "^insight\\b"},
     {"make": "Lexus", "model": "^ct\\s*\\d*h?\\b"},
     {"make": "Lexus", "model": "^rx\\s*\\d*h?\\b"},
     {"make": "Lexus", "model": "^is\\s*\\d*\\b"},

@@ -147,9 +147,11 @@ class PopularTest(unittest.TestCase):
                ("2019", "Honda", "CR-V", "Hybrid EX"), ("2017", "Toyota", "RAV4", "Hybrid XLE"), ("2015", "Toyota", "Prius", "Two"),
                ("2022", "Tesla", "Model 3", "Standard Range"), ("2020", "Mazda", "CX-5", "Touring"), ("2012", "Toyota", "Corolla", "LE"),
                ("2014", "Lexus", "CT", "CT 200h"), ("2013", "Lexus", "CT 200h", "Base"), ("2016", "Lexus", "RX 450h", ""), ("2018", "Lexus", "RX", "350"),
-               ("2016", "Lexus", "IS", "200t Base"), ("2014", "Lexus", "IS 250", ""), ("2017", "Lexus", "ES 350", ""), ("2020", "Lexus", "ES", "300h"), ("2018", "Honda", "Clarity Plug-in Hybrid", "Base"), ("2017", "Honda", "Clarity", "Electric")]
+               ("2016", "Lexus", "IS", "200t Base"), ("2014", "Lexus", "IS 250", ""), ("2017", "Lexus", "ES 350", ""), ("2020", "Lexus", "ES", "300h"), ("2018", "Honda", "Clarity Plug-in Hybrid", "Base"), ("2017", "Honda", "Clarity", "Electric"),
+               ("2019", "Honda", "Insight", "EX"), ("2012", "Mazda", "Mazda3", "i Touring")]
         no = [("2021", "Toyota", "Corolla Cross", "LE"), ("2022", "Tesla", "Model 3", "Long Range"), ("2023", "Tesla", "Model 3", "Standard Range"),
-              ("2018", "Honda", "Civic Type R", "Touring"), ("2015", "Toyota", "Prius v", "Three"), ("2020", "Mazda", "CX-30", ""), ("2016", "Ford", "Focus", "SE"), ("2018", "Lexus", "GX", "460"), ("2019", "Lexus", "NX", "300")]
+              ("2018", "Honda", "Civic Type R", "Touring"), ("2015", "Toyota", "Prius v", "Three"), ("2020", "Mazda", "CX-30", ""), ("2016", "Ford", "Focus", "SE"), ("2018", "Lexus", "GX", "460"), ("2019", "Lexus", "NX", "300"),
+              ("2011", "Mazda", "Mazda3", "s Sport")]
         for y, mk, md, tr in yes:
             self.assertTrue(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), md)
         for y, mk, md, tr in no:
