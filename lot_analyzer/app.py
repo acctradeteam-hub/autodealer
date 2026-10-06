@@ -836,7 +836,7 @@ async function kbbSold(){const btn=$('soldbtn');
  if(!soldList.length){btn.disabled=true;$('stat').textContent='Считаю проданные машины из файлов итогов в «Загрузках» — первый раз после запуска это до минуты…';
   const ok=await loadSold();btn.disabled=false;
   if(!ok){alert('Не удалось получить список проданных: '+btn.title.replace('Не удалось получить список: ','')+'. Проверьте, что окно программы (терминал) запущено.');return}
-  if(!soldList.length){alert('Проданных без KBB за 14 дней нет: у всех популярных проданных машин KBB уже есть, или в «Загрузках» нет файла итогов торгов за последние 14 дней.');return}}
+  if(!soldList.length){alert('Проданных без KBB за 14 дней нет: у всех популярных проданных машин KBB уже есть, или в «Загрузках» нет файла итогов торгов за последние 14 дней.');return}
   /* без расширения Chrome не даст открыть вкладку не сразу после нажатия — просим нажать ещё раз */
   if(!hasExt()){$('stat').textContent=`Список готов: ${soldList.length} проданных машин без KBB. Нажмите «KBB для проданных» ещё раз.`;return}}
  openKbb(soldList);$('stat').textContent=`KBB для ${soldList.length} проданных машин: вкладка kbb.com работает в фоне, цены попадут в вашу базу итогов (цена продажи ÷ KBB).`;setTimeout(loadSold,60000)}

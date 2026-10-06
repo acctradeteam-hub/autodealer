@@ -201,3 +201,23 @@ class PassedTest(unittest.TestCase):
         self.assertTrue(is_stats_target({"year": "2023", "make": "Tesla", "model": "Model 3", "trim": "Long Range"}, costs))
         self.assertTrue(is_stats_target({"year": "2014", "make": "Honda", "model": "Civic", "trim": "LX"}, costs))
         self.assertFalse(is_stats_target({"year": "2020", "make": "Tesla", "model": "Model 3", "trim": "Long Range"}, costs))
+
+
+class PageScriptTest(unittest.TestCase):
+    def test_window_script_has_no_syntax_errors(self):
+        """Ошибка в скрипте окна гасит всё окно (кнопки аукционов, список) — ловим её до выпуска."""
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        from lot_analyzer import app
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("нет node")
+        scripts = re.findall(r"<script>(.*?)</script>", app.PAGE, re.S)
+        self.assertTrue(scripts)
+        for code in scripts:
+            with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
+                handle.write(code)
+            result = subprocess.run([node, "--check", handle.name], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
