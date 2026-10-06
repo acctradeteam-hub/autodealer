@@ -139,7 +139,9 @@ def send_new(files: list[Path]) -> int:
         else:
             with _lock:
                 _state["error"] = f"{path.name}: GitHub ответил {code} {info.get('message', '')}".strip()
-            break
+            if code in (401, 403, 404):     # токен / доступ — дальше пробовать бессмысленно
+                break
+            # один неотправленный файл (слишком большой, сбой сети) не держит остальные: идём дальше
     with _lock:
         _state["status"] = "включена"
         _state["sent"] = len(sent)
