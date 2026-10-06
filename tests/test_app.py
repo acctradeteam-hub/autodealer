@@ -235,3 +235,20 @@ class ExtensionVersionTest(unittest.TestCase):
         from lot_analyzer.notes import lot_note
         note = lot_note({"kbb_private_party_usd": "12850", "kbb_date": "2026-10-05", "auction": "CarMax", "auction_notes": "no announcements"})
         self.assertEqual(note, "KBB 12,850$ 10/5/26")
+
+
+class CarmaxTableWithDateTest(unittest.TestCase):
+    def test_new_export_with_date_column(self):
+        """CarMax добавил колонку «Date» — файл всё равно итоги торгов (и уходит Claude)."""
+        import tempfile
+        from pathlib import Path
+        from lot_analyzer import results
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "carmax_auction_results_full_10062026.csv"
+            path.write_text("Location,Lane,Lot #,Date,Year/Make/Model,VIN,Color,Mileage,Status,Sale Price (USD)\n"
+                            "CarMax Chino Auction Center,A,1,10/6/2026,2025 Land Rover Range Rover Velar S,SALYJ2EX1SA392364,Black,20902,Sold,31000\n",
+                            encoding="utf-8")
+            self.assertTrue(results.is_results_file(path))
+            rec = results.read_file(path)[0]
+            self.assertEqual((rec["date"], rec["auction"], rec["lot"], rec["make"], rec["price"]),
+                             ("2026-10-06", "CarMax Chino", "A/1", "Land Rover", "31000"))

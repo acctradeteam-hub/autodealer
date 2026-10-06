@@ -110,7 +110,7 @@ def is_carmax_results(path: Path) -> bool:
     if suffix == ".json":
         return '"vehicles"' in head and ("velocicast" in head.lower() or "final_status" in head or "carmax" in head.lower())
     return (head.startswith("auction_location,") or "final_amount" in head[:600] or "velocicast" in head.lower()
-            or head.startswith(CARMAX_TABLE_HEAD))
+            or _is_carmax_table(head))
 
 
 def is_results_file(path: Path) -> bool:
@@ -118,11 +118,18 @@ def is_results_file(path: Path) -> bool:
 
 
 CARMAX_TABLE_HEAD = "Location,Lane,Lot #,Year/Make/Model,VIN"
+# Колонки, по которым узнаём таблицу итогов CarMax, в любом порядке (CarMax добавляет новые, например «Date»).
+CARMAX_TABLE_COLUMNS = {"Location", "Lane", "Lot #", "Year/Make/Model", "VIN", "Status", "Sale Price (USD)"}
+
+
+def _is_carmax_table(head: str) -> bool:
+    first = head.lstrip("\ufeff").splitlines()[0] if head.strip() else ""
+    return CARMAX_TABLE_COLUMNS <= {c.strip().strip('"') for c in next(csv.reader([first]), [])}
 
 
 def read_carmax_table(path: Path) -> list[dict]:
     """CSV итогов CarMax «Location, Lane, Lot #, Year/Make/Model, VIN, Color, Mileage, Status, Sale Price (USD)».
-    Дата — из имени файла (…_10052026.csv), иначе дата файла."""
+    Дата — из колонки «Date» (новые выгрузки), иначе из имени файла (…_10052026.csv), иначе дата файла."""
     from .normalize import split_model
 
     # Дата из имени: «…_10052026», «… 10:05:2026» (так Mac хранит «10/05/2026»), «…_10-05-2026».
@@ -133,12 +140,15 @@ def read_carmax_table(path: Path) -> list[dict]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         for r in csv.DictReader(handle):
             ymm = (r.get("Year/Make/Model") or "").replace("(no trim)", "").split()
+            if len(ymm) > 2 and f"{ymm[1]} {ymm[2]}".lower() in ("land rover", "alfa romeo", "aston martin"):   # марка из двух слов
+                ymm[1:3] = [f"{ymm[1]} {ymm[2]}"]
             make = ymm[1] if len(ymm) > 1 else ""
             model, trim = split_model(" ".join(ymm[2:]))
             place = (r.get("Location") or "").replace(" Auction Center", "").strip()
             status = (r.get("Status") or "").strip()
             outcome = {"sold": "Sold", "no sale": "No Sale"}.get(status.lower(), status or "нет итога")
-            rec = {"date": date, "auction": place, "code": "", "lot": f"{r.get('Lane', '')}/{r.get('Lot #', '')}".strip("/"),
+            day = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(20\d{2})", (r.get("Date") or "").strip())   # своя колонка «Date», если есть
+            rec = {"date": f"{day.group(3)}-{int(day.group(1)):02d}-{int(day.group(2)):02d}" if day else date, "auction": place, "code": "", "lot": f"{r.get('Lane', '')}/{r.get('Lot #', '')}".strip("/"),
                    "vin": (r.get("VIN") or "").strip().upper(), "year": ymm[0] if ymm else "", "make": make,
                    "model": f"{model} {trim}".strip(), "miles": re.sub(r"\D", "", r.get("Mileage") or ""), "cr": "", "mmr": "",
                    "outcome": outcome, "price": str(int(_num(r.get("Sale Price (USD)")) or 0) or ""), "source": path.name,
@@ -151,7 +161,7 @@ def read_carmax_table(path: Path) -> list[dict]:
 def read_carmax(path: Path) -> list[dict]:
     from .market import read_results
 
-    if path.suffix.lower() == ".csv" and path.open(encoding="utf-8-sig", errors="replace").read(200).startswith(CARMAX_TABLE_HEAD):
+    if path.suffix.lower() == ".csv" and _is_carmax_table(path.open(encoding="utf-8-sig", errors="replace").read(2000)):
         return read_carmax_table(path)
     out = []
     for r in read_results(path):
