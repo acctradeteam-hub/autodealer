@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 # Строки, которые пишет программа (и прежний формат «LA …»): при пересчёте заменяются, при чтении пропускаются.
 OWN_PREFIXES = ("LA ", "CarMax: ", "Manheim: ", "ACV: ", "ADESA: ")
@@ -41,6 +42,8 @@ def lot_note(row: dict) -> str:
     if has_bid:
         lines.append(f"MP {float(bid):.0f}")
     remarks = str(row.get("auction_notes") or "").strip()
+    if re.fullmatch(r"(no announcements?(\(s\))?|none|-)\.?", remarks, re.I):      # «нет замечаний» — не замечание
+        remarks = ""
     if remarks:
         lines.append(f"{row.get('auction') or 'Auction'}: {remarks}")
     return "\n".join(lines)

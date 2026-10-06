@@ -43,6 +43,8 @@ SHOW_ROWS = 300                              # в окне — лучшие 300,
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-05.4"
+EXTENSION_VERSION = "1.5"            # tools/kbb_extension/manifest.json — окно просит обновить старое
+NOTES_REPORT: dict = {}               # последний отчёт расширения со страницы CarMax: что записано в Notes
 
 
 def bookmarklet_version(path: Path) -> str | None:
@@ -528,7 +530,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             num = lambda key: int(q[key]) if q.get(key, "").isdigit() else None
             if url.path == "/":
-                self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                self._send(PAGE.replace("__EXT_V__", EXTENSION_VERSION).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/rows":
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
@@ -610,6 +612,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(json.dumps(sold_for_kbb(costs), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/inbox":            # состояние отправки Claude (токен не показывается)
                 self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
+            elif url.path == "/api/notes_report":
+                self._send(json.dumps(NOTES_REPORT, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 rows = search_rows(pages, cache, load_costs(costs_path), "")
@@ -620,6 +624,14 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(b'{"error":"not found"}', status=404)
 
         def do_POST(self) -> None:
+            if urlparse(self.path).path == "/api/notes_report":     # расширение: что оно сделало с Notes на CarMax
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                NOTES_REPORT.clear()
+                NOTES_REPORT.update({k: data[k] for k in ("url", "fields", "in_program", "ready", "written", "already", "failed", "busy", "note") if k in data})
+                NOTES_REPORT["at"] = time.strftime("%H:%M:%S")
+                self._send(b"{}")
+                return
             if urlparse(self.path).path == "/api/inbox":
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -704,7 +716,7 @@ main{max-width:1400px;margin:0 auto;padding:20px 16px 40px}h1{font-size:22px;mar
 form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
 input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:90px}
 input#q{min-width:240px}button,a.btn{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
-a.btn.sec,button.btn.sec{background:transparent;color:var(--acc)}button.btn.bad{border-color:var(--bad);color:var(--bad)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+a.btn.sec,button.btn.sec{background:transparent;color:var(--acc)}button.btn.bad{border-color:var(--bad);color:var(--bad)}#notesstate.bad{color:var(--bad)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-align:right;white-space:nowrap}.wrap{overflow-x:auto}
 .v-ok{background:var(--okbg);color:var(--ok)}.v-bad{background:var(--badbg);color:var(--bad)}.v-mid{background:var(--midbg);color:var(--mid)}
@@ -738,6 +750,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
 <button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
+<div id="notesstate" class="muted" style="margin-top:6px"></div>
 <details id="soldbox" style="margin-top:8px" ontoggle="if(this.open)loadSoldAll()"><summary id="soldsum">Проданные на торгах (из файлов итогов) — популярные и Tesla Model 3 2022–2023</summary>
 <div class="muted" style="margin:6px 0">Машины из файлов итогов торгов в «Загрузках» (например carmax_auction_results … .csv). Каждая стоит здесь 14 дней после торгов: до даты в колонке «В списке до» для неё можно запросить KBB кнопкой «KBB для проданных». Полученный KBB и цена продажи остаются в вашей базе навсегда.</div>
 <div class="wrap" style="max-height:420px;overflow:auto"><table><thead><tr><th>Торги</th><th>Аукцион</th><th>Лот</th><th>Машина</th><th>Пробег</th><th>Продана за</th><th>KBB</th><th>Продажа ÷ KBB</th><th>В списке до</th></tr></thead><tbody id="soldrows"><tr><td colspan="9" class="muted">—</td></tr></tbody></table></div></details>
@@ -849,16 +862,22 @@ $('stat').textContent=`KBB для ${list.length} машин: на вкладке
 /* Машины передаются и в адресе (#la=…), и в имени вкладки — на случай, если kbb.com при переадресации потеряет хвост адреса. */
 /* С расширением «Lot Analyzer KBB» ссылки открываются соседней вкладкой в фоне — вы остаётесь в окне программы. */
 const hasExt=()=>document.documentElement.dataset.laExt==='1';
-function extState(){const e=$('extstate');if(!e)return;if(hasExt()){e.className='pill v-ok';e.textContent='расширение подключено — ссылки и KBB в фоне'}
+const EXT_V='__EXT_V__',extOld=()=>{const v=document.documentElement.dataset.laExtV||'0';const a=v.split('.').map(Number),b=EXT_V.split('.').map(Number);return a[0]<b[0]||(a[0]===b[0]&&(a[1]||0)<b[1])};
+function extState(){const e=$('extstate');if(!e)return;if(hasExt()&&extOld()){e.className='pill v-bad';e.textContent='расширение устарело ('+(document.documentElement.dataset.laExtV||'1.4')+' → '+EXT_V+'): chrome://extensions → ⟳ у «Lot Analyzer KBB», затем обновите страницы CarMax'}
+ else if(hasExt()){e.className='pill v-ok';e.textContent='расширение '+EXT_V+' подключено — ссылки и KBB в фоне'}
  else{e.className='pill v-bad';e.textContent='расширение не подключено — вкладки откроются поверх: обновите его (⟳ на chrome://extensions) и эту страницу'}}
 window.addEventListener('la-ext',extState);setTimeout(extState,800);
 function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: '+(st.enabled&&st.status==='включена'?'вкл ✓ ('+st.sent+')':st.enabled?st.status:'выкл');
  $('inboxbtn').className='btn sec jump'+(st.error?' bad':'');if(!$('inrepo').value)$('inrepo').value=st.repo||'';$('inon').checked=!!st.enabled;
  $('instate').textContent=(st.enabled?'Включено':'Выключено')+(st.repo?' · '+st.repo:'')+(st.has_token?' · токен сохранён':' · токена нет')+' · отправлено файлов: '+(st.sent||0)+(st.error?' · ⚠ '+st.error:'')}
+async function loadNotesReport(){try{const r=await (await fetch('/api/notes_report')).json();const e=$('notesstate');if(!e)return;
+ if(!r.at){e.textContent='Заметки CarMax: страница CarMax ещё не открыта (KBB пишется в Notes на открытой странице CarMax, вид «Detailed»)';return}
+ e.textContent=r.note?`Заметки CarMax (${r.at}): ${r.note}`:`Заметки CarMax (${r.at}): на странице полей Notes ${r.fields}, машин с KBB в программе здесь ${r.ready}: `+(r.busy?'записываю… ':'')+`записано сейчас ${r.written}, уже было ${r.already}`+(r.busy?' (не уходите с вкладки CarMax, пока идёт запись)':'')+(r.failed?`, не записалось ${r.failed} — сайт не принял текст, обновите страницу CarMax`:'');
+ e.className='muted'+(r.failed||r.note?' bad':'')}catch(e){}}
 async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json())}catch(e){}}
 async function saveInbox(){const r=await fetch('/api/inbox',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:$('inrepo').value,token:$('intoken').value,enabled:$('inon').checked})});
  const d=await r.json();if(d.error){alert(d.error);return}$('intoken').value='';showInbox(d)}
-loadInbox();setInterval(loadInbox,15000);loadSold();setInterval(loadSold,120000);
+loadInbox();setInterval(loadInbox,15000);loadNotesReport();setInterval(loadNotesReport,10000);loadSold();setInterval(loadSold,120000);
 function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',url,cars:cars||''},'*');return true}
 /* «поставить на CarMax» (a.fg) открывается обычно — там вы сами нажимаете «Place bid». */
 document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[target="_blank"]:not(.fg)');

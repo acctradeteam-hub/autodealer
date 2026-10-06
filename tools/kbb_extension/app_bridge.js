@@ -2,6 +2,7 @@
    вы остаётесь в окне программы. Окно узнаёт о расширении по data-la-ext. */
 if (document.documentElement.getAttribute('data-la-ext') !== '1') {
 document.documentElement.setAttribute('data-la-ext', '1');
+document.documentElement.setAttribute('data-la-ext-v', chrome.runtime.getManifest().version);
 window.dispatchEvent(new Event('la-ext'));
 window.addEventListener('message', function (e) {
   if (e.source !== window || !e.data || e.data.source !== 'lot-analyzer' || e.data.type !== 'open-bg') { return; }

@@ -221,3 +221,17 @@ class PageScriptTest(unittest.TestCase):
                 handle.write(code)
             result = subprocess.run([node, "--check", handle.name], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ExtensionVersionTest(unittest.TestCase):
+    def test_window_knows_extension_version(self):
+        import json
+        from pathlib import Path
+        from lot_analyzer import app
+        manifest = json.loads((Path(__file__).resolve().parent.parent / "tools" / "kbb_extension" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], app.EXTENSION_VERSION)
+
+    def test_no_announcements_is_not_a_remark(self):
+        from lot_analyzer.notes import lot_note
+        note = lot_note({"kbb_private_party_usd": "12850", "kbb_date": "2026-10-05", "auction": "CarMax", "auction_notes": "no announcements"})
+        self.assertEqual(note, "KBB 12,850$ 10/5/26")

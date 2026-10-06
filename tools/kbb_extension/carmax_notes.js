@@ -74,29 +74,67 @@
     if (btn) { btn.click(); } else { t.blur(); }
     await pause(1200);
   };
+  /* Отчёт окну программы: что нашли на странице и что записали (видно в окне, строка «Заметки CarMax»). */
+  var lastReport = '';
+  var report = function (data) {
+    data.url = location.href.split('#')[0];
+    var key = JSON.stringify(data);
+    if (key === lastReport) { return; }
+    lastReport = key;
+    try { chrome.runtime.sendMessage({ type: 'notes-report', report: data }, function () { void chrome.runtime.lastError; }); } catch (e) { /* расширение обновили — см. ниже */ }
+  };
+  var stale = false;
   var run = async function () {
-    if (busy || document.visibilityState !== 'visible') { return; }
+    if (busy || stale || document.visibilityState !== 'visible') { return; }
     var areas = Array.prototype.filter.call(document.querySelectorAll('textarea[placeholder="Add Notes"], textarea[placeholder*="Note"]'), function (t) { return t.getAttribute('aria-hidden') !== 'true' && !t.readOnly; });
-    if (!areas.length) { return; }
+    if (!areas.length) {
+      var hasCars = document.querySelector('[data-testid="copy-vin-button"]') || document.querySelector('div[id] a[href*="/vehicledetail/"]');
+      if (hasCars) { report({ fields: 0, note: 'на странице нет полей Notes — переключите вид списка на «Detailed»' }); }
+      return;
+    }
     busy = true;
     try {
-      var answer = await new Promise(function (r) { chrome.runtime.sendMessage({ type: 'notes' }, r); });
-      if (!answer || !answer.ok) { return; }
-      var done = 0;
+      var answer;
+      try {
+        answer = await new Promise(function (r, fail) {
+          try { chrome.runtime.sendMessage({ type: 'notes' }, function (a) { void chrome.runtime.lastError; r(a); }); } catch (e) { fail(e); }
+        });
+      } catch (e) {
+        /* Расширение обновили (⟳), а страница CarMax осталась старой — её скрипт больше не связан с расширением. */
+        stale = true;
+        say('Lot Analyzer: расширение обновлено — обновите эту страницу CarMax (⌘R), чтобы KBB снова записывался в Notes.');
+        return;
+      }
+      if (!answer || !answer.ok) {
+        say('Lot Analyzer: окно программы не отвечает — запустите программу, KBB в Notes запишется сам. ' + ((answer && answer.error) || ''), 8000);
+        return;
+      }
+      var done = 0, ready = 0, same = 0, failed = 0, withVin = 0;
+      var total = areas.filter(function (t) { var c = cardOf(t); var v = c ? vinOf(c) : ''; return v && answer.notes[v]; }).length;
+      var progress = function (busyNow) {
+        report({ fields: areas.length, in_program: Object.keys(answer.notes).length, ready: total, written: done, already: same, failed: failed, busy: busyNow ? 1 : 0 });
+      };
+      progress(true);
       for (var i = 0; i < areas.length; i++) {
         var t = areas[i];
         var card = cardOf(t);
         var vin = card ? vinOf(card) : '';
+        if (vin) { withVin += 1; }
         var note = vin && answer.notes[vin];
-        if (!note || document.activeElement === t || (tries[vin] || 0) >= 2) { continue; }
+        if (!note) { continue; }
+        ready += 1;
+        if (document.activeElement === t) { continue; }
         var text = merged(t.value, note);
-        if (text === t.value) { continue; }
+        if (text === t.value) { same += 1; continue; }
+        if ((tries[vin] || 0) >= 2) { failed += 1; continue; }
         tries[vin] = (tries[vin] || 0) + 1;
         say('Lot Analyzer: пишу KBB, ставку и замечания аукциона в Notes — ' + vin + '…');
         await write(t, text);
-        done += 1;
+        if (t.value === text) { done += 1; } else { failed += 1; }
+        if ((done + failed) % 5 === 0) { progress(true); }
       }
       if (done) { say('Lot Analyzer: KBB, ставка и замечания аукциона записаны в Notes у ' + done + ' машин.', 6000); }
+      progress(false);
     } finally { busy = false; }
   };
   setTimeout(run, 3000);
