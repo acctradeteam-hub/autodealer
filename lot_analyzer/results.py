@@ -75,6 +75,53 @@ def read_lane_csv(path: Path) -> list[dict]:
     return out
 
 
+# Выгрузка Manheim «все линии»: Lane, Lane Name, Lot, Year/Make/Model, VIN, …, Adj MMR, Result («Sold $7,000» / «IF Sale $2,500» / «No Sale»).
+LANES_HEADER = ("Lane Name", "Lot", "Year/Make/Model", "VIN", "Adj MMR", "Result")
+
+
+def is_manheim_lanes_csv(path: Path) -> bool:
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            head = handle.readline()
+    except OSError:
+        return False
+    return all(h in head for h in LANES_HEADER)
+
+
+def read_manheim_lanes_csv(path: Path) -> list[dict]:
+    """Итоги Manheim по всем линиям. Площадка — из имени файла («Manheim_California_…»), дата — из имени или дата файла.
+    «IF Sale $X» — не продана: последняя ставка X не дотянула до резерва продавца (outcome «If Sale», price — эта ставка)."""
+    stem = path.stem.replace("_", " ")
+    place = next((name for name in sorted(CODES.values(), key=len, reverse=True) if name.lower() in stem.lower()), "")
+    code = next((c for c, name in CODES.items() if name == place), "")
+    found = re.search(r"(20\d{2})-(\d{2})-(\d{2})|(\d{1,2})[^\d]?(\d{1,2})[^\d]?(20\d{2})(?!\d)", path.stem)
+    if found and found.group(1):
+        date = f"{found.group(1)}-{found.group(2)}-{found.group(3)}"
+    elif found:
+        date = f"{found.group(6)}-{int(found.group(4)):02d}-{int(found.group(5)):02d}"
+    else:
+        date = dt.date.fromtimestamp(path.stat().st_mtime).isoformat()
+    out = []
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for r in csv.DictReader(handle):
+            ymm = (r.get("Year/Make/Model") or "").split()
+            result = (r.get("Result") or "").strip()
+            kind = re.match(r"(sold|if sale|no sale)", result, re.I)
+            outcome = {"sold": "Sold", "if sale": "If Sale", "no sale": "No Sale"}.get(kind.group(1).lower(), result) if kind else "нет итога"
+            miles = _num(r.get("Odometer"))
+            rec = {"date": date, "auction": place or "Manheim", "code": code, "lot": (r.get("Lot") or "").strip(),
+                   "vin": (r.get("VIN") or "").strip().upper(), "year": ymm[0] if ymm else "", "make": ymm[1].title() if len(ymm) > 1 else "",
+                   "model": " ".join(ymm[2:]).title(), "miles": str(int(miles)) if miles and miles > 10 else "", "cr": (r.get("CR") or "").strip(),
+                   "mmr": str(int(_num(r.get("Adj MMR")) or 0) or ""), "outcome": outcome,
+                   "price": str(int(_num(result.split("$")[-1]) or 0) or "") if "$" in result else "", "source": path.name,
+                   "remarks": (r.get("Lane Name") or "").strip(), "kbb": ""}
+            rec["key"] = _key(rec)
+            out.append(rec)
+    return out
+
+
 def read_postsale_pdf(path: Path) -> list[dict]:
     from pypdf import PdfReader
 
@@ -114,7 +161,7 @@ def is_carmax_results(path: Path) -> bool:
 
 
 def is_results_file(path: Path) -> bool:
-    return is_lane_csv(path) or is_postsale_pdf(path) or is_carmax_results(path)
+    return is_lane_csv(path) or is_manheim_lanes_csv(path) or is_postsale_pdf(path) or is_carmax_results(path)
 
 
 CARMAX_TABLE_HEAD = "Location,Lane,Lot #,Year/Make/Model,VIN"
@@ -177,6 +224,8 @@ def read_carmax(path: Path) -> list[dict]:
 
 
 def read_file(path: Path) -> list[dict]:
+    if is_manheim_lanes_csv(path):
+        return read_manheim_lanes_csv(path)
     if is_lane_csv(path):
         return read_lane_csv(path)
     if is_postsale_pdf(path):

@@ -300,3 +300,20 @@ class TmuTest(unittest.TestCase):
         self.assertEqual(flags.skip, [])
         self.assertTrue(any("TMU" in n for n in flags.notes))
         self.assertTrue(assess_history("Odometer rollback", costs).skip)
+
+
+class ManheimLanesTest(unittest.TestCase):
+    def test_all_lanes_export(self):
+        import tempfile
+        from pathlib import Path
+        from lot_analyzer import results
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Manheim_California_All_13_Lanes_Auction_Results.csv"
+            path.write_text("Lane,Lane Name,Lot,Year/Make/Model,VIN,Color (Ext/Int),CR,Odometer,Engine,Trans,Adj MMR Range,Adj MMR,Result\n"
+                            '01,Lane 01 - TRA,97-1,2019 TOYOTA CAMRY LE,4T1B11HK0KU000001,Gray / Gry,4.1,61000,4G,AT,"$15,950 - $17,500","$16,700",Sold $15200\n'
+                            '01,Lane 01 - TRA,97-2,2013 HONDA CIVIC LX,19XFB2F50DE000002,Black / Blk,3.2,140000,4G,AT,"$5,700 - $8,450","$7,075","IF Sale $5,500"\n',
+                            encoding="utf-8")
+            self.assertTrue(results.is_results_file(path))
+            a, b = results.read_file(path)
+            self.assertEqual((a["auction"], a["outcome"], a["price"], a["mmr"], a["make"]), ("Manheim California", "Sold", "15200", "16700", "Toyota"))
+            self.assertEqual((b["outcome"], b["price"]), ("If Sale", "5500"))
