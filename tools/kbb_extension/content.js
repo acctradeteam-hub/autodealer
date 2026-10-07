@@ -12,7 +12,7 @@ window.lotAnalyzerAuto = true;
    build.py склеивает код в одну строку. */
 (function () {
   /* Версия закладки: пишется в сохранённый файл — окно программы предупредит, если закладка устарела. */
-  var LA_VERSION = '2026-10-05.4';
+  var LA_VERSION = '2026-10-07.1';
   var host = location.hostname.toLowerCase();
   var auction = /carmax/.test(host) ? 'CarMax' : /acvauctions/.test(host) ? 'ACV' : /manheim|coxauto/.test(host) ? 'Manheim' : /adesa|openlane/.test(host) ? 'ADESA' : /kbb\.com/.test(host) ? 'KBB' : 'auction';
   var toast = null;
@@ -126,6 +126,122 @@ window.lotAnalyzerAuto = true;
       setTimeout(poll, 400);
     };
     step();
+  };
+  /* Manheim «все страницы» без листания: машины на страницу приходят из API Cox Automotive (listings-search).
+     Перехватываем один такой запрос (нажатие «следующая»), дальше сами запрашиваем все страницы тем же
+     запросом — от вашего входа, страница при этом не перерисовывается. Поэтому сбор идёт и когда вкладка
+     в фоне: можно уйти на другую вкладку, только не закрывайте эту. Не вышло — листаем кнопкой, как раньше. */
+  var apiList = function (obj, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 5) { return null; }
+    if (Array.isArray(obj)) {
+      if (obj.length && obj[0] && typeof obj[0] === 'object' && /^[A-HJ-NPR-Z0-9]{17}$/.test(String(obj[0].vin || ''))) { return obj; }
+      for (var a = 0; a < obj.length && a < 5; a++) { var inner = apiList(obj[a], depth + 1); if (inner) { return inner; } }
+      return null;
+    }
+    for (var k in obj) { if (Object.prototype.hasOwnProperty.call(obj, k)) { var got = apiList(obj[k], depth + 1); if (got) { return got; } } }
+    return null;
+  };
+  var apiTotal = function (obj, depth) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || depth > 4) { return 0; }
+    for (var k in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, k)) { continue; }
+      if (/^(total|totalcount|totalresults|totalhits|numfound|totallistings|totalrecords|resultcount|count)$/i.test(k) && typeof obj[k] === 'number') { return obj[k]; }
+      var deeper = apiTotal(obj[k], depth + 1);
+      if (deeper) { return deeper; }
+    }
+    return 0;
+  };
+  /* Поле номера страницы / сдвига в адресе (?page=2) или в теле запроса (JSON). */
+  var PAGE_KEY = /^(page|pagenumber|pagenum|pageindex|currentpage|pageno)$/i;
+  var OFFSET_KEY = /^(start|offset|from|skip|startindex|startrow)$/i;
+  var findPaging = function (obj, size, path, out) {
+    if (!obj || typeof obj !== 'object' || path.length > 4) { return out; }
+    for (var k in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, k)) { continue; }
+      var v = obj[k];
+      var n = typeof v === 'number' ? v : (/^\d+$/.test(String(v)) ? Number(v) : NaN);
+      if (PAGE_KEY.test(k) && (n === 1 || n === 2)) { out.push({ path: path.concat(k), kind: 'page', base: n - 1, str: typeof v === 'string' }); }
+      if (OFFSET_KEY.test(k) && n === size) { out.push({ path: path.concat(k), kind: 'offset', base: 0, str: typeof v === 'string' }); }
+      if (v && typeof v === 'object') { findPaging(v, size, path.concat(k), out); }
+    }
+    return out;
+  };
+  var setPath = function (obj, path, value) {
+    var o = obj;
+    for (var i = 0; i < path.length - 1; i++) { o = o[path[i]]; }
+    o[path[path.length - 1]] = value;
+  };
+  var collectApi = function (fallback) {
+    var captured = null;
+    var XO = XMLHttpRequest.prototype.open, XS = XMLHttpRequest.prototype.send, XH = XMLHttpRequest.prototype.setRequestHeader, F = window.fetch;
+    var restore = function () { XMLHttpRequest.prototype.open = XO; XMLHttpRequest.prototype.send = XS; XMLHttpRequest.prototype.setRequestHeader = XH; window.fetch = F; };
+    var offer = function (req, text) {
+      if (captured || !text || text.indexOf('"vin"') < 0) { return; }
+      try { var json = JSON.parse(text); var list = apiList(json, 0); if (list && list.length) { captured = { req: req, json: json, list: list }; } } catch (e) { /* не JSON */ }
+    };
+    XMLHttpRequest.prototype.open = function (method, url) { this.laReq = { method: method, url: String(url), headers: {}, body: null }; return XO.apply(this, arguments); };
+    XMLHttpRequest.prototype.setRequestHeader = function (k, v) { if (this.laReq) { this.laReq.headers[k] = v; } return XH.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function (body) {
+      var x = this;
+      if (x.laReq) { x.laReq.body = typeof body === 'string' ? body : null; x.addEventListener('load', function () { try { offer(x.laReq, x.responseType === '' || x.responseType === 'text' ? x.responseText : JSON.stringify(x.response)); } catch (e) { /* пропускаем */ } }); }
+      return XS.apply(this, arguments);
+    };
+    window.fetch = function (input, init) {
+      var req = { method: (init && init.method) || (input && input.method) || 'GET', url: String((input && input.url) || input), headers: {}, body: init && typeof init.body === 'string' ? init.body : null };
+      var h = (init && init.headers) || (input && input.headers);
+      if (h && typeof h.forEach === 'function') { h.forEach(function (v, k) { req.headers[k] = v; }); } else if (h) { for (var hk in h) { req.headers[hk] = h[hk]; } }
+      return F.apply(this, arguments).then(function (resp) { try { resp.clone().text().then(function (t) { offer(req, t); }); } catch (e) { /* пропускаем */ } return resp; });
+    };
+    var next = document.querySelector('.pagination__control--next');
+    if (!next) { restore(); fallback(); return; }
+    say('Manheim: ищу, откуда страница берёт машины…');
+    next.click();
+    var waited = 0;
+    var wait = function () {
+      waited += 300;
+      if (!captured && waited < 20000) { setTimeout(wait, 300); return; }
+      restore();
+      if (!captured) { fallback(); return; }
+      run(captured).catch(function () { fallback(); });
+    };
+    setTimeout(wait, 300);
+    var run = async function (cap) {
+      var size = cap.list.length;
+      var req = cap.req;
+      var url = new URL(req.url, location.href);
+      /* Запрашиваем только у самого Manheim / Cox Automotive (тот же адрес, что спрашивала страница) — никуда больше. */
+      if (url.protocol !== 'https:' || !/(^|\.)(manheim\.com|coxautoinc\.com)$/.test(url.hostname)) { throw new Error('чужой адрес'); }
+      var body = null;
+      try { body = req.body ? JSON.parse(req.body) : null; } catch (e) { body = null; }
+      var query = {};
+      url.searchParams.forEach(function (v, k) { query[k] = v; });
+      var sizeKey = function (o) { for (var k in o) { if (/^(size|pagesize|limit|rows|perpage|pagelength)$/i.test(k) && Number(o[k]) > 0) { return Number(o[k]); } } return 0; };
+      size = sizeKey(query) || (body ? sizeKey(body) : 0) || size;
+      var inQuery = findPaging(query, size, [], []);
+      var inBody = body ? findPaging(body, size, [], []) : [];
+      var pick = inQuery[0] ? { where: 'query', p: inQuery[0] } : inBody[0] ? { where: 'body', p: inBody[0] } : null;
+      if (!pick) { throw new Error('нет поля страницы'); }
+      var total = apiTotal(cap.json, 0);
+      var pages = total ? Math.ceil(total / size) : 100;
+      var seen = {};
+      var parts = [];
+      var add = function (list) { list.forEach(function (item) { var key = (item.id || '') + '|' + item.vin; if (!seen[key]) { seen[key] = 1; parts.push(JSON.stringify(item)); } }); };
+      for (var i = 0; i < pages && i < 150; i++) {
+        var value = pick.p.kind === 'page' ? pick.p.base + i : i * size;
+        if (pick.p.str) { value = String(value); }
+        var u = new URL(url.href);
+        var b = body ? JSON.parse(JSON.stringify(body)) : null;
+        if (pick.where === 'query') { u.searchParams.set(pick.p.path[0], String(value)); } else { setPath(b, pick.p.path, value); }
+        var resp = await F.call(window, u.href, { method: req.method, headers: req.headers, body: b ? JSON.stringify(b) : req.body, credentials: 'include' });
+        if (!resp.ok) { if (parts.length) { break; } throw new Error('ответ ' + resp.status); }
+        var list = apiList(await resp.json(), 0) || [];
+        add(list);
+        say('Manheim: страница ' + (i + 1) + (total ? ' из ' + pages : '') + ', машин ' + parts.length + '. Можно перейти на другую вкладку — только не закрывайте эту.');
+        if (!list.length || (!total && list.length < size)) { break; }
+      }
+      saveDiag = 'manheim-api: ' + parts.length + (total ? ' of ' + total : '') + ', pages ' + Math.min(pages, 150) + ', field ' + pick.where + ':' + pick.p.path.join('.');
+      save(parts);
+    };
   };
   /* KBB-автопилот: окно программы открывает kbb.com с машинами лотов в адресе (#la=…).
      Для каждой: список комплектаций со страницы модели → похожая на трим лота →
@@ -546,9 +662,14 @@ window.lotAnalyzerAuto = true;
     return;
   }
   var hasPages = auction === 'Manheim' &&document.querySelector('.pagination__control--next') && document.querySelector('.stockwave-vehicle-info');
-  if (hasPages && confirm('Manheim: собрать ВСЕ страницы результатов в один файл?\nОК — все страницы (около 3 секунд на страницу), Отмена — только эту.')) {
+  /* Прежний способ — листать кнопкой (вкладку держать открытой на экране): с первой страницы. */
+  var byClicking = function () {
+    say('Manheim: собираю листанием страниц — оставайтесь на этой вкладке.');
     var back = document.querySelector('.pagination__control--page-1');
     if (back && !/selected/.test(back.className)) { var b0 = firstKey(); back.click(); var w0 = 0; var wait0 = function () { w0 += 400; if (firstKey() !== b0 || w0 > 15000) { setTimeout(collectAll, 800); } else { setTimeout(wait0, 400); } }; setTimeout(wait0, 400); } else { collectAll(); }
+  };
+  if (hasPages && confirm('Manheim: собрать ВСЕ страницы результатов в один файл?\nОК — все страницы (можно уйти на другую вкладку, только не закрывайте эту), Отмена — только эту.')) {
+    collectApi(byClicking);
   } else { save(null); }
 })();
 });

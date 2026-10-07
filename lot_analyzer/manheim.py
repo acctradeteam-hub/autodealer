@@ -34,12 +34,15 @@ _JSON_NODE = re.compile(r'^\s*\{"(?:href":"https://api\.coxautoinc\.com/wholesal
 
 def find_listings(html: str) -> list[dict]:
     """Все объявления Manheim, встроенные в страницу (карточка лота или результаты поиска)."""
-    if "coxautoinc" not in html and '{"source":"' not in html:
+    if "coxautoinc" not in html and '{"source":"' not in html and "lot-analyzer-all-pages" not in html:
         return []
     soup = BeautifulSoup(html, "lxml")
     listings: list[dict] = []
     seen: set[str] = set()
-    for text in soup.find_all(string=_JSON_NODE):
+    # Закладка «все страницы» кладёт машины из API в #lot-analyzer-all-pages — там поля могут идти в любом порядке.
+    box = soup.find(id="lot-analyzer-all-pages")
+    texts = [d.get_text() for d in box.find_all("div", class_="stockwave-vehicle-info")] if box else []
+    for text in texts + list(soup.find_all(string=_JSON_NODE)):
         try:
             data = json.loads(str(text).strip())
         except ValueError:

@@ -42,7 +42,7 @@ SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)
 SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
-BOOKMARKLET_VERSION = "2026-10-05.4"
+BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "1.5"            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения со страницы CarMax: что записано в Notes
 

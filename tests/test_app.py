@@ -278,3 +278,14 @@ class HybridTest(unittest.TestCase):
         price, note = expected_market_price(BidInput(**base, miles=135000, hybrid=True), costs)
         self.assertAlmostEqual(price, 8000 * 0.72)
         self.assertIn("гибрид", note)
+
+
+class ManheimAllPagesTest(unittest.TestCase):
+    def test_listings_from_api_in_any_key_order(self):
+        """Закладка собирает Manheim из API: поля объявления могут идти в любом порядке."""
+        import json
+        from lot_analyzer import manheim
+        items = [{"id": f"Simulcast.RAA.{i}", "vin": f"1HGCM82633A00{i:04d}", "source": "Simulcast", "year": 2015} for i in range(3)]
+        page = ('<html><body><div id="lot-analyzer-all-pages" style="display:none">'
+                + "".join(f'<div class="StockWaveInfo stockwave-vehicle-info">{json.dumps(x)}</div>' for x in items) + "</div></body></html>")
+        self.assertEqual([x["vin"] for x in manheim.find_listings(page)], [x["vin"] for x in items])

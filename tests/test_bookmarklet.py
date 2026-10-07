@@ -38,11 +38,14 @@ class TestBookmarklet(unittest.TestCase):
         # без POST и без чужих адресов.
         self.assertEqual(self.source.count("fetch("), 1)
         self.assertIn("return fetch(url, { credentials: 'include', signal: stop.signal })", self.source)
+        # Manheim «все страницы»: повтор запроса самой страницы к её API — только на manheim.com / coxautoinc.com.
+        self.assertEqual(self.source.count("F.call(window"), 1)
+        self.assertIn("!/(^|\\.)(manheim\\.com|coxautoinc\\.com)$/.test(url.hostname)", self.source)
         self.assertNotIn("prompt(", self.source)                                 # автопилот не ждёт ответов на невидимой вкладке
         self.assertIn("var base = '/' + slugOf(car.mk)", self.source)            # адрес — путь на том же сайте
         self.assertIn("var path = '/' + slugOf(car.mk)", self.source)
-        self.assertNotIn("method:", self.source)
-        self.assertNotIn("XMLHttpRequest", self.source)
+        self.assertEqual(self.source.count("method:"), 3)          # запись перехваченного запроса (2) и его повтор у Manheim (1)
+        self.assertIn("{ method: req.method, headers: req.headers", self.source)
         self.assertNotIn("sendBeacon", self.source)
 
     def test_carmax_loads_all_vehicles(self) -> None:
