@@ -42,7 +42,7 @@ _NEGATION = re.compile(r"(\bno\b|\bnot\b|\bnone\b|\bwithout\b|\bzero\b|\b0\b|\b�
 
 _SKIP_PATTERNS = {
     "branded_title": r"salvage|rebuilt|reconstructed|total loss|\bjunk\b|lemon|buy\s*back|non[\s-]*repairable|certificate of destruction|restored title|спасён|восстановленн",
-    "odometer_problem": r"odometer (rollback|problem|discrepancy|tamper)|mileage (inconsistency|discrepancy)|rollback|not[\s-]*actual|\btmu\b|true mileage unknown|скрут",
+    "odometer_problem": r"odometer (rollback|problem|discrepancy|tamper)|mileage (inconsistency|discrepancy)|rollback|скрут",
     "structural_damage": r"structural (damage|alteration)|frame damage|unibody damage|frame/unibody damage|повреждени[ея] рамы|\bрам[аы]\b",
     "airbag_deployed": r"airbags? deployed|подушк\w* (безопасности )?сработал",
     # «LR Tail Lamp: Water Damage» — влага в фонаре, не затопление машины.
@@ -51,13 +51,15 @@ _SKIP_PATTERNS = {
 }
 _SKIP_TEXT = {
     "branded_title": "брендированный титул (salvage/rebuilt/lemon…)",
-    "odometer_problem": "проблема с пробегом",
+    "odometer_problem": "проблема с пробегом (скрутка / расхождение)",
     "structural_damage": "повреждение рамы / кузова",
     "airbag_deployed": "срабатывали подушки безопасности",
     "flood": "затопление",
     "mechanical_severe": "не заводится / не едет / антифриз в масле",
 }
 
+# TMU (True Mileage Unknown / Not actual miles): не стоп-фактор — бывают интересные лоты, но пометка обязательна.
+_TMU = r"not[\s-]*actual(\s*mile)?|\btmu\b|true mileage unknown|mileage unknown"
 # Не стоп-фактор, но продать машину нельзя, пока нет титула.
 _TITLE_ABSENT = r"title absent|title (delay|missing)|no title(?!\s*(issues?|problems?))|титул отсутств"
 # Калифорния: для оформления понадобится форма REG 227 (дубликат титула).
@@ -126,6 +128,8 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
         flags.notes.append("истории нет — проверьте Carfax")
         return flags
 
+    if _positive_hits(text, _TMU):
+        flags.notes.append("⚠ TMU — пробег не подтверждён (Not actual miles): KBB считает с этим пробегом, а покупатели платят меньше — проверьте историю пробега (Carfax) и закладывайте торг")
     skip_enabled = set(costs.get("history_skip", _SKIP_PATTERNS))
     for name, pattern in _SKIP_PATTERNS.items():
         if name in skip_enabled and _positive_hits(text, pattern):

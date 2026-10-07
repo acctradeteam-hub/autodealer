@@ -458,6 +458,10 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     row["run_and_drive"] = "нет" if re.search(r"no[n]?[\s-]*runner", announcements, re.I) else ""
 
     user_notes = card.get("notes", "")
+    row["site_notes"] = user_notes                    # ваша заметка в Notes на сайте — видна в окне целиком
+    # TMU (True Mileage Unknown): CarMax пишет «Not actual miles»; бывает и в вашей заметке («TMU»).
+    if re.search(r"\btmu\b|true mileage unknown|not actual mile|mileage unknown", f"{announcements} {user_notes}", re.I):
+        row["odometer_brand"] = "TMU"
     if user_notes:
         row["carfax_autocheck"] = user_notes          # заметки покупателя: история, KBB, решения
         for key, pattern in (

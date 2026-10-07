@@ -135,7 +135,8 @@ class TestCarMaxVocabulary(unittest.TestCase):
     def test_announcement_words(self) -> None:
         self.assertTrue(assess_history("Salvage history, Total loss history", COSTS).skip)
         self.assertTrue(assess_history("Excessive water intrusion", COSTS).skip)
-        self.assertTrue(assess_history("Not actual miles", COSTS).skip)
+        self.assertFalse(assess_history("Not actual miles", COSTS).skip)            # TMU — не пропускаем,
+        self.assertIn("TMU", " ".join(assess_history("Not actual miles", COSTS).notes))  # а помечаем
         self.assertIn("был в угоне", assess_history("Prior theft history", COSTS).discounts)
         self.assertIn("аренда/флит", assess_history("Prior police", COSTS).discounts)
         # allow_227 (по умолчанию): REG 227 можно, с лишними днями; «Title Absent» — пропуск
@@ -195,7 +196,8 @@ class TestCarMaxWatchlist(unittest.TestCase):
         self.assertIsNotNone(calculate(input_from_row(self.by_lot["A/88"]), COSTS).max_bid)
         no_kbb = dict(self.by_lot["A/88"], kbb_private_party_usd="")
         self.assertTrue(calculate(input_from_row(no_kbb), COSTS).verdict.startswith("ПРОПУСТИТЬ"))   # без KBB — как раньше
-        self.assertTrue(verdict["B/10"].startswith("ПРОПУСТИТЬ"))       # Not actual miles
+        self.assertFalse(verdict["B/10"].startswith("ПРОПУСТИТЬ"))      # Not actual miles — не пропуск,
+        self.assertIn("TMU", verdict["B/10"])                            # а пометка TMU
         self.assertTrue(verdict["A/70"].startswith("ОСМОТР"))           # KBB из заметки, «Major transmission defect»
         self.assertTrue(verdict["A/9"].startswith("НЕТ ОЦЕНКИ"))        # KBB не вписан
 

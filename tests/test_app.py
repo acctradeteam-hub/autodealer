@@ -289,3 +289,14 @@ class ManheimAllPagesTest(unittest.TestCase):
         page = ('<html><body><div id="lot-analyzer-all-pages" style="display:none">'
                 + "".join(f'<div class="StockWaveInfo stockwave-vehicle-info">{json.dumps(x)}</div>' for x in items) + "</div></body></html>")
         self.assertEqual([x["vin"] for x in manheim.find_listings(page)], [x["vin"] for x in items])
+
+
+class TmuTest(unittest.TestCase):
+    def test_tmu_is_flagged_not_skipped(self):
+        """TMU / Not actual miles — пометка «особое внимание», а не «пропустить»."""
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, assess_history, load_costs
+        costs = load_costs(DEFAULT_COSTS_PATH)
+        flags = assess_history("Not actual miles, Prior lease", costs)
+        self.assertEqual(flags.skip, [])
+        self.assertTrue(any("TMU" in n for n in flags.notes))
+        self.assertTrue(assess_history("Odometer rollback", costs).skip)

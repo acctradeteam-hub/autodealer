@@ -140,6 +140,15 @@ def apply_detail(row: dict[str, str], detail: ManheimDetail) -> list[str]:
         if q.get("connotation") == -1
     ]
     announcements = list(dict.fromkeys(a for a in announcements if a))
+    # Свет лота Manheim: зелёный — с гарантией (арбитраж), жёлтый — есть оговорки, красный — as-is, синий — титул не на руках.
+    lights = [name for key, name in (("greenLight", "Green"), ("yellowLight", "Yellow"), ("redLight", "Red"), ("blueLight", "Blue")) if d.get(key) is True]
+    if d.get("asIs") and "Red" not in lights:
+        lights.append("Red")
+    row["auction_light"] = " + ".join(lights)
+    if announcements and not row.get("auction_notes"):
+        row["auction_notes"] = ", ".join(announcements)[:400]
+    if re.search(r"\btmu\b|true mileage unknown|not actual|mileage unknown", " ".join(announcements), re.I):
+        row["odometer_brand"] = "TMU"
 
     # --- повреждения: в «Дефекты» — только требующие действия ---
     damages = cond.get("damages") or []
