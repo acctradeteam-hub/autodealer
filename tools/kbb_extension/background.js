@@ -2,7 +2,7 @@
    — открывает ссылки окна программы соседней вкладкой в фоне (вы остаётесь в окне); для вкладки kbb.com
      запоминает машины автопилота — вкладка спросит их сама;
    — закрывает вкладку kbb.com, когда автопилот закончил (просит сама вкладка);
-   — берёт у окна программы (только 127.0.0.1:8765, ваш компьютер) тексты заметок для CarMax. */
+   — берёт у окна программы (только 127.0.0.1:8765, ваш компьютер) тексты заметок для CarMax и Manheim. */
 chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   if (msg && msg.type === 'open-bg' && sender.tab && /^http:\/\/127\.0\.0\.1:8765\//.test(sender.url || '') && /^https:\/\//.test(msg.url || '')) {
     chrome.tabs.create({ url: msg.url, active: false, index: sender.tab.index + 1, openerTabId: sender.tab.id }, function (tab) {
@@ -19,7 +19,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
     chrome.tabs.remove(sender.tab.id);
     return false;
   }
-  if (msg && msg.type === 'notes-report' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
+  if (msg && msg.type === 'notes-report' && sender.tab && /^https:\/\/(www\.carmaxauctions\.com|search\.manheim\.com|www\.manheim\.com)\//.test(sender.tab.url || '')) {
     fetch('http://127.0.0.1:8765/api/notes_report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msg.report || {}) })
       .catch(function () {});
     return false;

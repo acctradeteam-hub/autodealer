@@ -43,8 +43,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "1.5"            # tools/kbb_extension/manifest.json — окно просит обновить старое
-NOTES_REPORT: dict = {}               # последний отчёт расширения со страницы CarMax: что записано в Notes
+EXTENSION_VERSION = "1.6"            # tools/kbb_extension/manifest.json — окно просит обновить старое
+NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
 def bookmarklet_version(path: Path) -> str | None:
@@ -637,9 +637,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             if urlparse(self.path).path == "/api/notes_report":     # расширение: что оно сделало с Notes на CarMax
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
-                NOTES_REPORT.clear()
-                NOTES_REPORT.update({k: data[k] for k in ("url", "fields", "in_program", "ready", "written", "already", "failed", "busy", "note") if k in data})
-                NOTES_REPORT["at"] = time.strftime("%H:%M:%S")
+                site = "Manheim" if data.get("site") == "Manheim" else "CarMax"
+                NOTES_REPORT[site] = {k: data[k] for k in ("url", "fields", "in_program", "ready", "written", "already", "failed", "busy", "note") if k in data}
+                NOTES_REPORT[site]["at"] = time.strftime("%H:%M:%S")
                 self._send(b"{}")
                 return
             if urlparse(self.path).path == "/api/inbox":
@@ -885,10 +885,12 @@ window.addEventListener('la-ext',extState);setTimeout(extState,800);
 function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: '+(st.enabled&&st.status==='включена'?'вкл ✓ ('+st.sent+')':st.enabled?st.status:'выкл');
  $('inboxbtn').className='btn sec jump'+(st.error?' bad':'');if(!$('inrepo').value)$('inrepo').value=st.repo||'';$('inon').checked=!!st.enabled;
  $('instate').textContent=(st.enabled?'Включено':'Выключено')+(st.repo?' · '+st.repo:'')+(st.has_token?' · токен сохранён':' · токена нет')+' · отправлено файлов: '+(st.sent||0)+(st.error?' · ⚠ '+st.error:'')}
-async function loadNotesReport(){try{const r=await (await fetch('/api/notes_report')).json();const e=$('notesstate');if(!e)return;
- if(!r.at){e.textContent='Заметки CarMax: страница CarMax ещё не открыта (KBB пишется в Notes на открытой странице CarMax, вид «Detailed»)';return}
- e.textContent=r.note?`Заметки CarMax (${r.at}): ${r.note}`:`Заметки CarMax (${r.at}): на странице полей Notes ${r.fields}, машин с KBB в программе здесь ${r.ready}: `+(r.busy?'записываю… ':'')+`записано сейчас ${r.written}, уже было ${r.already}`+(r.busy?' (не уходите с вкладки CarMax, пока идёт запись)':'')+(r.failed?`, не записалось ${r.failed} — сайт не принял текст, обновите страницу CarMax`:'');
- e.className='muted'+(r.failed||r.note?' bad':'')}catch(e){}}
+async function loadNotesReport(){try{const all=await (await fetch('/api/notes_report')).json();const e=$('notesstate');if(!e)return;
+ const line=(site,r)=>{if(!r)return '';const field=site==='CarMax'?'полей Notes':'машин с кнопкой «Add Note»';
+  return r.note?`Заметки ${site} (${r.at}): ${r.note}`:`Заметки ${site} (${r.at}): на странице ${field} ${r.fields}, машин с KBB в программе здесь ${r.ready}: `+(r.busy?'записываю… ':'')+`записано сейчас ${r.written}, уже было ${r.already}`+(r.busy?` (не уходите с вкладки ${site}, пока идёт запись)`:'')+(r.failed?`, не записалось ${r.failed} — обновите страницу ${site}`:'')};
+ const lines=['CarMax','Manheim'].map(s=>line(s,all[s])).filter(Boolean);
+ e.innerHTML=lines.length?lines.map(esc).join('<br>'):'Заметки на аукционах: KBB с датой пишется сам в Notes на открытой странице CarMax (вид «Detailed») и в «Add Note» машин в результатах поиска Manheim';
+ e.className='muted'+(['CarMax','Manheim'].some(s=>all[s]&&(all[s].failed||all[s].note))?' bad':'')}catch(e){}}
 async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json())}catch(e){}}
 async function saveInbox(){const r=await fetch('/api/inbox',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:$('inrepo').value,token:$('intoken').value,enabled:$('inon').checked})});
  const d=await r.json();if(d.error){alert(d.error);return}$('intoken').value='';showInbox(d)}
