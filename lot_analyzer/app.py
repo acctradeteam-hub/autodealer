@@ -39,7 +39,7 @@ LINKS_PATH = DATA_DIR / "search_links.json"
 KBB_PATH = DATA_DIR / "kbb_values.json"            # KBB PP из приложения, вписанный в окне: {VIN: {"usd": …, "miles": …, "date": …}}
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$", re.I)
 SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
-SHOW_ROWS = 300                              # в окне — лучшие 300, иначе браузер тормозит на тысячах машин
+SHOW_ROWS = 600                              # в окне — первые 600 в каждой вкладке, иначе браузер тормозит на тысячах машин
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
@@ -543,6 +543,15 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 rows, places = by_place(rows, q)
                 total = len(rows)
                 all_rows = rows
+                # Сортировка из окна: по средней цене покупки на аукционе (↑ / ↓); машины без неё — в конце.
+                if q.get("sort") in ("market", "market_desc"):
+                    def price(r: dict) -> float | None:
+                        try:
+                            return float(r.get("market_estimate_usd") or "")
+                        except ValueError:
+                            return None
+                    sign = -1 if q["sort"] == "market_desc" else 1
+                    rows = sorted(rows, key=lambda r: (price(r) is None, sign * (price(r) or 0)))
                 # По SHOW_ROWS из каждой части: одна не вытесняет другие.
                 rows = [r for g in GROUPS for r in [x for x in rows if x.get("group") == g][:SHOW_ROWS]]
                 kbb_cfg = load_costs(costs_path).get("kbb_page") or {}
@@ -717,7 +726,7 @@ main{max-width:1400px;margin:0 auto;padding:20px 16px 40px}h1{font-size:22px;mar
 form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
 input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:90px}
 input#q{min-width:240px}button,a.btn{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
-a.btn.sec,button.btn.sec{background:transparent;color:var(--acc)}button.btn.bad{border-color:var(--bad);color:var(--bad)}#notesstate.bad{color:var(--bad)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+a.btn.sec,button.btn.sec{background:transparent;color:var(--acc)}button.btn.bad{border-color:var(--bad);color:var(--bad)}th.sorth{cursor:pointer;text-decoration:underline dotted}.sortbar{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;margin-left:12px}#notesstate.bad{color:var(--bad)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-align:right;white-space:nowrap}.wrap{overflow-x:auto}
 .v-ok{background:var(--okbg);color:var(--ok)}.v-bad{background:var(--badbg);color:var(--bad)}.v-mid{background:var(--midbg);color:var(--mid)}
@@ -760,7 +769,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
 <div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="tabs" class="tabs"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
-<th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов)">Средняя цена покупки<br>на аукционе</th><th class="w110">Прибыль при покупке<br>по средней цене</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
+<th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110 sorth" onclick="sortHead()" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов). Нажмите — сортировка по ней: от низкой к высокой, ещё раз — наоборот">Средняя цена покупки<br>на аукционе <span id="sortmark">⇅</span></th><th class="w110">Прибыль при покупке<br>по средней цене</th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
 </main><script>
@@ -783,8 +792,12 @@ try{$('picked').checked=localStorage.getItem('la-picked')==='1'}catch(e){}
 function setPlace(p){place=p;try{localStorage.setItem('la-place',p)}catch(e){}refresh()}
 function setPicked(on){try{localStorage.setItem('la-picked',on?'1':'')}catch(e){}refresh()}
 let showPassed=false;try{showPassed=localStorage.getItem('la-passed')==='1'}catch(e){}
+/* Сортировка списка: '' — по выгоде (как раньше), 'market' — средняя цена покупки на аукционе по возрастанию, 'market_desc' — по убыванию. */
+let sortBy='';try{sortBy=localStorage.getItem('la-sort')||''}catch(e){}
+function setSort(v){sortBy=v;try{localStorage.setItem('la-sort',v)}catch(e){}refresh()}
+function sortHead(){setSort(sortBy==='market'?'market_desc':'market')}
 function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
-const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -800,7 +813,7 @@ const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid,
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}
 async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;lastData=d;render(d)}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
-function render(d){shown=d.rows;const gt=d.group_total||{};
+function render(d){shown=d.rows;const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';
 if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='';try{localStorage.setItem('la-place','')}catch(e){};refresh();return}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${p===place?' on':''}" onclick="setPlace(this.dataset.p)" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
@@ -808,7 +821,8 @@ $('places').innerHTML=`<span class="muted">Площадка:</span> <button type
  `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов — после 12:00), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
- `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · сверху самые выгодные</div>`;
+ `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
+ `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${sortBy==='market'?'сверху — самая низкая средняя цена покупки на аукционе':sortBy==='market_desc'?'сверху — самая высокая средняя цена покупки на аукционе':'сверху самые выгодные'}</div>`;
 $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
 <div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
@@ -824,7 +838,7 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_u
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
-$('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны лучшие ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · сверху — больше прибыль при покупке по средней цене · обновлено ${new Date().toLocaleTimeString()}`;
+$('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны первые ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · ${sortBy==='market'?'по средней цене покупки, от низкой к высокой':sortBy==='market_desc'?'по средней цене покупки, от высокой к низкой':'сверху — больше прибыль при покупке по средней цене'} · обновлено ${new Date().toLocaleTimeString()}`;
 $('files').innerHTML=resultsSummary(d.results_stats)+'Файлы ('+esc(d.folders.join(', '))+'): '+(d.files.map(f=>esc(f.time+' '+f.name)+(f.kbb?'':` <b class="${f.cars?'':'neg'}">(машин: ${f.cars||0})</b>`)+(f.note?` <span class="muted">${esc(f.note)}</span>`:'')+(f.old?` <span class="neg">⚠ ${esc(f.old)}</span>`:'')+(f.kbb?`<div class="${f.kbb.includes('⚠')?'v-bad':''}">${esc(f.kbb)}</div>`:'')).join(' · ')||'нет');}
 async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
