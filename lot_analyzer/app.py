@@ -311,6 +311,7 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
     # CarMax: своя доля «цена ÷ KBB» площадки (Chino, Oxnard …), когда своих продаж достаточно.
     for place, extra in analytics.market_overrides(analytics.joined_sales(history, analytics.load_kbb_log())).items():
         own[place] = {**own.get(place, {}), **extra}
+    costs = {**costs, "hybrid": {**(costs.get("hybrid") or {}), **analytics.hybrid_factor(analytics.joined_sales(history, analytics.load_kbb_log()), costs)}}
     return {**costs, "market_by_location": own} if own else costs
 
 
@@ -794,7 +795,7 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
 /* Вкладки: в каждой — только свои машины, сверху самые выгодные. Выбранная вкладка запоминается. */
-const TABS=[['popular','★ Популярные','Corolla, Civic, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Honda Clarity, Honda Insight, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR'],
+const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Prius, Camry / CR-V / RAV4 Hybrid, Honda Clarity, Honda Insight, Lexus CT 200h / RX / IS / ES, Model 3 2022 SR'],
  ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}

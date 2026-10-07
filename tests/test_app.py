@@ -252,3 +252,29 @@ class CarmaxTableWithDateTest(unittest.TestCase):
             rec = results.read_file(path)[0]
             self.assertEqual((rec["date"], rec["auction"], rec["lot"], rec["make"], rec["price"]),
                              ("2026-10-06", "CarMax Chino", "A/1", "Land Rover", "31000"))
+
+
+class HybridTest(unittest.TestCase):
+    def test_hybrid_detection_and_own_model(self):
+        from lot_analyzer.bid import is_hybrid
+        from lot_analyzer.normalize import split_model
+        for model, trim in [("Civic Hybrid", "Base"), ("Prius", "Two"), ("Accord", "Plug in Hybrid"), ("ES", "300h Base"), ("Insight", "EX"), ("Clarity", "Plug in Hybrid")]:
+            self.assertTrue(is_hybrid({"make": "Honda", "model": model, "trim": trim}), model)
+        for make, model, trim in [("Honda", "Civic", "LX"), ("Tesla", "Model 3", ""), ("Chevrolet", "Bolt EV", "LT"), ("Lexus", "ES", "350")]:
+            self.assertFalse(is_hybrid({"make": make, "model": model, "trim": trim}), model)
+        self.assertEqual(split_model("Civic Hybrid Base"), ("Civic Hybrid", "Base"))
+
+    def test_high_miles_hybrid_gets_battery_reserve_and_market_factor(self):
+        from lot_analyzer.bid import BidInput, DEFAULT_COSTS_PATH, calculate, expected_market_price, load_costs
+        costs = load_costs(DEFAULT_COSTS_PATH)
+        costs["market"] = {**(costs.get("market") or {}), "kbb_clean": 0.8}
+        costs["hybrid"] = {"high_miles": 130000, "battery_reserve_usd": 750, "market_factor_default": 0.9}
+        base = dict(auction="CarMax", kbb_private_party=8000, consider=True)
+        plain = calculate(BidInput(**base, miles=135000), costs)
+        hybrid = calculate(BidInput(**base, miles=135000, hybrid=True), costs)
+        young = calculate(BidInput(**base, miles=60000, hybrid=True), costs)
+        self.assertEqual(plain.max_bid - hybrid.max_bid, 750)
+        self.assertEqual(plain.max_bid, young.max_bid)
+        price, note = expected_market_price(BidInput(**base, miles=135000, hybrid=True), costs)
+        self.assertAlmostEqual(price, 8000 * 0.72)
+        self.assertIn("гибрид", note)

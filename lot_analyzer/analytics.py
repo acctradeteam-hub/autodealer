@@ -193,6 +193,26 @@ def market_overrides(sales: list[dict]) -> dict[str, dict]:
     return out
 
 
+def hybrid_factor(sales: list[dict], costs: dict, minimum: int = 8) -> dict:
+    """Насколько гибриды с большим пробегом уходят дешевле обычных машин с таким же пробегом:
+    медиана «цена ÷ KBB» гибридов ÷ медиана обычных (без тяжёлых дефектов). Пусто — своих гибридов мало."""
+    from .bid import is_hybrid, is_electric
+
+    high = float((costs.get("hybrid") or {}).get("high_miles", 130000))
+    hybrids, others = [], []
+    for sale in sales:
+        if not sale["kbb_f"] or sale["heavy"] or _num(sale.get("miles")) is None or _num(sale.get("miles")) < high:
+            continue
+        row = {"make": sale.get("make", ""), "model": sale.get("model", "")}
+        if is_electric(row):
+            continue
+        (hybrids if is_hybrid(row) else others).append(sale["price_f"] / sale["kbb_f"])
+    if len(hybrids) < minimum or len(others) < minimum:
+        return {}
+    factor = statistics.median(hybrids) / statistics.median(others)
+    return {"market_factor": round(min(1.0, factor), 2), "market_factor_n": len(hybrids)}
+
+
 def model_stats(sales: list[dict], log: dict[str, dict]) -> list[dict]:
     """По моделям: сколько машин в базе, KBB ÷ MMR, цена продажи ÷ KBB (без тяжёлых дефектов)."""
     groups: dict[tuple, dict] = {}

@@ -226,7 +226,7 @@ def is_placeholder(value: str | None) -> bool:
 _MULTIWORD_MODEL = re.compile(
     r"^(model [3sxy]|grand (cherokee|caravan|marquis|vitara)|range rover( (sport|evoque|velar))?|santa (fe|cruz)|town & country|"
     r"monte carlo|crown victoria|land cruiser|mustang mach-e|bolt euv|prius (prime|plug-in( hybrid)?|plug in hybrid|c|v)|"
-    r"rav4 (prime|hybrid)|cr-v hybrid|camry hybrid|accord hybrid|niro ev|kona electric|ioniq (5|6|electric)|id\.4|e-tron( gt)?|"
+    r"rav4 (prime|hybrid)|cr-v hybrid|camry hybrid|accord hybrid|civic hybrid|accord plug-?in( hybrid)?|niro ev|kona electric|ioniq (5|6|electric)|id\.4|e-tron( gt)?|"
     r"f-150 lightning|silverado ev|sierra ev)\b", re.I)
 
 

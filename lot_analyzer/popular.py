@@ -10,7 +10,8 @@ import re
 
 DEFAULT = [
     {"make": "Toyota", "model": r"^corolla(?!\s*cross)"},
-    {"make": "Honda", "model": r"^civic(?!.*type\s*r)"},
+    {"make": "Honda", "model": r"^civic(?!.*(type\s*r|hybrid))"},
+    {"make": "Honda", "model": r"^civic\b.*\bhybrid"},
     {"make": "Toyota", "model": r"^camry"},
     {"make": "Honda", "model": r"^accord"},
     {"make": "Mazda", "model": r"^(mazda\s*)?3\b", "year_from": 2012},

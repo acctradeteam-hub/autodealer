@@ -1,13 +1,14 @@
 {
   "_about": "Настройки расчёта максимальной ставки. Все суммы в долларах. Поля, начинающиеся с «_», — пояснения, программа их не читает.",
 
-  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Honda Clarity, Honda Insight; Lexus CT 200h, RX (и 450h), IS, ES; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года.",
+  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Civic Hybrid — отдельной строкой, Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Honda Clarity, Honda Insight; Lexus CT 200h, RX (и 450h), IS, ES; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года.",
   "_stats_models": "Кроме популярных — что ещё собирать в свою статистику (кнопка «KBB для проданных»): Tesla Model 3 2022–2023, все комплектации.",
   "stats_models": [{"make": "Tesla", "model": "^model\\s*3\\b", "years": [2022, 2023]}],
 
   "popular_models": [
     {"make": "Toyota", "model": "^corolla(?!\\s*cross)"},
-    {"make": "Honda", "model": "^civic(?!.*type\\s*r)"},
+    {"make": "Honda", "model": "^civic(?!.*(type\\s*r|hybrid))"},
+    {"make": "Honda", "model": "^civic\\b.*\\bhybrid"},
     {"make": "Toyota", "model": "^camry"},
     {"make": "Honda", "model": "^accord"},
     {"make": "Mazda", "model": "^(mazda\\s*)?3\\b", "year_from": 2012},
@@ -61,6 +62,9 @@
   "title_absent_extra_days": 35,
   "_title_required": "true — машины без титула на руках (Title Absent, Possible / App 227) пропускаются: стратегия быстрого оборота.",
   "title_required": true,
+
+  "_hybrid": "Гибриды (Prius, Insight, Civic / Camry / Accord Hybrid, Lexus …h, plug-in): с пробегом от high_miles батарея близка к замене. Средняя цена покупки на торгах для них = доля площадки × market_factor — окно считает его само по вашим итогам торгов (гибриды ÷ обычные машины с таким же пробегом), пока своих гибридов меньше 8 — берётся market_factor_default. battery_reserve_usd — резерв на батарею в расчёте потолка (вероятность замены × цена восстановленной батареи ~$1,500–2,500).",
+  "hybrid": {"high_miles": 130000, "battery_reserve_usd": 750, "market_factor_default": 0.9},
 
   "detailing_usd": 0,
   "smog_usd": 40,

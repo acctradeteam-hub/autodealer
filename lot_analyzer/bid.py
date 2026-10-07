@@ -358,7 +358,14 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
         return data.mmr * share, f"MMR × {share:g} — {label}{note}"
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
         share = float(market[f"kbb_{kind}"])
-        return data.kbb_private_party * share, f"KBB × {share:g} — медиана торгов {label}" + (f"; {market['kbb_note']}" if market.get("kbb_note") else "")
+        hybrid_note = ""
+        if hybrid_high_miles(data, costs):
+            cfg = hybrid_cfg(costs)
+            factor = float(cfg.get("market_factor") or cfg.get("market_factor_default") or 1)
+            share = round(share * factor, 3)
+            hybrid_note = (f"; гибрид с пробегом от {int(cfg.get('high_miles', 130000)):,} миль: × {factor:g} "
+                           + (f"(по вашим итогам: {cfg['market_factor_n']} гибридов)" if cfg.get("market_factor") else "(по умолчанию, своих итогов пока мало)"))
+        return data.kbb_private_party * share, f"KBB × {share:g} — медиана торгов {label}" + (f"; {market['kbb_note']}" if market.get("kbb_note") else "") + hybrid_note
     if data.mmr and market.get(f"mmr_{kind}"):
         share = float(market[f"mmr_{kind}"])
         return data.mmr * share, f"MMR × {share:g} — медиана торгов {label}"
@@ -384,6 +391,8 @@ class BidInput:
     history_text: str = ""               # титул, Carfax, CR, повреждения — одной строкой
     defects_text: str = ""               # описание дефектов для оценки ремонта
     electric: bool = False               # электромобиль: смог-тест не нужен
+    hybrid: bool = False                 # гибрид (и plug-in): батарея — свой риск и своя цена торгов
+    miles: float | None = None           # пробег — для гибридов с большим пробегом
     consider: bool = False               # вы посмотрели KBB — считаем и при стоп-факторах (рама, титул), вердикт «РИСК»
 
 
@@ -552,6 +561,7 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         "содержание": (float(costs.get("days_to_sell", 0)) + flags.extra_days) * float(costs.get("holding_per_day_usd", 0)),
         "резерв": sale * float(costs.get("reserve_pct_of_sale", 0)),
         "DMV": dmv_fees(f"{data.defects_text} {data.history_text}"),
+        "батарея гибрида": float(hybrid_cfg(costs).get("battery_reserve_usd", 0)) if hybrid_high_miles(data, costs) else 0.0,
     }
     fixed_total = sum(fixed.values())
     lines.append(f"ремонт {_usd(recon)} ({recon_note})")
@@ -686,6 +696,25 @@ _EV = re.compile(r"\b(bolt|leaf|i3|e-?golf|id\.?\s?4|mustang mach-e|mach-e|ioniq
                  r"model [3sxy]|lyriq|blazer ev|equinox ev|f-150 lightning|hummer ev|r1[st]|prologue|zdx|cooper se|xc40 recharge|c40)\b", re.I)
 
 
+_HYBRID = re.compile(r"hybrid|plug-?\s?in|phev|\bprime\b|^prius|^insight|^clarity|\b(ct|es|rx|nx|ux|gs|ls)\s?\d{3}h\b", re.I)
+
+
+def is_hybrid(row: dict[str, str]) -> bool:
+    """Гибрид или plug-in гибрид (Prius, Insight, Civic / Camry / Accord Hybrid, Lexus …h, Clarity PHEV)."""
+    if is_electric(row):
+        return False
+    return bool(_HYBRID.search(squeeze(f"{row.get('model', '')} {row.get('trim', '')}")))
+
+
+def hybrid_cfg(costs: dict) -> dict:
+    return costs.get("hybrid") or {}
+
+
+def hybrid_high_miles(data: "BidInput", costs: dict) -> bool:
+    """Гибрид с большим пробегом: батарея близка к замене — покупатели на торгах платят меньше, нужен резерв."""
+    return bool(data.hybrid and data.miles and data.miles >= float(hybrid_cfg(costs).get("high_miles", 130000)))
+
+
 def is_electric(row: dict[str, str]) -> bool:
     if str(row.get("make", "")).strip().lower() in ("tesla", "rivian", "lucid", "polestar"):
         return True
@@ -716,6 +745,8 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         history_text=history,
         defects_text=" | ".join(squeeze(row.get(k, "")) for k in ("defects", "lot_description") if squeeze(row.get(k, ""))),
         electric=is_electric(row),
+        hybrid=is_hybrid(row),
+        miles=parse_money(row.get("odometer_miles")),
         consider=bool(parse_money(row.get("kbb_private_party_usd"))) and not row.get("kbb_from_window_field"),
     )
 
