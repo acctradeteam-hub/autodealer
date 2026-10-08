@@ -317,3 +317,22 @@ class ManheimLanesTest(unittest.TestCase):
             a, b = results.read_file(path)
             self.assertEqual((a["auction"], a["outcome"], a["price"], a["mmr"], a["make"]), ("Manheim California", "Sold", "15200", "16700", "Toyota"))
             self.assertEqual((b["outcome"], b["price"]), ("If Sale", "5500"))
+
+
+class SavedTimeTest(unittest.TestCase):
+    def test_copied_old_page_stays_old(self):
+        """Скопированный (с новым временем файла) старый список не становится «свежим»: время — из заголовка или имени."""
+        import tempfile
+        import time
+        from pathlib import Path
+        from lot_analyzer import app
+        with tempfile.TemporaryDirectory() as tmp:
+            header = Path(tmp) / "CarMax_Search_page.html"
+            header.write_text("<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; version: 2026-10-07.1; saved-at: 2026-10-01T18:00:00.000Z; url: x -->\n<html></html>")
+            named = Path(tmp) / "CarMax_Search_2026-10-01_1757.html"
+            named.write_text("<html></html>")
+            plain = Path(tmp) / "CarMax_Search.html"
+            plain.write_text("<html></html>")
+            self.assertLess(app.saved_time_from_file(header), time.time() - 86400)
+            self.assertLess(app.saved_time_from_file(named), time.time() - 86400)
+            self.assertAlmostEqual(app.saved_time_from_file(plain), plain.stat().st_mtime)

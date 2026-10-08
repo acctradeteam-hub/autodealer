@@ -47,6 +47,39 @@ EXTENSION_VERSION = "1.6"            # tools/kbb_extension/manifest.json — о�
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
+_SAVED_TIMES: dict[tuple, float] = {}
+
+
+def saved_time(path: Path) -> float:
+    """Когда страницу сохранили: из заголовка закладки (saved-at), из метки в имени (…_2026-10-05_1138),
+    иначе время файла. Время файла меняется при копировании / переносе «Загрузок» — по нему старые списки
+    выглядели бы свежими."""
+    stat = path.stat()
+    key = (path, stat.st_mtime)
+    if key in _SAVED_TIMES:
+        return _SAVED_TIMES[key]
+    when = None
+    if path.suffix.lower() in (".html", ".htm"):
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(700).decode("utf-8", errors="replace")
+            found = re.search(r"saved-at: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)Z", head)
+            if found:
+                when = dt.datetime.fromisoformat(found.group(1)).replace(tzinfo=dt.timezone.utc).timestamp()
+        except (OSError, ValueError):
+            when = None
+    if when is None:
+        found = re.search(r"_(20\d{2})-(\d{2})-(\d{2})_(\d{2})(\d{2})(?!\d)", path.stem)
+        if found:
+            try:
+                when = dt.datetime(*map(int, found.groups())).timestamp()
+            except ValueError:
+                when = None
+    when = min(when, stat.st_mtime) if when else stat.st_mtime
+    _SAVED_TIMES[key] = when
+    return when
+
+
 def bookmarklet_version(path: Path) -> str | None:
     """Версия закладки, сохранившей файл: «2026-10-05», «» — старая (без версии), None — файл не закладки."""
     if path.suffix.lower() not in (".html", ".htm"):
@@ -152,13 +185,14 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
             if not path.is_file():
                 continue
             # Итоги торгов — за 30 дней, что бы ни стояло в «Файлы за, часов»: программу могли открыть через день-два.
-            if path.stat().st_mtime < cutoff and not (path.stat().st_mtime >= time.time() - 30 * 86400 and results.is_results_file(path)):
+            when = saved_time(path)
+            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path)):
                 continue
             if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)
                     or results.is_results_file(path)) and not is_own_window(path):
                 found.append(path)
     # Новые файлы первыми; CSV-выгрузки — в конце: строка со страницы подробнее (AutoCheck, объявления).
-    return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -p.stat().st_mtime))
+    return sorted(found, key=lambda p: (p.suffix.lower() == ".csv", -saved_time(p)))
 
 
 # ---------------------------------------------------------------- отбор и расчёт
@@ -324,10 +358,10 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "
     bids = load_bids()
     kbb_cfg = costs.get("kbb_page") or {}
     condition = kbb_cfg.get("condition", "good")
-    kbb_pages = [{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))}
+    kbb_pages = [{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(saved_time(p)))}
                  for p, r in ((p, cache.kbb(p)) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
     for path in pages:                       # новые файлы первыми: дубликаты берутся из свежего
-        saved_at = path.stat().st_mtime
+        saved_at = saved_time(path)
         for row in cache.rows(path):
             row["_saved"] = saved_at
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
@@ -558,7 +592,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 kbb_cfg = load_costs(costs_path).get("kbb_page") or {}
                 files = []
                 for p in pages:
-                    item = {"name": p.name, "time": time.strftime("%H:%M", time.localtime(p.stat().st_mtime)), "cars": len(cache.rows(p))}
+                    item = {"name": p.name, "time": time.strftime("%d.%m %H:%M", time.localtime(saved_time(p))), "cars": len(cache.rows(p))}
                     version = bookmarklet_version(p)
                     if version is not None and version < BOOKMARKLET_VERSION and not p.name.startswith("KBB_"):
                         item["old"] = "старая закладка — машин может быть не все: переустановите её (кнопка «🔖 Закладка») и сохраните снова"

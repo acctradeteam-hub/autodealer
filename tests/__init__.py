@@ -16,3 +16,7 @@ results.HISTORY_PATH = _TMP / "auction_results.csv"
 app.BIDS_PATH = _TMP / "my_bids.json"
 inbox.SETTINGS_PATH = _TMP / "inbox.json"
 inbox.SENT_PATH = _TMP / "inbox_sent.json"
+# Образцы страниц в tests/ сохранены давно (дата в имени): в тестах «свежесть» — по времени файла, как у скопированного образца.
+# Само правило «время сохранения — из файла» проверяет SavedTimeTest (app.saved_time_from_file).
+app.saved_time_from_file = app.saved_time
+app.saved_time = lambda path: path.stat().st_mtime
