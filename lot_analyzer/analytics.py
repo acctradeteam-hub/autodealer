@@ -136,6 +136,48 @@ class OwnKbb:
         return Estimate(value=mmr * share, source=f"по вашей базе: KBB ≈ MMR × {share:.2f} ({label}, {n} машин)", n=n, spread=0.0)
 
 
+class PreKbb:
+    """Предварительный KBB для машин без настоящего: по вашей базе KBB (kbb_history.csv) — похожие машины той же
+    модели ±2 года, пересчитанные на год и пробег (kbb.KbbEstimator); нет похожих — KBB ≈ MMR × ваше KBB ÷ MMR.
+    Проверка на 180 ваших KBB (каждая машина — по остальным): оценка есть у ~80%, ошибка обычно ±9%,
+    в пределах ±20% — 86%. Точный KBB — кнопкой «получить KBB»."""
+
+    def __init__(self, log: dict[str, dict], costs: dict):
+        from .kbb import Comp, KbbEstimator
+
+        self.by_mmr = OwnKbb(log)
+        self.similar = KbbEstimator([], costs)
+        for rec in log.values():
+            kbb, miles = _num(rec.get("kbb")), _num(rec.get("miles"))
+            if kbb and kbb > 500 and miles and str(rec.get("year", "")).isdigit():
+                comp = Comp(rec.get("make", ""), f"{rec.get('model', '')} {rec.get('trim', '')}".strip(), int(rec["year"]), miles, kbb, rec.get("vin", ""))
+                self.similar.kbb.setdefault(_model_key(comp.make, comp.model), []).append(comp)
+
+    def copy(self) -> "PreKbb":
+        clone = PreKbb.__new__(PreKbb)
+        clone.by_mmr, clone.similar = self.by_mmr, self.similar.copy()
+        return clone
+
+    def add_rows(self, rows: list[dict]) -> None:
+        self.by_mmr.add_rows(rows)
+        self.similar.add_rows([r for r in rows if not r.get("kbb_from_window_field")])
+
+    def estimate(self, make: str, model: str, year: int | None, miles: float | None, vin: str = ""):
+        from .kbb import Estimate
+
+        found = self.similar.estimate(make, model, year, miles, exclude_vin=vin)
+        if found and found.source.startswith("по KBB похожих"):
+            return Estimate(value=found.value, n=found.n, spread=found.spread,
+                            source=f"прикидка по вашей базе KBB: {found.n} похожих ({model.split(' ')[0]} ±2 года, на этот год и пробег), обычно ±10%")
+        return self.by_mmr.estimate(make, model, year, miles, vin)
+
+
+def _model_key(make: str, model: str) -> tuple[str, str]:
+    from .kbb import model_key
+
+    return model_key(make, model)
+
+
 # ---------------------------------------------------------------- площадки: за сколько уходят
 
 def place_of(rec: dict) -> str:

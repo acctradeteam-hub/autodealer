@@ -47,8 +47,11 @@ class Estimate:
 
 
 def model_key(make: str, model: str) -> tuple[str, str]:
-    first = (model or "").lower().replace("-", "").split()
-    return (make or "").lower().strip(), first[0] if first else ""
+    """(марка, модель) без комплектации: «Model 3» и «Model X» — разные модели, «CR-V» = «CRV» = «cr v»."""
+    from .normalize import split_model
+
+    base, _ = split_model((model or "").replace("-", " "))
+    return (make or "").lower().strip(), base.lower().replace(" ", "").replace("-", "")
 
 
 def _split_vehicle(vehicle: str) -> tuple[str, str]:

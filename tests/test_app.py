@@ -371,3 +371,19 @@ class KbbFromOwnBaseTest(unittest.TestCase):
         hit = next(r for r in rows if r["vin"] == row["vin"])
         self.assertEqual(hit["kbb_private_party_usd"], "11111")
         self.assertIn("из вашей базы KBB", hit["kbb_entered"])
+
+
+class PreKbbTest(unittest.TestCase):
+    def test_preliminary_kbb_from_similar_in_own_base(self):
+        from lot_analyzer import analytics
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, load_costs
+        costs = load_costs(DEFAULT_COSTS_PATH)
+        log = {f"VIN{i:014d}": {"vin": f"VIN{i:014d}", "date": "2026-10-01", "year": "2016", "make": "Honda", "model": "Civic", "trim": "LX",
+                                "miles": "100000", "kbb": "10000", "mmr": "", "auction": "", "location": "", "remarks": "", "source": "t"} for i in range(3)}
+        log["TESLA000000000001"] = {**log["VIN00000000000000"], "vin": "TESLA000000000001", "make": "Tesla", "model": "Model X", "kbb": "30000"}
+        est = analytics.PreKbb(log, costs)
+        civic = est.estimate("Honda", "Civic", 2016, 100000, vin="NEW")
+        self.assertAlmostEqual(civic.value, 10000)
+        self.assertIn("вашей базе KBB", civic.source)
+        self.assertLess(est.estimate("Honda", "Civic", 2016, 150000, vin="NEW").value, 10000)      # больше пробег — дешевле
+        self.assertIsNone(est.estimate("Tesla", "Model 3", 2016, 100000, vin="NEW"))             # Model X — не похожая на Model 3
