@@ -788,7 +788,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Пробег до, миль<input id="miles" inputmode="numeric" placeholder="150000"></label>
 <label>KBB PP 92620 Good, $ (если у лота нет)<input id="kbb" inputmode="numeric" placeholder="10000"></label>
 <label>Потолок до, $<input id="maxbid" inputmode="numeric" value="15000" title="Машины с потолком выше — не показывать. Пусто — без ограничения"></label>
-<label>Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px"></label>
+<label title="Только машины без фотографий (CarMax: «Check back for images»): на них меньше конкурентов — смотреть самому на месте">Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="refresh()"></label>
 <label title="Раскрыть у всех машин, из каких сумм сложилась прибыль при покупке по средней цене">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
 <label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>

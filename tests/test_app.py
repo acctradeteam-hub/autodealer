@@ -336,3 +336,14 @@ class SavedTimeTest(unittest.TestCase):
             self.assertLess(app.saved_time_from_file(header), time.time() - 86400)
             self.assertLess(app.saved_time_from_file(named), time.time() - 86400)
             self.assertAlmostEqual(app.saved_time_from_file(plain), plain.stat().st_mtime)
+
+
+class CarmaxNoPhotoTest(unittest.TestCase):
+    def test_check_back_for_images_means_no_photos(self):
+        from lot_analyzer.sites_text import find_carmax_cards
+        card = ('<html><body>carmax<div id="28670552"><button><span>Check back for images</span></button>'
+                '<p class="MuiTypography-caption">B/119 • Oxnard, CA</p><button>2014 Chevrolet Sonic LT</button>'
+                '<p><span>1G1JC5SH6E4000000</span><button data-testid="copy-vin-button"></button></p><p>98,000 mi</p></div></body></html>')
+        cards = find_carmax_cards(card)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["photo"], "")

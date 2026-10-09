@@ -346,6 +346,17 @@ def _carmax_photo(card, page_url: str) -> str:
     return ""
 
 
+# Карточка CarMax без фотографий: вместо фото надпись «Check back for images».
+_CARMAX_NO_IMAGES = re.compile(r"check back for images|no images available|images coming soon", re.I)
+
+
+def _carmax_card_photo(card, page_url: str) -> str:
+    """Фото карточки; пусто — у машины фото нет (CarMax пишет «Check back for images»)."""
+    if card.find(string=_CARMAX_NO_IMAGES) and not card.find("img"):
+        return ""
+    return _carmax_photo(card, page_url) or carmax_photo_url(card["id"] if card.has_attr("id") else "")
+
+
 def find_carmax_cards(html: str) -> list[dict[str, str]]:
     """Карточки машин со страницы-списка CarMax (watch list, результаты с VIN).
 
@@ -369,7 +380,7 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         if card is None or card.find_parent(attrs={"role": "presentation"}) is not None:
             continue
         seen.add(vin)
-        info: dict[str, str] = {"vin": vin, "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url) or carmax_photo_url(card["id"])}
+        info: dict[str, str] = {"vin": vin, "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_card_photo(card, page_url)}
         caption = card.find("p", class_=re.compile("caption"))
         head = squeeze(caption.get_text(" ", strip=True)) if caption else ""
         lane_run, _, location = head.partition("•")
@@ -417,7 +428,7 @@ def _carmax_tiles(soup, page_url: str = "") -> list[dict[str, str]]:
         if not head or not title:
             continue
         lane_run, _, location = head.partition("•")
-        info = {"vin": "", "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_photo(card, page_url) or carmax_photo_url(card["id"]), "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
+        info = {"vin": "", "stock": card["id"], "lot_url": carmax_lot_url(card["id"], page_url), "photo": _carmax_card_photo(card, page_url), "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title}
         spec = next((t for t in texts if re.match(r"[\d,]+ mi\b", t)), "")
         info["miles"] = spec.split(" mi")[0].replace(",", "") if spec else ""
         info["drive"] = " • ".join(spec.split(" • ")[1:]) if spec else ""
@@ -483,8 +494,9 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     if user_notes:
         extra.append(f"заметки: {user_notes}")
     row["lot_description"] = "; ".join(extra)
-    if NO_PHOTOS_RE.search(f"{user_notes} {announcements}"):
+    if NO_PHOTOS_RE.search(f"{user_notes} {announcements}") or not card.get("photo"):
         row["no_photos"] = "да"
+        row["photo_count"] = "0"
     if card.get("status") == "Ended":
         notes.append("торги по лоту уже закончились")
     if not card["vin"]:
@@ -553,7 +565,7 @@ def _carmax_by_vin(soup, page_url: str = "") -> list[dict[str, str]]:
         link = el.find("a", href=re.compile(r"/vehicledetail/(\d+)"))
         stock = (re.search(r"/vehicledetail/(\d+)", link["href"]).group(1) if link else
                  next((x.get("data-vehicle-id") for x in el.find_all(attrs={"data-vehicle-id": True})), "") or "")
-        cards.append({"vin": vin, "stock": stock, "lot_url": carmax_lot_url(stock), "photo": _carmax_photo(el, page_url) or carmax_photo_url(stock),
+        cards.append({"vin": vin, "stock": stock, "lot_url": carmax_lot_url(stock), "photo": "" if (el.find(string=_CARMAX_NO_IMAGES) and not el.find("img")) else (_carmax_photo(el, page_url) or carmax_photo_url(stock)),
                       "lane_run": squeeze(lane_run), "location": squeeze(location), "title": title,
                       "miles": re.sub(r"\D", "", spec.split("mi")[0]) if spec else "", "drive": " • ".join(spec.split(" • ")[1:]) if spec else "",
                       "announcements": ", ".join(dict.fromkeys(t for t in texts if _REMARK.search(t) and len(t) < 120 and t != title)),
