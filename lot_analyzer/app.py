@@ -534,6 +534,15 @@ def verdict_rank(verdict: str) -> float:
     """Место вердикта в сортировке. «РИСК: рама …; МОЖНО до …» — по тому, что после риска: машину с выгодой — наверх."""
     if verdict.startswith("РИСК") and "; " in verdict:
         verdict = verdict.split("; ", 1)[1]
+    if verdict.startswith("ПРОПУСТИТЬ"):
+        # Среди «ПРОПУСТИТЬ»: структурные повреждения — выше (старые машины с ними берут), брендированный титул — ниже,
+        # без титула (Title Absent / REG 227) — в самом низу: ждать титул для быстрого оборота неприемлемо.
+        reasons = verdict.split(";")[0].lower()
+        if re.search(r"нет титула|title absent|reg 227", reasons):
+            return 4.4
+        if "брендированный титул" in reasons:
+            return 4.2
+        return 4.0
     return RANK.get(verdict.split(" ")[0].rstrip(":"), 5)
 
 

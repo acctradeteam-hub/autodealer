@@ -387,3 +387,14 @@ class PreKbbTest(unittest.TestCase):
         self.assertIn("вашей базе KBB", civic.source)
         self.assertLess(est.estimate("Honda", "Civic", 2016, 150000, vin="NEW").value, 10000)      # больше пробег — дешевле
         self.assertIsNone(est.estimate("Tesla", "Model 3", 2016, 100000, vin="NEW"))             # Model X — не похожая на Model 3
+
+
+class SkipOrderTest(unittest.TestCase):
+    def test_structural_above_branded_above_no_title(self):
+        from lot_analyzer.app import verdict_rank
+        structural = verdict_rank("ПРОПУСТИТЬ: повреждение рамы / кузова")
+        branded = verdict_rank("ПРОПУСТИТЬ: брендированный титул (salvage/rebuilt/lemon…)")
+        no_title = verdict_rank("ПРОПУСТИТЬ: повреждение рамы / кузова, нет титула на руках (Title Absent) — продать нельзя")
+        self.assertLess(structural, branded)
+        self.assertLess(branded, no_title)
+        self.assertLess(no_title, verdict_rank("ПРОДАНА за $5,000 — купить нельзя"))
