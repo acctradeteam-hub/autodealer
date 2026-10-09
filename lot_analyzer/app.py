@@ -36,6 +36,7 @@ from .paths import DATA_DIR
 
 SEARCH_URLS_PATH = Path("config/search_urls.json")
 LINKS_PATH = DATA_DIR / "search_links.json"
+KBB_FROM_LOG_DAYS = 30                       # KBB из своей базы — не старше стольких дней (цены меняются)
 KBB_PATH = DATA_DIR / "kbb_values.json"            # KBB PP из приложения, вписанный в окне: {VIN: {"usd": …, "miles": …, "date": …}}
 SAVED_BY_BOOKMARKLET = re.compile(r"^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$", re.I)
 SAVED_KBB = re.compile(r"kelley[\s_-]*blue[\s_-]*book.*\.(html?|mhtml?)$", re.I)     # страница KBB, сохранённая через Cmd+S
@@ -388,6 +389,10 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     saved_kbb = load_kbb()
+    # Своя база KBB (kbb_history.csv): KBB, полученный раньше, — к машине по VIN, даже когда страницы KBB
+    # уже старше «Файлы за, часов» или удалены из «Загрузок». Не старше KBB_FROM_LOG_DAYS и при том же пробеге.
+    known_kbb = analytics.load_kbb_log()
+    log_since = (dt.date.today() - dt.timedelta(days=KBB_FROM_LOG_DAYS)).isoformat()
     bids = load_bids()
     kbb_cfg = costs.get("kbb_page") or {}
     condition = kbb_cfg.get("condition", "good")
@@ -421,6 +426,13 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
                     row["kbb_date"] = page.get("_date", "")
                     if page["zip"] != str(kbb_cfg.get("zip", "92620")):
                         row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), f"KBB для ZIP {page['zip']}, не {kbb_cfg.get('zip', '92620')}") if x)
+            logged = known_kbb.get(row.get("vin", "")) if not row.get("kbb_private_party_usd") else None
+            if logged and logged.get("kbb") and logged.get("date", "") >= log_since:
+                miles_now, miles_then = parse_money(row.get("odometer_miles")), parse_money(logged.get("miles"))
+                if not (miles_now and miles_then) or abs(miles_now - miles_then) <= int(kbb_cfg.get("max_miles_gap", 3000)):
+                    row["kbb_private_party_usd"] = logged["kbb"]
+                    row["kbb_entered"] = f"из вашей базы KBB: {logged.get('date', '')}" + (f", {int(miles_then):,} миль" if miles_then else "")
+                    row["kbb_date"] = logged.get("date", "")
             if kbb and not (row.get("kbb_private_party_usd") or row.get("retail_estimate_usd")):
                 row["kbb_private_party_usd"] = f"{kbb:.0f}"
                 row["kbb_from_window_field"] = "1"           # не настоящий KBB этой машины — в базу не пишем

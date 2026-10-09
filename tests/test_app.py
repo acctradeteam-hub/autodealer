@@ -52,6 +52,8 @@ class TestOneWindow(unittest.TestCase):
         self.assertEqual(ranks, sorted(ranks))                                                       # сначала «МОЖНО»
 
     def test_kbb_from_window_fills_only_missing(self) -> None:
+        from lot_analyzer import analytics
+        analytics.KBB_LOG_PATH.unlink(missing_ok=True)       # своя база KBB пустая: иначе KBB этих машин — из неё
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "toyota corolla", kbb=9000)
         self.assertTrue(rows)
         self.assertTrue(all(r["kbb_private_party_usd"] == "9000" for r in rows))
@@ -347,3 +349,25 @@ class CarmaxNoPhotoTest(unittest.TestCase):
         cards = find_carmax_cards(card)
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]["photo"], "")
+
+
+class KbbFromOwnBaseTest(unittest.TestCase):
+    def test_kbb_from_base_by_vin_when_page_is_gone(self):
+        """KBB, полученный раньше, подставляется по VIN из своей базы — страницы KBB в «Загрузках» уже нет."""
+        import datetime as dt
+        from lot_analyzer import analytics, app
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, load_costs
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "ADESA_ADESA_2026-09-29_1421.html").write_bytes((FIXTURES / "adesa_civic_lot.html").read_bytes())
+        pages = app.find_pages([tmp], 24)
+        if not pages:
+            self.skipTest("нет образца страницы")
+        row = next(r for r in app.PageCache().rows(pages[0]) if r.get("vin"))
+        row["kbb_private_party_usd"] = ""
+        log = {row["vin"]: {"vin": row["vin"], "date": dt.date.today().isoformat(), "year": row["year"], "make": row["make"], "model": row["model"],
+                            "trim": "", "miles": row["odometer_miles"], "kbb": "11111", "mmr": "", "auction": "", "location": "", "remarks": "", "source": "test"}}
+        analytics.save_kbb_log(log)
+        rows = app.search_rows(pages, app.PageCache(), load_costs(DEFAULT_COSTS_PATH))
+        hit = next(r for r in rows if r["vin"] == row["vin"])
+        self.assertEqual(hit["kbb_private_party_usd"], "11111")
+        self.assertIn("из вашей базы KBB", hit["kbb_entered"])
