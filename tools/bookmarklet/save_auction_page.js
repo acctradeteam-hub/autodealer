@@ -257,7 +257,7 @@
     try { state = resume ? JSON.parse(decodeURIComponent(resume[1])) : { cars: JSON.parse(decodeURIComponent(laMatch[1])), i: 0, done: [], failed: [], pending: null }; } catch (e) { state = { cars: [], i: 0, done: [], failed: [], pending: null }; }
     var cars = state.cars;
     /* Модели, которые на KBB называются иначе, чем на аукционах. */
-    var KBB_MODEL = { 'bolt': 'bolt-ev', 'bolt-euv': 'bolt-euv', 'gti': 'golf-gti', 'golf-gti': 'golf-gti', 'e-golf': 'e-golf', 'leaf-plus': 'leaf', 'ioniq-electric': 'ioniq', 'niro-ev': 'niro-ev', 'kona-electric': 'kona-electric', 'clarity-plug-in-hybrid': 'clarity-plug-in-hybrid', 'prius-prime': 'prius-prime', 'rav4-prime': 'rav4-prime' };
+    var KBB_MODEL = { 'golf-electric': 'e-golf', 'bolt': 'bolt-ev', 'bolt-euv': 'bolt-euv', 'gti': 'golf-gti', 'golf-gti': 'golf-gti', 'e-golf': 'e-golf', 'leaf-plus': 'leaf', 'ioniq-electric': 'ioniq', 'niro-ev': 'niro-ev', 'kona-electric': 'kona-electric', 'clarity-plug-in-hybrid': 'clarity-plug-in-hybrid', 'prius-prime': 'prius-prime', 'rav4-prime': 'rav4-prime' };
     var KBB_EXTRA = { 'prius-plug-in-hybrid': 'prius-plug-in', 'prius-plug-in': 'prius-plug-in-hybrid' };
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;

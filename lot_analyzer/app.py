@@ -43,7 +43,7 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "1.6"            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "1.7"            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -349,7 +349,40 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
     return {**costs, "market_by_location": own} if own else costs
 
 
-def search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
+_ROWS_MEMO: dict = {}
+_ROWS_LOCKS: dict = {}
+_ROWS_GUARD = threading.Lock()
+
+
+def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwargs) -> list[dict[str, str]]:
+    """Тот же расчёт для тех же файлов — один раз. Окно, расширение (заметки) и «KBB для проданных» спрашивают
+    почти одновременно; пока идёт KBB-автопилот, новые файлы приходят каждые 2–3 секунды — без этого запросы
+    копились и окно «зависало». Одинаковые запросы ждут первый, а не считают заново."""
+    def stamp(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+    key = (tuple((str(p), stamp(p)) for p in pages), json.dumps(costs, sort_keys=True, default=str), args, tuple(sorted(kwargs.items())),
+           tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH)),
+           int(time.time() // 60))                    # раз в минуту — заново: «торги прошли» зависит от времени
+    with _ROWS_GUARD:
+        lock = _ROWS_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        if key in _ROWS_MEMO:
+            return [dict(r) for r in _ROWS_MEMO[key]]
+        rows = _search_rows(pages, cache, costs, *args, **kwargs)
+        with _ROWS_GUARD:
+            if len(_ROWS_MEMO) > 8:
+                _ROWS_MEMO.clear()
+                _ROWS_LOCKS.clear()
+            # Ключ — с временем файлов базы после расчёта: сам расчёт мог дописать итоги / журнал KBB.
+            after = key[:4] + (tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH)), key[5])
+            _ROWS_MEMO[after] = rows
+        return [dict(r) for r in rows]
+
+
+def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
                 year_to: int | None = None, max_miles: int | None = None, kbb: float | None = None,
                 only_no_photos: bool = False, max_bid: float | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -853,7 +886,12 @@ const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid,
  ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}
-async function refresh(){const my=++refreshNo;try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my!==refreshNo)return;lastData=d;render(d)}catch(e){$('stat').textContent='Нет связи с программой: '+e}}
+/* Один пересчёт за раз: пока идёт KBB-автопилот, файлы приходят каждые 2–3 с — новые запросы не обгоняют
+   и не отменяют текущий (раньше окно выбрасывало каждый ответ как устаревший и ничего не показывало). */
+let refreshBusy=false,refreshAgain=false;
+async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=true;const my=++refreshNo;
+ try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
+ finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
 function render(d){shown=d.rows;const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';
 if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='';try{localStorage.setItem('la-place','')}catch(e){};refresh();return}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
