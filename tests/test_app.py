@@ -398,3 +398,15 @@ class SkipOrderTest(unittest.TestCase):
         self.assertLess(structural, branded)
         self.assertLess(branded, no_title)
         self.assertLess(no_title, verdict_rank("ПРОДАНА за $5,000 — купить нельзя"))
+
+
+class PastSalesNoteTest(unittest.TestCase):
+    def test_past_sales_go_to_auction_notes(self):
+        from lot_analyzer.notes import lot_note, strip_own
+        row = {"kbb_private_party_usd": "6610", "kbb_date": "2026-10-05", "auction": "CarMax", "auction_notes": "Prior lease",
+               "seen_before": "был на аукционе 9/27/26 CarMax Murrieta — итога нет; был на аукционе 9/28/26 CarMax Murrieta — продана $1,600; "
+                              "был на аукционе 10/5/26 CarMax Murrieta — не продана"}
+        self.assertEqual(lot_note(row), "KBB 6,610$ 10/5/26\nБыл: 9/28/26 CarMax Murrieta — продана $1,600\nБыл: 10/5/26 CarMax Murrieta — не продана\nCarMax: Prior lease")
+        # Без KBB и ставки — тоже пишем, если машина уже была на торгах.
+        self.assertEqual(lot_note({"seen_before": "был на аукционе 9/28/26 CarMax Chino — продана $10,250"}), "Был: 9/28/26 CarMax Chino — продана $10,250")
+        self.assertEqual(strip_own("мой текст\nБыл: 9/28/26 CarMax Chino — продана $10,250"), "мой текст")

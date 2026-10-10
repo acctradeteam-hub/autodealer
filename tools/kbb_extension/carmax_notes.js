@@ -29,7 +29,7 @@
     return c;
   };
   /* Строки, которые пишет программа (и прежний формат «LA …»): при пересчёте заменяются. */
-  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: )/;
+  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: |Был: )/;
   var merged = function (current, note) {
     var parts = note.split('\n');
     var kbbLine = parts.filter(function (l) { return /^KBB /.test(l); })[0] || '';

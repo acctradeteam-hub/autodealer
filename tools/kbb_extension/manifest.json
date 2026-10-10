@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lot Analyzer KBB",
-  "version": "1.7",
+  "version": "1.8",
   "description": "lot_analyzer: KBB Private Party для машин из окна программы (вкладка kbb.com открывается в фоне и закрывается сама), ссылки окна — в фоновых вкладках, запись KBB с датой и замечаний аукциона в Notes карточек CarMax и в заметки (Add Note) машин Manheim; ставка из окна — в форму «Set early bid» на CarMax (Place bid нажимаете сами).",
   "background": {
     "service_worker": "background.js"

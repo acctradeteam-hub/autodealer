@@ -15,7 +15,7 @@
     if (hide) { var t = toast; toast = null; setTimeout(function () { t.remove(); }, hide); }
   };
   var pause = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
-  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: )/;
+  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: |Был: )/;
   /* То же правило, что на CarMax: строка KBB с датой (тот же KBB — не трогаем), MP — заменяется, замечания аукциона — свежие. */
   var merged = function (current, note) {
     var parts = note.split('\n');
@@ -140,7 +140,9 @@
         /* Уже записано: заметка (из данных или видна в строке) содержит эту строку KBB. */
         var kbbLine = (note.split('\n').filter(function (l) { return /^KBB /.test(l); })[0] || '').replace(/\s\S+$/, '');
         var shown = car.note + '\n' + (car.row.textContent || '');
-        if ((kbbLine && shown.indexOf(kbbLine) >= 0 && note.indexOf('\nMP ') < 0) || merged(car.note, note) === car.note) { same += 1; continue; }
+        /* Все строки программы (кроме даты KBB) уже видны в строке — записано. */
+        var rest = note.split('\n').filter(function (l) { return !/^KBB /.test(l); });
+        if ((kbbLine ? shown.indexOf(kbbLine) >= 0 : true) && rest.every(function (l) { return shown.indexOf(l) >= 0; }) || merged(car.note, note) === car.note) { same += 1; continue; }
         if ((tries[car.vin] || 0) >= 2 || document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName)) { continue; }
         tries[car.vin] = (tries[car.vin] || 0) + 1;
         say('Lot Analyzer: пишу KBB, ставку и замечания аукциона в заметку Manheim — ' + car.vin + '…');

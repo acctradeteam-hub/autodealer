@@ -44,7 +44,7 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "1.7"            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "1.8"            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -993,7 +993,7 @@ function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: 
  $('instate').textContent=(st.enabled?'Включено':'Выключено')+(st.repo?' · '+st.repo:'')+(st.has_token?' · токен сохранён':' · токена нет')+' · отправлено файлов: '+(st.sent||0)+(st.error?' · ⚠ '+st.error:'')}
 async function loadNotesReport(){try{const all=await (await fetch('/api/notes_report')).json();const e=$('notesstate');if(!e)return;
  const line=(site,r)=>{if(!r)return '';const field=site==='CarMax'?'полей Notes':'машин с кнопкой «Add Note»';
-  return r.note?`Заметки ${site} (${r.at}): ${r.note}`:`Заметки ${site} (${r.at}): на странице ${field} ${r.fields}, машин с KBB в программе здесь ${r.ready}: `+(r.busy?'записываю… ':'')+`записано сейчас ${r.written}, уже было ${r.already}`+(r.busy?` (не уходите с вкладки ${site}, пока идёт запись)`:'')+(r.failed?`, не записалось ${r.failed} — обновите страницу ${site}`:'')};
+  return r.note?`Заметки ${site} (${r.at}): ${r.note}`:`Заметки ${site} (${r.at}): на странице ${field} ${r.fields}, машин, которым есть что вписать (KBB, ставка, прошлые торги), здесь ${r.ready}: `+(r.busy?'записываю… ':'')+`записано сейчас ${r.written}, уже было ${r.already}`+(r.busy?` (не уходите с вкладки ${site}, пока идёт запись)`:'')+(r.failed?`, не записалось ${r.failed} — обновите страницу ${site}`:'')};
  const lines=['CarMax','Manheim'].map(s=>line(s,all[s])).filter(Boolean);
  e.innerHTML=lines.length?lines.map(esc).join('<br>'):'Заметки на аукционах: KBB с датой пишется сам в Notes на открытой странице CarMax (вид «Detailed») и в «Add Note» машин в результатах поиска Manheim';
  e.className='muted'+(['CarMax','Manheim'].some(s=>all[s]&&(all[s].failed||all[s].note))?' bad':'')}catch(e){}}
