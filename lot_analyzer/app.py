@@ -1026,7 +1026,8 @@ document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest
  if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0||!/^https:/.test(a.href)||!hasExt())return;e.preventDefault();openBg(a.href)},true);
 function openKbb(list){const url=laUrl(list),cars=url.split('#la=')[1];if(openBg(url,cars))return;window.open(url,'la='+cars)}
 async function loadLinks(){const r=await fetch('/api/links?'+params());const d=await r.json();
-$('links').innerHTML=d.map(x=>`<a class="btn sec" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
+/* Кнопки аукционов — класс fg: открываются сразу на экране (туда вы и идёте), а не фоновой вкладкой, как лоты. */
+$('links').innerHTML=d.map(x=>`<a class="btn sec fg" href="${esc(x.url)}" target="_blank" rel="noopener" title="${esc(x.kind)}">${esc(x.auction)} ↗</a>`).join('')+
 '<span class="muted" style="align-self:center">затем на каждой вкладке — закладка «💾 Сохранить для анализа»</span>'}
 async function saveLink(){await fetch('/api/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:$('q').value,auction:$('la').value,url:$('lu').value})});loadLinks()}
 let seenFiles='';
