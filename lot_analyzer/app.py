@@ -44,7 +44,7 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "1.8"            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "1.9"            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -995,12 +995,18 @@ openKbb(list);
 $('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
 /* Машины передаются и в адресе (#la=…), и в имени вкладки — на случай, если kbb.com при переадресации потеряет хвост адреса. */
 /* С расширением «Lot Analyzer KBB» ссылки открываются соседней вкладкой в фоне — вы остаётесь в окне программы. */
-const hasExt=()=>document.documentElement.dataset.laExt==='1';
+/* Расширение подключено, только если оно отвечает (pong) — после его обновления старая связь в окне молчит,
+   и тогда ссылки открываются обычной вкладкой, а не «пропадают». */
+let extPong=0;
+window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='pong'){const first=!extPong;extPong=Date.now();if(e.data.v)document.documentElement.dataset.laExtV=e.data.v;if(first)extState()}});
+function pingExt(){window.postMessage({source:'lot-analyzer',type:'ping'},'*');if(extPong&&Date.now()-extPong>4000){extPong=0;extState()}}
+pingExt();setInterval(pingExt,1500);
+const hasExt=()=>extPong>0&&Date.now()-extPong<4000;
 const EXT_V='__EXT_V__',extOld=()=>{const v=document.documentElement.dataset.laExtV||'0';const a=v.split('.').map(Number),b=EXT_V.split('.').map(Number);return a[0]<b[0]||(a[0]===b[0]&&(a[1]||0)<b[1])};
 function extState(){const e=$('extstate');if(!e)return;if(hasExt()&&extOld()){e.className='pill v-bad';e.textContent='расширение устарело ('+(document.documentElement.dataset.laExtV||'1.4')+' → '+EXT_V+'): chrome://extensions → ⟳ у «Lot Analyzer KBB», затем обновите страницы CarMax'}
  else if(hasExt()){e.className='pill v-ok';e.textContent='расширение '+EXT_V+' подключено — ссылки и KBB в фоне'}
  else{e.className='pill v-bad';e.textContent='расширение не подключено — вкладки откроются поверх: обновите его (⟳ на chrome://extensions) и эту страницу'}}
-window.addEventListener('la-ext',extState);setTimeout(extState,800);
+window.addEventListener('la-ext',()=>pingExt());setTimeout(extState,1500);
 function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: '+(st.enabled&&st.status==='включена'?'вкл ✓ ('+st.sent+')':st.enabled?st.status:'выкл');
  $('inboxbtn').className='btn sec jump'+(st.error?' bad':'');if(!$('inrepo').value)$('inrepo').value=st.repo||'';$('inon').checked=!!st.enabled;
  $('instate').textContent=(st.enabled?'Включено':'Выключено')+(st.repo?' · '+st.repo:'')+(st.has_token?' · токен сохранён':' · токена нет')+' · отправлено файлов: '+(st.sent||0)+(st.error?' · ⚠ '+st.error:'')}
@@ -1014,7 +1020,7 @@ async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json(
 async function saveInbox(){const r=await fetch('/api/inbox',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:$('inrepo').value,token:$('intoken').value,enabled:$('inon').checked})});
  const d=await r.json();if(d.error){alert(d.error);return}$('intoken').value='';showInbox(d)}
 loadInbox();setInterval(loadInbox,15000);loadNotesReport();setInterval(loadNotesReport,10000);loadSold();setInterval(loadSold,120000);
-function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',url,cars:cars||''},'*');return true}
+function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',id:Date.now()+'-'+Math.random(),url,cars:cars||''},'*');return true}
 /* «поставить на CarMax» (a.fg) открывается обычно — там вы сами нажимаете «Place bid». */
 document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[target="_blank"]:not(.fg)');
  if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0||!/^https:/.test(a.href)||!hasExt())return;e.preventDefault();openBg(a.href)},true);
