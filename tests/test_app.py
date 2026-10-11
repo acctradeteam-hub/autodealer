@@ -410,3 +410,26 @@ class PastSalesNoteTest(unittest.TestCase):
         # Без KBB и ставки — тоже пишем, если машина уже была на торгах.
         self.assertEqual(lot_note({"seen_before": "был на аукционе 9/28/26 CarMax Chino — продана $10,250"}), "Был: 9/28/26 CarMax Chino — продана $10,250")
         self.assertEqual(strip_own("мой текст\nБыл: 9/28/26 CarMax Chino — продана $10,250"), "мой текст")
+
+
+class CarmaxRunListPdfTest(unittest.TestCase):
+    def test_runlist_pdf_gives_cars_not_results(self):
+        """PDF-список CarMax к торгам — машины в окне, а не «итоги» (иначе они пропадали из списка как проторгованные).
+        Данные выдуманные: настоящие PDF в открытый репозиторий не кладём."""
+        from unittest import mock
+        from lot_analyzer import app, market
+        fake = [market.Result(date="2026-10-10", auction="CarMax", location="Murrieta", lane="A", run="44", year="2008",
+                              vehicle="Honda Accord EX", vin="1HGCP36708A000000", miles="194172",
+                              announcements="Major Engine Defect, Prior Fleet", notes="KBB 3,625$ 10/9/26 | CarMax: Major engine defect",
+                              kbb="3625", mmr="", est_retail="", my_max="", price="", status="", source="x.pdf")]
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "CarMaxList  Murrieta 10:12:2026.pdf"
+        path.write_bytes(b"%PDF-1.4 test")
+        with mock.patch.object(market, "read_results", return_value=fake):
+            cache = app.PageCache()
+            rows = cache.rows(path)
+            self.assertIsNone(cache.kbb(path))                   # в базу итогов не идёт
+        self.assertEqual(len(rows), 1)
+        first = rows[0]
+        self.assertEqual((first["auction"], first["location"], first["lot_number"], first["sale_date"]), ("CarMax", "Murrieta, CA", "A/44", "Oct 12"))
+        self.assertEqual(first["kbb_private_party_usd"], "3625")   # KBB из вашей заметки

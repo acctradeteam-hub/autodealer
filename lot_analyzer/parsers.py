@@ -432,6 +432,42 @@ def parse_page(html: str, source_name: str = "", auction_hint: str = "") -> list
     return rows
 
 
+def rows_from_carmax_runlist(path, recs=None) -> list[dict[str, str]]:
+    """PDF-список CarMax на предстоящие торги («CarMaxList Murrieta 10:12:2026.pdf», печать watch list):
+    машины с дорожкой и номером, VIN, пробегом, объявлениями и вашими заметками (KBB …) — как карточки списка."""
+    import datetime as _dt
+    from pathlib import Path as _Path
+    from .market import read_results
+    from .notes import strip_own
+
+    path = _Path(path)
+    recs = recs if recs is not None else read_results(path)
+    found = re.search(r"(\d{1,2})[^\d](\d{1,2})[^\d](20\d{2})", path.stem)
+    sale = ""
+    if found:
+        try:
+            sale = _dt.date(int(found.group(3)), int(found.group(1)), int(found.group(2))).strftime("%b %-d")
+        except ValueError:
+            sale = ""
+    stamp = _dt.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for r in recs:
+        card = {"vin": r.vin, "stock": "", "lot_url": "", "photo": "x", "lane_run": f"{r.lane}/{r.run}".strip("/"),
+                "location": f"{r.location}, CA" if r.location and "," not in r.location else r.location,
+                "title": f"{r.year} {r.vehicle}".strip(), "miles": re.sub(r"\D", "", r.miles or ""), "drive": "",
+                "announcements": r.announcements, "notes": strip_own((r.notes or "").replace(" | ", "\n")),
+                "status": "", "start": sale, "your_bid": ""}
+        row = empty_row()
+        row["source_file"], row["parsed_at"] = path.name, stamp
+        notes = sites_text.row_from_carmax_card(row, card) + _vin_notes(row)
+        row["auction"] = "CarMax"
+        row["photo_main_url"], row["no_photos"] = "", ""             # в PDF фото нет — это не «без фото» на сайте
+        notes.append("из PDF-списка CarMax: фото и ссылки на лот нет — откройте лот на сайте по VIN")
+        row["needs_review"] = clean_cell("; ".join(notes), 600)
+        rows.append(row)
+    return rows
+
+
 # ---------------------------------------------------------------- частные помощники
 
 

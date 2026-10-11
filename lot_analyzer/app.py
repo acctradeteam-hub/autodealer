@@ -131,7 +131,14 @@ class PageCache:
         try:
             record = None
             if results.is_results_file(path):
-                rows, record = [], {"results": results.read_file(path)}     # итоги торгов — не лоты
+                recs = results.read_file(path)
+                if path.suffix.lower() == ".pdf" and recs and all(r["outcome"] == "нет итога" for r in recs):
+                    # PDF-список CarMax на предстоящие торги (итогов нет) — это машины к торгам, а не итоги:
+                    # иначе они попали бы в базу как «торги прошли» и пропали бы из списка.
+                    from .parsers import rows_from_carmax_runlist
+                    rows = rows_from_carmax_runlist(path)
+                else:
+                    rows, record = [], {"results": recs}     # итоги торгов — не лоты
             elif path.suffix.lower() == ".csv":
                 rows = manheim_csv.read_export(path)
             else:
@@ -218,6 +225,8 @@ def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> N
     now = now or dt.datetime.now()
     history_by_vin: dict[str, str] = {}
     for rec in results.load_history().values():
+        if rec.get("outcome") == "нет итога":      # запись без итога (список к торгам) — не доказательство, что торги прошли
+            continue
         if rec.get("vin") and rec.get("date", "") > history_by_vin.get(rec["vin"], ""):
             history_by_vin[rec["vin"]] = rec["date"]
     for row in rows:
@@ -304,8 +313,12 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
     """Итоги торгов: копит их в data/auction_results.csv, пишет «Итог торгов» в строки лотов
     и возвращает настройки с «рынком» площадок, у которых набралось достаточно своих продаж."""
     history = results.load_history()
+    # Раньше PDF-список CarMax к торгам ошибочно читался как итоги («нет итога») — такие записи убираем.
+    stale = [k for k, r in history.items() if r.get("outcome") == "нет итога" and str(r.get("source", "")).lower().endswith(".pdf")]
+    for k in stale:
+        del history[k]
     new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])] + _sold_from_lists(rows)
-    changed = results.merge(history, new)
+    changed = results.merge(history, new) or bool(stale)
     # KBB, полученный кнопкой «KBB для проданных» (страница KBB с VIN проданной машины), — к её итогу.
     condition = (costs.get("kbb_page") or {}).get("condition", "good")
     for p in pages:
