@@ -160,6 +160,26 @@ def is_carmax_results(path: Path) -> bool:
             or _is_carmax_table(head))
 
 
+_RUNLIST_CACHE: dict = {}
+
+
+def is_runlist_pdf(path: Path) -> bool:
+    """PDF-список CarMax к торгам (печать watch list): машины без единого итога. Это список машин, а не итоги."""
+    if path.suffix.lower() != ".pdf" or not is_carmax_results(path):
+        return False
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except OSError:
+        return False
+    if key not in _RUNLIST_CACHE:
+        try:
+            recs = read_carmax(path)
+        except Exception:  # битый PDF
+            recs = []
+        _RUNLIST_CACHE[key] = bool(recs) and all(r["outcome"] == "нет итога" for r in recs)
+    return _RUNLIST_CACHE[key]
+
+
 def is_results_file(path: Path) -> bool:
     return is_lane_csv(path) or is_manheim_lanes_csv(path) or is_postsale_pdf(path) or is_carmax_results(path)
 

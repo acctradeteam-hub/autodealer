@@ -1,6 +1,7 @@
 """Прошёл ли аукцион лота: чтобы в окне были только машины, которые ещё можно купить.
 
-Правило: аукцион с днём торгов (CarMax, Manheim) — прошёл после 12:00 в этот день; онлайн-лот с точным
+Правило: аукцион с днём торгов (CarMax, Manheim) — прошёл, когда кончился день торгов (в 23:59): весь день торгов
+список, KBB и заметки остаются в окне — для сверки с итогами; онлайн-лот с точным
 временем окончания (ACV, ADESA, Manheim Timed) — прошёл, когда это время наступило. Время из списка
 бывает в виде обратного отсчёта («16:48:07», «осталось …», «3 days») — тогда от времени сохранения файла.
 ACV «Make Offer» — торги прошли, но машину ещё можно купить: такие не скрываются.
@@ -12,7 +13,7 @@ import datetime as dt
 import re
 
 MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
-NOON = dt.time(12, 0)
+NOON = dt.time(23, 59)          # конец дня торгов (имя прежнее: раньше было 12:00)
 
 
 def _year_for(month: int, day: int, saved: dt.datetime) -> int:
@@ -96,5 +97,5 @@ def passed(row: dict, saved: dt.datetime, now: dt.datetime | None = None) -> str
         return "торги закончились"
     end, exact = ends_at(row.get("sale_date", ""), saved)
     if end and now >= end:
-        return f"торги {end.month}/{end.day} прошли" + ("" if exact else " (после 12:00 дня торгов)")
+        return f"торги {end.month}/{end.day} прошли" + ("" if exact else " (день торгов закончился)")
     return ""

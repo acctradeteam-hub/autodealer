@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs
 from .normalize import parse_money
 from .inspection import render_html
-from . import analytics, inbox, kbb_page, schedule, kbb_site, manheim_csv, notes, popular, results
+from . import analytics, inbox, kbb_page, review, schedule, kbb_site, manheim_csv, notes, popular, results
 from .pages import read_page
 from .parsers import parse_page
 from .paths import DATA_DIR
@@ -194,7 +194,8 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
                 continue
             # Итоги торгов — за 30 дней, что бы ни стояло в «Файлы за, часов»: программу могли открыть через день-два.
             when = saved_time(path)
-            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path)):
+            # (PDF-список к торгам — не итоги: он свежий, только пока в пределах «Файлы за, часов», как страница закладки.)
+            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path) and not results.is_runlist_pdf(path)):
                 continue
             if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)
                     or results.is_results_file(path)) and not is_own_window(path):
@@ -221,7 +222,7 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
 
 def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> None:
     """row["passed"] — почему аукцион лота уже прошёл (окно такие по умолчанию скрывает): дата торгов в прошлом
-    (день торгов — после 12:00) или итог этой машины уже есть в базе после сохранения списка."""
+    (день торгов закончился) или итог этой машины уже есть в базе после сохранения списка."""
     now = now or dt.datetime.now()
     history_by_vin: dict[str, str] = {}
     for rec in results.load_history().values():
@@ -457,6 +458,10 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     costs = attach_results(rows, pages, cache, costs)
     lot_status_notes(rows)
     mark_passed(rows)
+    try:
+        review.remember(rows)                       # прогноз до торгов — для «Разбора торгов» после них
+    except OSError:
+        pass
     # Машинам без KBB — предварительная цена продажи по вашей базе (KBB ÷ MMR той же модели), а не MMR × 1.3.
     apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs))      # предварительный KBB — по вашей базе
     if max_bid:                              # дороже своего бюджета — не показываем
@@ -709,6 +714,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages]).encode("utf-8"))
+            elif url.path == "/review":              # разбор торгов: наш прогноз ↔ итоги
+                search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")   # свежие итоги — в базу
+                self._send(review.render(results.load_history()).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/analytics":           # своя база: KBB, итоги торгов, доли по площадкам и моделям
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 search_rows(pages, cache, load_costs(costs_path), "")      # свежие файлы — в базу
@@ -846,7 +854,7 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
-<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
 <label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
@@ -937,7 +945,7 @@ if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${p===place?' on':''}" onclick="setPlace(this.dataset.p)" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
  `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`+
- `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов — после 12:00), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
+ `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов закончился), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде'],['profit','прибыль ↓ (самые интересные сверху)'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+

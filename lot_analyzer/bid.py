@@ -783,7 +783,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         if estimator is not None and not (parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))):
             year = int(row["year"]) if str(row.get("year", "")).isdigit() else None
             miles = parse_money(row.get("odometer_miles"))
-            est = estimator.estimate(row.get("make", ""), row.get("model", ""), year, miles, vin=row.get("vin", ""))
+            est = estimator.estimate(row.get("make", ""), f"{row.get('model', '')} {row.get('trim', '')}".strip(), year, miles, vin=row.get("vin", ""))
             market_based = est is not None and est.source.startswith("по рынку")
             if est and (not market_based or (cfg.get("use_market_comps", True) and est.n >= int(cfg.get("min_market_comps", 5)))):
                 row["kbb_estimate_usd"] = f"{est.value:.0f}"

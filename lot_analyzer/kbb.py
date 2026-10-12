@@ -47,11 +47,22 @@ class Estimate:
 
 
 def model_key(make: str, model: str) -> tuple[str, str]:
-    """(марка, модель) без комплектации: «Model 3» и «Model X» — разные модели, «CR-V» = «CRV» = «cr v»."""
+    """(марка, модель) без комплектации: «Model 3» и «Model X» — разные модели, «CR-V» = «CRV».
+    Тип привода — часть модели: «RAV4 EV», «Accord Plug-in Hybrid», «Camry Hybrid» — не обычные RAV4 / Accord / Camry."""
+    import re as _re
     from .normalize import split_model
 
-    base, _ = split_model((model or "").replace("-", " "))
-    return (make or "").lower().strip(), base.lower().replace(" ", "").replace("-", "")
+    text = model or ""
+    base, _ = split_model(text)              # «CR-V EX» → «CR-V» (дефис не рвёт модель)
+    kinds = r"\b(ev|electric|hybrid|plug[\s-]?in|phev|prime|energi)\b"
+    core = _re.sub(r"[^a-z0-9]", "", _re.sub(kinds, "", base, flags=_re.I).lower())
+    if _re.search(r"\b(plug[\s-]?in|phev|prime|energi)\b", text, _re.I):
+        core += "-plugin"
+    elif _re.search(r"\b(ev|electric)\b", text, _re.I):
+        core += "-ev"
+    elif _re.search(r"\bhybrid\b", text, _re.I):
+        core += "-hybrid"
+    return (make or "").lower().strip(), core
 
 
 def _split_vehicle(vehicle: str) -> tuple[str, str]:

@@ -190,7 +190,8 @@ class PassedTest(unittest.TestCase):
         saved = dt.datetime(2026, 10, 4, 15, 52)                          # список сохранён в воскресенье
         monday_morning, monday_noon = dt.datetime(2026, 10, 5, 11, 0), dt.datetime(2026, 10, 5, 12, 30)
         self.assertEqual(passed({"sale_date": "Oct 5, 9:00am PT"}, saved, monday_morning), "")
-        self.assertTrue(passed({"sale_date": "Oct 5, 9:00am PT"}, saved, monday_noon))          # понедельник после 12:00
+        self.assertEqual(passed({"sale_date": "Oct 5, 9:00am PT"}, saved, monday_noon), "")      # день торгов — весь день в окне (сверка)
+        self.assertTrue(passed({"sale_date": "Oct 5, 9:00am PT"}, saved, dt.datetime(2026, 10, 6, 0, 5)))   # на следующий день — прошли
         self.assertEqual(passed({"sale_date": "Oct 6, 9:00am PT"}, saved, monday_noon), "")      # завтрашние — остаются
         self.assertTrue(passed({"sale_date": "Ends Mon 10/05 11:00 a.m."}, saved, monday_morning.replace(hour=11, minute=30)))
         self.assertEqual(passed({"sale_date": "Make Offer", "lot_status": "Make Offer"}, saved, monday_noon), "")
@@ -433,3 +434,25 @@ class CarmaxRunListPdfTest(unittest.TestCase):
         first = rows[0]
         self.assertEqual((first["auction"], first["location"], first["lot_number"], first["sale_date"]), ("CarMax", "Murrieta, CA", "A/44", "Oct 12"))
         self.assertEqual(first["kbb_private_party_usd"], "3625")   # KBB из вашей заметки
+
+
+class ReviewTest(unittest.TestCase):
+    def test_forecast_frozen_and_compared_with_results(self):
+        import datetime as dt
+        from lot_analyzer import review
+        review.FORECASTS_PATH.unlink(missing_ok=True)
+        row = {"vin": "1HGCM82633A000001", "auction": "CarMax", "location": "Oceanside, CA", "lot_number": "A/1", "year": "2014",
+               "make": "Honda", "model": "Accord", "sale_date": "Oct 5, 9:00am PT", "_saved": dt.datetime(2026, 10, 4, 12).timestamp(),
+               "kbb_private_party_usd": "10000", "market_estimate_usd": "8000", "calc_max_bid_usd": "8500", "calc_profit_market_usd": "1000",
+               "calc_verdict": "МОЖНО до $8,500; …", "my_proxy_usd": "8200"}
+        self.assertTrue(review.remember([row], now=dt.datetime(2026, 10, 4, 20)))
+        self.assertFalse(review.remember([{**row, "market_estimate_usd": "9999"}], now=dt.datetime(2026, 10, 6, 9)))   # после торгов — заморожен
+        history = {"k": {"vin": row["vin"], "date": "2026-10-05", "auction": "CarMax Oceanside", "outcome": "Sold", "price": "7600"}}
+        (block,) = review.compare(review.load(), history)
+        self.assertEqual((block["place"], block["day"], block["sold"]), ("CarMax Oceanside", "2026-10-05", 1))
+        self.assertAlmostEqual(block["err_median"], 0.05)
+        (f, r, profit, _), = block["could"]
+        self.assertEqual(profit, 1400)                          # 1000 + (8000 − 7600)
+        (_, _, enough, _), = block["bids"]
+        self.assertTrue(enough)
+        self.assertIn("Разбор торгов", review.render(history))
