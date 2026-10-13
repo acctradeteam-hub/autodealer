@@ -456,3 +456,17 @@ class ReviewTest(unittest.TestCase):
         (_, _, enough, _), = block["bids"]
         self.assertTrue(enough)
         self.assertIn("Разбор торгов", review.render(history))
+
+
+class CarmaxSiteCsvTest(unittest.TestCase):
+    def test_auction_site_export(self):
+        from lot_analyzer import results
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "carmax_auction_results_Oceanside__Murietta_10122026.csv"
+        path.write_text('Auction_Site,Lane,Lot,Year,Make,Model,Mileage,Status,Price,VIN\n'
+                        '"Murrieta","A","1","2021","Nissan","Sentra S","49,162","Sold","$8,200","3N1AB8BV9MY000001"\n'
+                        '"Murietta","B","7","2015","Honda","Civic LX","90,000","Sold (You Win)","$6,100","19XFB2F50FE000002"\n', encoding="utf-8")
+        self.assertTrue(results.is_results_file(path))
+        a, b = results.read_file(path)
+        self.assertEqual((a["auction"], a["date"], a["lot"], a["price"]), ("CarMax Murrieta", "2026-10-12", "A/1", "8200"))
+        self.assertEqual((b["auction"], b["outcome"], b["remarks"]), ("CarMax Murrieta", "Sold", "купили вы"))

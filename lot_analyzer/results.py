@@ -181,12 +181,106 @@ def is_runlist_pdf(path: Path) -> bool:
 
 
 def is_results_file(path: Path) -> bool:
-    return is_lane_csv(path) or is_manheim_lanes_csv(path) or is_postsale_pdf(path) or is_carmax_results(path)
+    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path)
+            or is_postsale_pdf(path) or is_carmax_results(path))
 
 
 CARMAX_TABLE_HEAD = "Location,Lane,Lot #,Year/Make/Model,VIN"
 # Колонки, по которым узнаём таблицу итогов CarMax, в любом порядке (CarMax добавляет новые, например «Date»).
 CARMAX_TABLE_COLUMNS = {"Location", "Lane", "Lot #", "Year/Make/Model", "VIN", "Status", "Sale Price (USD)"}
+
+
+# Ещё одна выгрузка CarMax: «Auction_Site, Lane, Lot, Year, Make, Model, Mileage, Status, Price, VIN».
+CARMAX_SITE_COLUMNS = {"Auction_Site", "Lane", "Lot", "Year", "Make", "Model", "Status", "Price", "VIN"}
+
+
+def _header(head: str) -> set[str]:
+    first = head.lstrip("\ufeff").splitlines()[0] if head.strip() else ""
+    return {c.strip().strip('"') for c in next(csv.reader([first]), [])}
+
+
+def _date_from_name(path: Path) -> str:
+    found = re.search(r"(\d{1,2})[^\d]?(\d{1,2})[^\d]?(20\d{2})(?!\d)", path.stem)
+    if found:
+        try:
+            return dt.date(int(found.group(3)), int(found.group(1)), int(found.group(2))).isoformat()
+        except ValueError:
+            pass
+    return dt.date.fromtimestamp(path.stat().st_mtime).isoformat()
+
+
+def read_carmax_site_table(path: Path) -> list[dict]:
+    from .normalize import split_model
+
+    date = _date_from_name(path)
+    out = []
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for r in csv.DictReader(handle):
+            place = (r.get("Auction_Site") or "").strip().replace("Murietta", "Murrieta")
+            status = (r.get("Status") or "").strip()
+            won = bool(re.search(r"you win|won", status, re.I))
+            outcome = "Sold" if won or status.lower().startswith("sold") else {"no sale": "No Sale"}.get(status.lower(), status or "нет итога")
+            model, trim = split_model((r.get("Model") or "").replace("(no trim)", "").strip())
+            rec = {"date": date, "auction": f"CarMax {place}".strip(), "code": "", "lot": f"{r.get('Lane', '')}/{r.get('Lot', '')}".strip("/"),
+                   "vin": (r.get("VIN") or "").strip().upper(), "year": (r.get("Year") or "").strip(), "make": (r.get("Make") or "").strip(),
+                   "model": f"{model} {trim}".strip(), "miles": re.sub(r"\D", "", r.get("Mileage") or ""), "cr": "", "mmr": "",
+                   "outcome": outcome, "price": str(int(_num(r.get("Price")) or 0) or ""), "source": path.name,
+                   "remarks": "купили вы" if won else "", "kbb": ""}
+            rec["key"] = _key(rec)
+            out.append(rec)
+    return out
+
+
+def is_velocicast_page(path: Path) -> bool:
+    if path.suffix.lower() not in (".html", ".htm"):
+        return False
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(900).decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return "velocicast" in head.lower() and "saved-by: lot_analyzer" in head
+
+
+def read_velocicast_page(path: Path) -> list[dict]:
+    """Страница CarMax Velocicast (идут или прошли торги), сохранённая закладкой: по дорожкам «Lane A - CarMax Murrieta»
+    — номер, машина, VIN, пробег, статус (Sold / No Sale / Early Bid) и цена. Дата — когда сохранили страницу."""
+    from bs4 import BeautifulSoup
+    from .normalize import split_model
+
+    html = path.read_text(encoding="utf-8", errors="replace")
+    saved = re.search(r"saved-at: (\d{4}-\d{2}-\d{2})T(\d{2})", html[:900])
+    date = saved.group(1) if saved else dt.date.fromtimestamp(path.stat().st_mtime).isoformat()
+    soup = BeautifulSoup(html, "lxml")
+    out = []
+    for panel in soup.select(".lane-panel-container"):
+        name = re.search(r"Lane (\w+) - (CarMax [A-Za-z .]+?)(?= #| \||\s{2}|$)", panel.get_text(" ", strip=True))
+        lane, place = (name.group(1), name.group(2).strip()) if name else ("", "CarMax")
+        for tr in panel.select("tbody.vc-tbdy-vehlist tr"):
+            title = squeeze_text(tr.select_one(".item-info-row div").get_text(" ", strip=True)) if tr.select_one(".item-info-row div") else ""
+            head = re.match(r"#(\d+)\s*-\s*(\d{4})\s+(\S+)\s+(.*)", title)
+            vin_el = tr.select_one(".item-vin")
+            vin = re.search(r"[A-HJ-NPR-Z0-9]{17}", vin_el.parent.get_text(" ", strip=True) if vin_el else "")
+            status = squeeze_text(tr.select_one(".badge-row").get_text(" ", strip=True)) if tr.select_one(".badge-row") else ""
+            price = _num((tr.select_one(".price-row") or tr).get_text(" ", strip=True).split("$")[-1]) if "$" in tr.get_text() else None
+            miles = re.search(r"([\d,]+)\s*M\b", tr.select_one(".mileage-row").get_text(" ", strip=True)) if tr.select_one(".mileage-row") else None
+            if not head:
+                continue
+            model, trim = split_model(head.group(4).replace("(no trim)", "").strip())
+            won = bool(re.search(r"you win|won", status, re.I))
+            outcome = "Sold" if won else {"sold": "Sold", "no sale": "No Sale", "early bid": "Early Bid"}.get(status.lower(), status or "нет итога")
+            rec = {"date": date, "auction": place, "code": "", "lot": f"{lane}/{head.group(1)}".strip("/"),
+                   "vin": vin.group(0) if vin else "", "year": head.group(2), "make": head.group(3), "model": f"{model} {trim}".strip(),
+                   "miles": miles.group(1).replace(",", "") if miles else "", "cr": "", "mmr": "", "outcome": outcome,
+                   "price": str(int(price)) if price and outcome in ("Sold", "Early Bid") else "", "source": path.name,
+                   "remarks": "купили вы" if won else "", "kbb": ""}
+            rec["key"] = _key(rec)
+            out.append(rec)
+    return out
+
+
+def squeeze_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 def _is_carmax_table(head: str) -> bool:
@@ -243,7 +337,21 @@ def read_carmax(path: Path) -> list[dict]:
     return out
 
 
+def is_carmax_site_csv(path: Path) -> bool:
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            return CARMAX_SITE_COLUMNS <= _header(handle.read(2000))
+    except OSError:
+        return False
+
+
 def read_file(path: Path) -> list[dict]:
+    if is_carmax_site_csv(path):
+        return read_carmax_site_table(path)
+    if is_velocicast_page(path):
+        return read_velocicast_page(path)
     if is_manheim_lanes_csv(path):
         return read_manheim_lanes_csv(path)
     if is_lane_csv(path):
