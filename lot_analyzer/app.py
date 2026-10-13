@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import datetime as dt
 import json
 import re
@@ -44,7 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "1.9"            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "1.9"
+PROGRAM_VERSION = "2026-10-13"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -638,7 +640,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             num = lambda key: int(q[key]) if q.get(key, "").isdigit() else None
             if url.path == "/":
-                self._send(PAGE.replace("__EXT_V__", EXTENSION_VERSION).encode("utf-8"), "text/html; charset=utf-8")
+                self._send(PAGE.replace("__EXT_V__", EXTENSION_VERSION).replace("__PROG_V__", PROGRAM_VERSION).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/rows":
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
@@ -714,6 +716,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages]).encode("utf-8"))
+            elif url.path == "/api/version":
+                self._send(json.dumps({"version": PROGRAM_VERSION}).encode("utf-8"))
             elif url.path == "/review":              # разбор торгов: наш прогноз ↔ итоги
                 search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")   # свежие итоги — в базу
                 self._send(review.render(results.load_history()).encode("utf-8"), "text/html; charset=utf-8")
@@ -748,6 +752,13 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(b'{"error":"not found"}', status=404)
 
         def do_POST(self) -> None:
+            if urlparse(self.path).path == "/api/shutdown":   # новая версия при запуске закрывает эту (только с заголовком X-LA)
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                self._send(b'{"ok":true}')
+                threading.Thread(target=lambda: (time.sleep(0.3), os._exit(0)), daemon=True).start()
+                return
             if urlparse(self.path).path == "/api/notes_report":     # расширение: что оно сделало с Notes на CarMax
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -802,6 +813,67 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
     return Handler
 
 
+def _running_version(port: int) -> str | None:
+    """Версия программы, уже работающей на этом порту: «2026-10-13», «старая» (окно есть, версии нет) или None (не наша)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=3) as resp:
+            return json.loads(resp.read() or b"{}").get("version") or "старая"
+    except Exception:  # старые версии не знают /api/version
+        pass
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as resp:
+            return "старая" if "Одно окно" in resp.read(4000).decode("utf-8", "replace") else None
+    except Exception:
+        return None
+
+
+def _stop_running(port: int) -> None:
+    """Закрывает уже запущенную программу на порту: новые версии — по /api/shutdown, старые — по номеру процесса."""
+    import subprocess
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", data=b"{}", method="POST", headers={"X-LA": "1"})
+        urllib.request.urlopen(req, timeout=3).read()
+        return
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5).stdout
+        for pid in {int(x) for x in out.split() if x.strip().isdigit()}:
+            if pid != os.getpid():
+                os.kill(pid, 15)
+    except Exception:
+        pass
+
+
+def _take_port(port: int, handler, open_browser: bool):
+    """Занимает порт программы. Если там уже работает эта же версия — открывает её окно и выходит (None);
+    если старая — закрывает её и запускается вместо неё (иначе браузер показывал бы старое окно)."""
+    try:
+        return ThreadingHTTPServer(("127.0.0.1", port), handler)
+    except OSError:
+        pass
+    running = _running_version(port)
+    address = f"http://127.0.0.1:{port}"
+    if running == PROGRAM_VERSION:
+        print(f"Программа этой версии ({PROGRAM_VERSION}) уже запущена: {address}")
+        if open_browser:
+            webbrowser.open(address)
+        return None
+    if running is None:
+        raise SystemExit(f"Порт {port} занят другой программой — закройте её или запустите с --port 8766")
+    print(f"Уже запущена {'старая версия программы' if running == 'старая' else 'версия ' + running} — закрываю её и запускаю {PROGRAM_VERSION}…")
+    _stop_running(port)
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", port), handler)
+        except OSError:
+            continue
+    raise SystemExit("Не удалось закрыть старую версию программы: закройте её окно Терминала (или перезагрузите компьютер) и запустите снова.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lot_analyzer.app", description="«Одно окно»: одна машина — все аукционы.")
     parser.add_argument("--watch", action="append", default=[], help="папка с сохранёнными страницами (по умолчанию «Загрузки» и samples/)")
@@ -814,7 +886,9 @@ def main(argv: list[str] | None = None) -> int:
     from . import paths
     for line in paths.migrate():
         print("перенесено в", paths.DATA_DIR, ":", line)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(folders, Path(args.costs), PageCache()))
+    server = _take_port(args.port, make_handler(folders, Path(args.costs), PageCache()), not args.no_browser)
+    if server is None:
+        return 0
     # Отправка Claude (если включена в окне): новые файлы из «Загрузок» — в ваш закрытый репозиторий GitHub.
     inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")])
     address = f"http://127.0.0.1:{args.port}"
@@ -854,7 +928,7 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
-<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
 <label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
