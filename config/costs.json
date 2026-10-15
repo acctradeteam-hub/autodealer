@@ -1,7 +1,7 @@
 {
   "_about": "Настройки расчёта максимальной ставки. Все суммы в долларах. Поля, начинающиеся с «_», — пояснения, программа их не читает.",
 
-  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Civic Hybrid — отдельной строкой, Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Honda Clarity, Honda Insight; Lexus CT 200h, RX (и 450h), IS, ES; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года.",
+  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Civic Hybrid — отдельной строкой, Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Highlander (и Hybrid); Mazda6; Honda Clarity, Honda Insight; Lexus CT 200h, RX (и 450h), IS, ES, GS; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года.",
   "_stats_models": "Кроме популярных — что ещё собирать в свою статистику (кнопка «KBB для проданных»): Tesla Model 3 2022–2023, все комплектации.",
   "stats_models": [{"make": "Tesla", "model": "^model\\s*3\\b", "years": [2022, 2023]}],
 
@@ -15,13 +15,16 @@
     {"make": "Honda", "model": "^cr-?v"},
     {"make": "Toyota", "model": "^rav\\s*4"},
     {"make": "Mazda", "model": "^cx-?5\\b"},
+    {"make": "Mazda", "model": "^(mazda\\s*)?6\\b"},
     {"make": "Toyota", "model": "^prius(?!\\s*[cv]\\b)"},
+    {"make": "Toyota", "model": "^highlander"},
     {"make": "Honda", "model": "^clarity\\b"},
     {"make": "Honda", "model": "^insight\\b"},
     {"make": "Lexus", "model": "^ct\\s*\\d*h?\\b"},
     {"make": "Lexus", "model": "^rx\\s*\\d*h?\\b"},
     {"make": "Lexus", "model": "^is\\s*\\d*\\b"},
     {"make": "Lexus", "model": "^es\\s*\\d*h?\\b"},
+    {"make": "Lexus", "model": "^gs\\s*\\d*[ht]?\\b"},
     {"make": "Tesla", "model": "^model\\s*3\\b(?!.*(long range|performance|awd|dual motor))", "years": [2022]}
   ],
 

@@ -18,13 +18,16 @@ DEFAULT = [
     {"make": "Honda", "model": r"^cr-?v"},
     {"make": "Toyota", "model": r"^rav\s*4"},
     {"make": "Mazda", "model": r"^cx-?5\b"},
+    {"make": "Mazda", "model": r"^(mazda\s*)?6\b"},
     {"make": "Toyota", "model": r"^prius(?!\s*[cv]\b)"},
+    {"make": "Toyota", "model": r"^highlander"},
     {"make": "Honda", "model": r"^clarity\b"},
     {"make": "Honda", "model": r"^insight\b"},
     {"make": "Lexus", "model": r"^ct\s*\d*h?\b"},
     {"make": "Lexus", "model": r"^rx\s*\d*h?\b"},
     {"make": "Lexus", "model": r"^is\s*\d*\b"},
     {"make": "Lexus", "model": r"^es\s*\d*h?\b"},
+    {"make": "Lexus", "model": r"^gs\s*\d*[ht]?\b"},
     {"make": "Tesla", "model": r"^model\s*3\b(?!.*(long range|performance|awd|dual motor))", "years": [2022]},
 ]
 

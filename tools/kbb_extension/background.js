@@ -3,6 +3,26 @@
      запоминает машины автопилота — вкладка спросит их сама;
    — закрывает вкладку kbb.com, когда автопилот закончил (просит сама вкладка);
    — берёт у окна программы (только 127.0.0.1:8765, ваш компьютер) тексты заметок для CarMax и Manheim. */
+var favQueue = [];
+var favTimer = null;
+function flushFavorites() {
+  var batch = favQueue.splice(0, favQueue.length);
+  if (!batch.length) { return; }
+  fetch('http://127.0.0.1:8765/api/favorite', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cars: batch.map(function (b) { return b.car; }) }) })
+    .then(function (r) { return r.json(); })
+    .then(function (answer) {
+      if (answer.url) {
+        var tab = batch[0].tab;
+        chrome.tabs.create({ url: answer.url, active: false, index: tab.index + 1, openerTabId: tab.id }, function (t) {
+          if (t) { var item = {}; item['cars-' + t.id] = answer.url.split('#la=')[1] || ''; chrome.storage.session.set(item); }
+        });
+      }
+      batch.forEach(function (b) { try { b.reply({ ok: true, queued: !!answer.need_kbb }); } catch (e) { /* вкладку закрыли */ } });
+    })
+    .catch(function () { batch.forEach(function (b) { try { b.reply({ ok: false }); } catch (e) { /* вкладку закрыли */ } }); });
+}
+
 chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   if (msg && msg.type === 'open-bg' && sender.tab && /^http:\/\/127\.0\.0\.1:8765\//.test(sender.url || '') && /^https:\/\//.test(msg.url || '')) {
     chrome.tabs.create({ url: msg.url, active: false, index: sender.tab.index + 1, openerTabId: sender.tab.id }, function (tab) {
@@ -23,6 +43,14 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
     fetch('http://127.0.0.1:8765/api/notes_report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msg.report || {}) })
       .catch(function () {});
     return false;
+  }
+  if (msg && msg.type === 'favorite' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
+    /* Звёздочки за пару секунд — одной пачкой: программа запоминает машины и даёт адрес KBB-автопилота для тех,
+       у кого KBB ещё нет; вкладка kbb.com открывается в фоне одна на всю пачку. */
+    favQueue.push({ car: msg.car, reply: reply, tab: sender.tab });
+    clearTimeout(favTimer);
+    favTimer = setTimeout(flushFavorites, 2500);
+    return true;
   }
   if (msg && msg.type === 'notes') {
     fetch('http://127.0.0.1:8765/api/notes', { cache: 'no-store' })

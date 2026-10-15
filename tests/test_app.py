@@ -470,3 +470,20 @@ class CarmaxSiteCsvTest(unittest.TestCase):
         a, b = results.read_file(path)
         self.assertEqual((a["auction"], a["date"], a["lot"], a["price"]), ("CarMax Murrieta", "2026-10-12", "A/1", "8200"))
         self.assertEqual((b["auction"], b["outcome"], b["remarks"]), ("CarMax Murrieta", "Sold", "купили вы"))
+
+
+class FavoritesTest(unittest.TestCase):
+    def test_star_on_carmax_adds_car_and_asks_kbb(self):
+        from lot_analyzer import app
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, load_costs
+        app.FAVORITES_PATH.unlink(missing_ok=True)
+        costs = load_costs(DEFAULT_COSTS_PATH)
+        answer = app.add_favorites([{"vin": "1HGCR2F35FA000001", "title": "2015 Honda Accord LX", "miles": "120,500",
+                                     "lane_run": "A/5", "location": "Murrieta, CA", "stock": "123456", "start": "Oct 20, 9:00am PT"},
+                                    {"vin": "1HGCR2F35FA000002", "title": "2015 Honda Accord LX", "miles": "120,500", "notes": "KBB 9,100$ 10/14/26"}], costs)
+        self.assertEqual((answer["added"], answer["need_kbb"]), (2, 1))           # у второй KBB уже в заметке
+        self.assertIn("kbb.com/honda/accord/2015", answer["url"])
+        rows = {r["vin"]: r for r in app.favorite_rows(set())}
+        self.assertEqual(rows["1HGCR2F35FA000001"]["lot_number"], "A/5")
+        self.assertEqual(rows["1HGCR2F35FA000002"]["kbb_private_party_usd"], "9100")
+        app.FAVORITES_PATH.unlink(missing_ok=True)
