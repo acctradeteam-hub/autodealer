@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.0"
-PROGRAM_VERSION = "2026-10-15"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-15.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -720,6 +720,15 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
                                    only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
+                # Фильтр «Major-дефекты»: только CarMax, по замечаниям аукциона (двигатель / коробка / оба / любой из двух).
+                defect = q.get("defect", "")
+                if defect in ("engine", "trans", "both", "any"):
+                    def has(r: dict, what: str) -> bool:
+                        return bool(re.search(rf"major\s+{what}\w*\s+defect", f"{r.get('auction_notes', '')} {r.get('defects', '')}", re.I))
+                    want = {"engine": lambda r: has(r, "engine"), "trans": lambda r: has(r, "transmission"),
+                            "both": lambda r: has(r, "engine") and has(r, "transmission"),
+                            "any": lambda r: has(r, "engine") or has(r, "transmission")}[defect]
+                    rows = [r for r in rows if r.get("auction") == "CarMax" and want(r)]
                 passed_total = sum(1 for r in rows if r.get("passed"))
                 if q.get("passed") != "1":       # прошедшие торги — скрыты (галочка «показать прошедшие»)
                     rows = [r for r in rows if not r.get("passed")]
@@ -1062,12 +1071,15 @@ function setPicked(on){try{localStorage.setItem('la-picked',on?'1':'')}catch(e){
 let showPassed=false;try{showPassed=localStorage.getItem('la-passed')==='1'}catch(e){}
 /* Сортировка списка: '' — по выгоде (как раньше), 'market' — средняя цена покупки на аукционе по возрастанию, 'market_desc' — по убыванию. */
 let sortBy='';try{sortBy=localStorage.getItem('la-sort')||''}catch(e){}
+/* Фильтр «Major-дефекты» (только CarMax): '' — выкл, engine, trans, both — оба сразу, any — любой из двух. */
+let defectBy='';try{defectBy=localStorage.getItem('la-defect')||''}catch(e){}
+function setDefect(v){defectBy=v;try{localStorage.setItem('la-defect',v)}catch(e){}refresh()}
 function setSort(v){sortBy=v;try{localStorage.setItem('la-sort',v)}catch(e){}refresh()}
 function sortHead(){setSort(sortBy==='market'?'market_desc':'market')}
 function sortProfit(){setSort(sortBy==='profit'?'profit_asc':'profit')}
 const SORT_NOTE={market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};
 function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
-const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -1102,6 +1114,7 @@ $('places').innerHTML=`<span class="muted">Площадка:</span> <button type
  `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов закончился), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
+ `<div class="sortbar" style="margin:6px 0"><span class="muted" title="Только машины CarMax с такими замечаниями аукциона">Major-дефекты (CarMax):</span> `+[['','выкл'],['engine','двигатель'],['trans','коробка'],['both','двигатель + коробка'],['any','любой из двух']].map(([v,t])=>`<button type="button" class="tab${defectBy===v?' on':''}" onclick="setDefect('${v}')">${t}</button>`).join('')+`</div>`+
  `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде'],['profit','прибыль ↓ (самые интересные сверху)'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${SORT_NOTE[sortBy]||'сверху самые выгодные'}</div>`;
 $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
