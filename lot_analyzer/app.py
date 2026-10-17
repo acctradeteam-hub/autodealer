@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.0"
-PROGRAM_VERSION = "2026-10-15.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-17"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1045,7 +1045,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="tabs" class="tabs"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110 sorth" onclick="sortHead()" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов). Нажмите — сортировка по ней: от низкой к высокой, ещё раз — наоборот">Средняя цена покупки<br>на аукционе <span id="sortmark">⇅</span></th><th class="w110 sorth" onclick="sortProfit()" title="Нажмите — сортировка по прибыли при покупке по средней цене: сверху самая большая, одним списком; ещё раз — наоборот">Прибыль при покупке<br>по средней цене <span id="sortmark2">⇅</span></th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -1096,7 +1096,7 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
 /* Вкладки: в каждой — только свои машины, сверху самые выгодные. Выбранная вкладка запоминается. */
-const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Mazda6, Highlander, Prius, Camry / CR-V / RAV4 Hybrid, Honda Clarity, Honda Insight, Lexus CT 200h / RX / IS / ES / GS, Model 3 2022 SR'],
+const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Mazda6, Highlander, Prius, Camry / CR-V / RAV4 Hybrid, Honda Clarity, Honda Insight, Chevrolet Volt, Lexus CT 200h / RX / IS / ES / GS, Model 3 2022 SR'],
  ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}
@@ -1106,7 +1106,7 @@ let refreshBusy=false,refreshAgain=false;
 async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=true;const my=++refreshNo;
  try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
  finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
-function render(d){shown=d.rows;const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
+function render(d){shown=d.rows;setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
 if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='';try{localStorage.setItem('la-place','')}catch(e){};refresh();return}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${p===place?' on':''}" onclick="setPlace(this.dataset.p)" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
@@ -1162,12 +1162,25 @@ async function kbbSold(){const btn=$('soldbtn');
   /* без расширения Chrome не даст открыть вкладку не сразу после нажатия — просим нажать ещё раз */
   if(!hasExt()){$('stat').textContent=`Список готов: ${soldList.length} проданных машин без KBB. Нажмите «KBB для проданных» ещё раз.`;return}}
  openKbb(soldList);$('stat').textContent=`KBB для ${soldList.length} проданных машин: вкладка kbb.com работает в фоне, цены попадут в вашу базу итогов (цена продажи ÷ KBB).`;setTimeout(loadSold,60000)}
+/* Что сейчас сужает список — видно сразу (фильтры запоминаются между запусками). */
+function activeFilters(){const f=[];const v=id=>($(id)&&$(id).value||'').trim();
+ if(place)f.push('площадка: '+place);if($('picked')&&$('picked').checked)f.push('только отобранные (KBB или ставка)');
+ if($('nophoto')&&$('nophoto').checked)f.push('без фото');if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух'}[defectBy]||defectBy));
+ if(v('q'))f.push('машина: «'+v('q')+'»');if(v('y1')||v('y2'))f.push('годы '+(v('y1')||'…')+'–'+(v('y2')||'…'));if(v('miles'))f.push('пробег до '+v('miles'));
+ if(v('maxbid')&&v('maxbid')!=='15000')f.push('потолок до $'+v('maxbid'));return f}
+function resetFilters(){place='';defectBy='';try{localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-picked','')}catch(e){}
+ ['q','y1','y2','miles'].forEach(id=>{if($(id))$(id).value=''});if($('maxbid'))$('maxbid').value='15000';if($('picked'))$('picked').checked=false;if($('nophoto'))$('nophoto').checked=false;refresh()}
+function showFilters(){const e=$('filters');if(!e)return;const f=activeFilters();
+ e.innerHTML=f.length?`<b>Включены фильтры:</b> ${esc(f.join(' · '))} — в списке не все машины. <button type="button" class="tab" onclick="resetFilters()">сбросить фильтры</button>`:''}
 function kbbTop(){const need=x=>(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
 /* Лучшие без KBB: 15 популярных, по 5 электромобилей, пикапов и остальных. */
-const list=[['popular',15],['ev',5],['truck',5],['other',5]].flatMap(([g,n])=>shown.filter(x=>x.group===g&&need(x)).slice(0,n));
-if(!list.length){alert('У машин на экране KBB уже есть');return}
+const quota=[['popular',15,'популярных'],['ev',5,'электромобилей'],['truck',5,'пикапов'],['other',5,'остальных']];
+const picked=quota.map(([g,n])=>shown.filter(x=>x.group===g&&need(x)).slice(0,n));const list=picked.flat();
+const f=activeFilters();
+if(!list.length){alert('У всех машин на экране, кроме «ПРОПУСТИТЬ», KBB уже есть.'+(f.length?'\nВключены фильтры: '+f.join(' · ')+' — сбросьте их, чтобы взять остальные машины.':''));return}
 openKbb(list);
-$('stat').textContent=`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
+const why='Взято: '+quota.map(([g,n,t],i)=>`${t} ${picked[i].length} из ${n}`).join(', ')+(list.length<30?` — меньше 30, потому что у остальных машин${f.length?' на экране (фильтры: '+f.join(' · ')+')':''} KBB уже есть или вердикт «ПРОПУСТИТЬ»`:'')+'. ';
+$('stat').textContent=why+`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
 /* Машины передаются и в адресе (#la=…), и в имени вкладки — на случай, если kbb.com при переадресации потеряет хвост адреса. */
 /* С расширением «Lot Analyzer KBB» ссылки открываются соседней вкладкой в фоне — вы остаётесь в окне программы. */
 /* Расширение подключено, только если оно отвечает (pong) — после его обновления старая связь в окне молчит,

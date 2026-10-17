@@ -700,7 +700,7 @@ _EV = re.compile(r"\b(bolt|leaf|i3|e-?golf|id\.?\s?4|mustang mach-e|mach-e|ioniq
                  r"model [3sxy]|lyriq|blazer ev|equinox ev|f-150 lightning|hummer ev|r1[st]|prologue|zdx|cooper se|xc40 recharge|c40)\b", re.I)
 
 
-_HYBRID = re.compile(r"hybrid|plug-?\s?in|phev|\bprime\b|^prius|^insight|^clarity|\b(ct|es|rx|nx|ux|gs|ls)\s?\d{3}h\b", re.I)
+_HYBRID = re.compile(r"hybrid|plug-?\s?in|phev|\bprime\b|^prius|^insight|^clarity|^volt\b|\b(ct|es|rx|nx|ux|gs|ls)\s?\d{3}h\b", re.I)
 
 
 def is_hybrid(row: dict[str, str]) -> bool:

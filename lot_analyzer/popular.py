@@ -23,6 +23,7 @@ DEFAULT = [
     {"make": "Toyota", "model": r"^highlander"},
     {"make": "Honda", "model": r"^clarity\b"},
     {"make": "Honda", "model": r"^insight\b"},
+    {"make": "Chevrolet", "model": r"^volt\b"},
     {"make": "Lexus", "model": r"^ct\s*\d*h?\b"},
     {"make": "Lexus", "model": r"^rx\s*\d*h?\b"},
     {"make": "Lexus", "model": r"^is\s*\d*\b"},
