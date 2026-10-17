@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.0"
-PROGRAM_VERSION = "2026-10-17.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-17.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -135,10 +135,9 @@ class PageCache:
             if results.is_results_file(path):
                 recs = results.read_file(path)
                 if path.suffix.lower() == ".pdf" and recs and all(r["outcome"] == "нет итога" for r in recs):
-                    # PDF-список CarMax на предстоящие торги (итогов нет) — это машины к торгам, а не итоги:
-                    # иначе они попали бы в базу как «торги прошли» и пропали бы из списка.
-                    from .parsers import rows_from_carmax_runlist
-                    rows = rows_from_carmax_runlist(path)
+                    # PDF-список CarMax («CarMaxList (8).pdf») — ваша печать готового списка с сайта CarMax, не наш файл:
+                    # ни машин, ни итогов из него не берём.
+                    rows = []
                 else:
                     rows, record = [], {"results": recs}     # итоги торгов — не лоты
             elif path.suffix.lower() == ".csv":
@@ -196,8 +195,9 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
                 continue
             # Итоги торгов — за 30 дней, что бы ни стояло в «Файлы за, часов»: программу могли открыть через день-два.
             when = saved_time(path)
-            # (PDF-список к торгам — не итоги: он свежий, только пока в пределах «Файлы за, часов», как страница закладки.)
-            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path) and not results.is_runlist_pdf(path)):
+            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path)):
+                continue
+            if results.is_runlist_pdf(path):     # печать списка с сайта CarMax («CarMaxList (8).pdf») — не наш файл
                 continue
             if (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or manheim_csv.is_export(path)
                     or results.is_results_file(path)) and not is_own_window(path):
@@ -222,9 +222,6 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
     return True
 
 
-RUNLIST_DAYS = 3
-
-
 def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> None:
     """row["passed"] — почему аукцион лота уже прошёл (окно такие по умолчанию скрывает): дата торгов в прошлом
     (день торгов закончился) или итог этой машины уже есть в базе после сохранения списка."""
@@ -241,11 +238,6 @@ def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> N
         result_day = history_by_vin.get(row.get("vin", ""), "")
         if not reason and result_day and result_day >= saved.strftime("%Y-%m-%d") and row.get("lot_status") != "Make Offer":
             reason = f"итог торгов {result_day} уже в базе"
-        # PDF-список без даты в имени («CarMaxList (8).pdf»): день торгов неизвестен. Список печатают за день-два до торгов —
-        # старше 3 дней он почти наверняка про прошедшие торги, такие машины на площадке уже не найти.
-        if (not reason and not row.get("sale_date") and str(row.get("source_file", "")).lower().endswith(".pdf")
-                and now - saved > dt.timedelta(days=RUNLIST_DAYS)):
-            reason = f"PDF-список от {saved.month}/{saved.day} без даты торгов — торги, скорее всего, прошли"
         row["passed"] = reason
 
 

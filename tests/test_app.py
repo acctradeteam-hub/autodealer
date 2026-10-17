@@ -121,16 +121,6 @@ class TestOneWindow(unittest.TestCase):
         self.assertIn("Убрать из списка", page)                      # перед печатью позиции можно убрать
         self.assertIn("Вернуть всё", page)
 
-    def test_old_runlist_pdf_without_date_is_passed(self) -> None:
-        import datetime as dt
-
-        now = dt.datetime(2026, 10, 17, 12, 0)
-        old = {"vin": "V1", "source_file": "CarMaxList (8).pdf", "sale_date": "", "_saved": str((now - dt.timedelta(days=5)).timestamp())}
-        fresh = dict(old, vin="V2", _saved=str((now - dt.timedelta(days=1)).timestamp()))
-        app.mark_passed([old, fresh], now)
-        self.assertIn("без даты торгов", old["passed"])
-        self.assertEqual(fresh["passed"], "")
-
     def test_inspection_one_group_per_place_and_day(self) -> None:
         """PDF-список даёт «Oct 19» или без даты, сайт — «Oct 19, 9:00am PT»: Oceanside всё равно одним списком."""
         import re
@@ -439,26 +429,23 @@ class PastSalesNoteTest(unittest.TestCase):
 
 
 class CarmaxRunListPdfTest(unittest.TestCase):
-    def test_runlist_pdf_gives_cars_not_results(self):
-        """PDF-список CarMax к торгам — машины в окне, а не «итоги» (иначе они пропадали из списка как проторгованные).
+    def test_runlist_pdf_is_ignored(self):
+        """«CarMaxList (8).pdf» — печать готового списка с сайта CarMax: ни машин, ни итогов из него не берём.
         Данные выдуманные: настоящие PDF в открытый репозиторий не кладём."""
         from unittest import mock
         from lot_analyzer import app, market
         fake = [market.Result(date="2026-10-10", auction="CarMax", location="Murrieta", lane="A", run="44", year="2008",
                               vehicle="Honda Accord EX", vin="1HGCP36708A000000", miles="194172",
-                              announcements="Major Engine Defect, Prior Fleet", notes="KBB 3,625$ 10/9/26 | CarMax: Major engine defect",
-                              kbb="3625", mmr="", est_retail="", my_max="", price="", status="", source="x.pdf")]
+                              announcements="Major Engine Defect", notes="", kbb="", mmr="", est_retail="", my_max="",
+                              price="", status="", source="x.pdf")]
         tmp = Path(tempfile.mkdtemp())
-        path = tmp / "CarMaxList  Murrieta 10:12:2026.pdf"
+        path = tmp / "CarMaxList (8).pdf"
         path.write_bytes(b"%PDF-1.4 test")
         with mock.patch.object(market, "read_results", return_value=fake):
             cache = app.PageCache()
-            rows = cache.rows(path)
-            self.assertIsNone(cache.kbb(path))                   # в базу итогов не идёт
-        self.assertEqual(len(rows), 1)
-        first = rows[0]
-        self.assertEqual((first["auction"], first["location"], first["lot_number"], first["sale_date"]), ("CarMax", "Murrieta, CA", "A/44", "Oct 12"))
-        self.assertEqual(first["kbb_private_party_usd"], "3625")   # KBB из вашей заметки
+            self.assertEqual(cache.rows(path), [])
+            self.assertIsNone(cache.kbb(path))                   # и в базу итогов не идёт
+            self.assertEqual(app.find_pages([tmp], 24), [])
 
 
 class ReviewTest(unittest.TestCase):
