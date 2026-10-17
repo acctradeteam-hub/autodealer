@@ -121,6 +121,19 @@ class TestOneWindow(unittest.TestCase):
         self.assertIn("Убрать из списка", page)                      # перед печатью позиции можно убрать
         self.assertIn("Вернуть всё", page)
 
+    def test_inspection_one_group_per_place_and_day(self) -> None:
+        """PDF-список даёт «Oct 19» или без даты, сайт — «Oct 19, 9:00am PT»: Oceanside всё равно одним списком."""
+        import re
+        from lot_analyzer.inspection import render_html
+
+        base = {"auction": "CarMax", "inspect": "объявлен Major Engine Defect", "calc_verdict": "МОЖНО"}
+        rows = [dict(base, vin="V1", lot_number="A/1", location="Oceanside, CA", sale_date="Oct 19, 9:00am PT"),
+                dict(base, vin="V2", lot_number="A/2", location="Oceanside, CA", sale_date="Oct 19"),
+                dict(base, vin="V3", lot_number="A/3", location="Oceanside, CA", sale_date=""),
+                dict(base, vin="V4", lot_number="B/1", location="Murrieta, CA", sale_date="Oct 19, 9:00am PT")]
+        heads = re.findall(r"<h2>(.*?)</h2>", render_html(rows))
+        self.assertEqual(heads, ["CarMax Murrieta · Oct 19, 9:00am PT", "CarMax Oceanside · Oct 19, 9:00am PT"])
+
     def test_http_api(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
         threading.Thread(target=server.serve_forever, daemon=True).start()

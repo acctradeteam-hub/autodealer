@@ -19,14 +19,51 @@ from collections import OrderedDict
 SKIP_VERDICTS = ("ПРОПУСТИТЬ", "НЕВЫГОДНО")
 
 
+_MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split()
+
+
+def _day(sale_date: str) -> str:
+    """День торгов без времени: «Oct 12, 9:00am PT», «Oct 12», «10/12/2026», «2026-10-12» → «10-12»."""
+    text = str(sale_date or "").strip().lower()
+    found = re.search(r"\b(" + "|".join(_MONTHS) + r")[a-z]*\.?\s+(\d{1,2})\b", text)
+    if found:
+        return f"{_MONTHS.index(found.group(1)) + 1:02d}-{int(found.group(2)):02d}"
+    found = re.search(r"\b20\d\d-(\d{1,2})-(\d{1,2})\b", text) or re.search(r"\b(\d{1,2})/(\d{1,2})(?:/\d{2,4})?\b", text)
+    return f"{int(found.group(1)):02d}-{int(found.group(2)):02d}" if found else ""
+
+
+def _place(row: dict[str, str]) -> str:
+    if row.get("place"):
+        return row["place"]
+    from .app import place_of_row                   # «CarMax Oceanside» и из «Oceanside, CA», и из «CarMax Oceanside»
+    return place_of_row(row)
+
+
+def _groups(rows: list[dict[str, str]]) -> dict[int, tuple[str, str]]:
+    """Группа каждой строки: (площадка, день). Одна площадка и один день — одна группа, как бы ни была записана дата:
+    PDF-список даёт «Oct 12» или без даты, сайт — «Oct 12, 9:00am PT». Без даты — к единственному дню этой площадки."""
+    days: dict[str, set[str]] = {}
+    for r in rows:
+        if _day(r.get("sale_date", "")):
+            days.setdefault(_place(r), set()).add(_day(r.get("sale_date", "")))
+    out = {}
+    for r in rows:
+        place, day = _place(r), _day(r.get("sale_date", ""))
+        if not day and len(days.get(place, ())) == 1:
+            day = next(iter(days[place]))
+        out[id(r)] = (place, day)
+    return out
+
+
 def inspection_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     picked = [r for r in rows if r.get("inspect") and not r.get("calc_verdict", "").startswith(SKIP_VERDICTS)]
+    groups = _groups(picked)
 
     def lane_run(row: dict[str, str]) -> tuple:
         match = re.match(r"^([A-Z])\s*/\s*(\d+)", row.get("lot_number", ""))
         return (match.group(1), int(match.group(2))) if match else ("~", 0)
 
-    return sorted(picked, key=lambda r: (r.get("auction", ""), r.get("location", ""), r.get("sale_date", ""), lane_run(r)))
+    return sorted(picked, key=lambda r: (groups[id(r)][1] or "99", groups[id(r)][0], lane_run(r)))
 
 
 def _money(value: str) -> str:
@@ -38,10 +75,15 @@ def _money(value: str) -> str:
 
 def render_html(rows: list[dict[str, str]], title: str = "Список на осмотр") -> str:
     items = inspection_rows(rows)
-    groups: "OrderedDict[str, list[dict[str, str]]]" = OrderedDict()
+    keys = _groups(items)
+    by_key: "OrderedDict[tuple[str, str], list[dict[str, str]]]" = OrderedDict()
     for row in items:
-        key = " · ".join(x for x in (row.get("auction", ""), row.get("location", ""), row.get("sale_date", "")) if x)
-        groups.setdefault(key, []).append(row)
+        by_key.setdefault(keys[id(row)], []).append(row)
+    groups: "OrderedDict[str, list[dict[str, str]]]" = OrderedDict()
+    for (place, day), group_rows in by_key.items():
+        # Подпись дня — самая полная запись даты в группе («Oct 12, 9:00am PT» лучше, чем «Oct 12»).
+        when = max((r.get("sale_date", "") for r in group_rows), key=len) or "дата торгов не указана"
+        groups[" · ".join(x for x in (place, when) if x)] = group_rows
     esc = lambda s: html.escape(str(s or ""))
     parts = [f"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)}</title><style>
