@@ -1,6 +1,9 @@
 """Список машин на личный осмотр перед торгами (печатная страница).
 
-В список попадают лоты с пометкой «Личный осмотр» — объявлен «Major Engine /
+CarMax: в список попадает ваше избранное на сайте (звёздочка; машину с заметкой в
+Notes CarMax кладёт в избранное сам). Сняли звёздочку — машина уходит из списка.
+Если по сохранённым страницам не видно, в избранном ли машина, и на других
+аукционах — лоты с пометкой «Личный осмотр»: объявлен «Major Engine /
 Transmission Defect» (часто не подтверждается) или нет фото, — кроме тех, что
 отсеяны стоп-факторами или невыгодны. Группировка: аукцион → площадка → дата,
 внутри — по дорожке и номеру, как вы будете идти по стоянке.
@@ -55,8 +58,14 @@ def _groups(rows: list[dict[str, str]]) -> dict[int, tuple[str, str]]:
     return out
 
 
+def wanted(row: dict[str, str]) -> bool:
+    if row.get("auction") == "CarMax" and row.get("favorite_known"):
+        return bool(row.get("favorite"))               # CarMax: ваше избранное — ваш финальный список
+    return bool(row.get("inspect")) and not row.get("calc_verdict", "").startswith(SKIP_VERDICTS)
+
+
 def inspection_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    picked = [r for r in rows if r.get("inspect") and not r.get("calc_verdict", "").startswith(SKIP_VERDICTS)]
+    picked = [r for r in rows if wanted(r)]
     groups = _groups(picked)
 
     def lane_run(row: dict[str, str]) -> tuple:
@@ -99,14 +108,15 @@ td.edited{{background:rgba(230,180,40,.14)}}td.del{{width:28px;text-align:center
 @media print{{td.edited{{background:none}}}}
 </style></head><body><main>
 <h1 contenteditable="true">{esc(title)}</h1><div class="muted">Лотов: <span id="count">{len(items)}</span>. «Major … Defect» у CarMax часто не подтверждается — на месте: заводится ли, как едет, как переключается,
-нет ли стуков и ошибок. Ставка: до «без дефекта», если дефекта нет; до «с дефектом» — если подтвердился.</div>
+нет ли стуков и ошибок. Ставка: до «без дефекта», если дефекта нет; до «с дефектом» — если подтвердился.
+CarMax — машины из вашего избранного на сайте: сняли звёздочку — машина уходит из этого списка.</div>
 <p class="noprint"><button onclick="print()">Печать</button>
 <button id="restore" onclick="restoreAll()" hidden>Вернуть всё</button>
 <span class="muted">Ячейки можно исправить — щёлкните и пишите; ✕ убирает машину из списка. Правки запоминаются в этом браузере.</span></p>"""]
     if not items:
         parts.append('<p class="muted">Нет лотов, требующих личного осмотра.</p>')
     for group, group_rows in groups.items():
-        parts.append(f"<h2>{esc(group)}</h2><table><thead><tr><th>Лот</th><th>Машина</th><th>Пробег</th><th>VIN</th><th>Почему осмотр</th>"
+        parts.append(f"<h2>{esc(group)}</h2><table><thead><tr><th>Лот</th><th>Машина</th><th>Пробег</th><th>VIN</th><th>Почему в списке</th>"
                      "<th>KBB</th><th>Потолок без дефекта</th><th>Потолок с дефектом</th><th>Ставка сейчас</th>"
                      "<th>Дефект есть / нет</th><th>Моя ставка</th><th class='noprint'></th></tr></thead><tbody>")
         for r in group_rows:
@@ -116,7 +126,7 @@ td.edited{{background:rgba(230,180,40,.14)}}td.del{{width:28px;text-align:center
             lot = f'<a href="{esc(r["lot_url"])}">{esc(r.get("lot_number") or "лот")}</a>' if r.get("lot_url") else esc(r.get("lot_number"))
             parts.append(
                 f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td>{lot}</td><td>{esc(car)}<div class='muted'>{esc(r.get('defects', '')[:120])}</div></td>"
-                f"<td class='num'>{esc(r.get('odometer_miles'))}</td><td>{esc(r.get('vin'))}</td><td>{esc(r.get('inspect'))}</td>"
+                f"<td class='num'>{esc(r.get('odometer_miles'))}</td><td>{esc(r.get('vin'))}</td><td>{esc(r.get('inspect') or ('★ избранное CarMax' if r.get('favorite') else ''))}</td>"
                 f"<td class='num'>{kbb}</td><td class='num'><b>{_money(r.get('calc_max_bid_usd'))}</b></td>"
                 f"<td class='num'>{_money(r.get('calc_max_bid_if_defect_usd')) if r.get('calc_max_bid_if_defect_usd') else ('не брать' if 'Defect' in r.get('inspect', '') else '—')}</td>"
                 f"<td class='num'>{_money(r.get('current_bid_usd'))}</td><td class='box'></td><td class='box'></td>"

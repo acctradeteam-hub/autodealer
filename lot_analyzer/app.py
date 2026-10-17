@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.0"
-PROGRAM_VERSION = "2026-10-17.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.1"
+PROGRAM_VERSION = "2026-10-18"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -377,6 +377,33 @@ def load_favorites() -> dict[str, dict]:
         return {}
 
 
+def favorite_click(card: dict) -> tuple[float, bool] | None:
+    """Последняя звёздочка по этой машине из расширения: (когда, в избранном ли). Старые записи — только с датой."""
+    added = float(card.get("at") or 0) or (time.mktime(time.strptime(card["added"], "%Y-%m-%d")) if card.get("added") else 0)
+    removed = float(card.get("removed_at") or 0)
+    if removed and removed >= added:
+        return removed, False
+    return (added, True) if added else None
+
+
+def remove_favorites(cars: list[dict]) -> int:
+    """Звёздочку на CarMax сняли — машина уходит из списка на печать, и Notes ей больше не пишем
+    (CarMax сам кладёт в избранное машину, которой пишут заметку)."""
+    favs = load_favorites()
+    by_stock = {c.get("stock"): v for v, c in favs.items() if c.get("stock")}
+    now, done = time.time(), 0
+    for car in cars:
+        vin = str(car.get("vin") or "").strip().upper() or by_stock.get(str(car.get("stock") or ""), "")
+        if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
+            continue
+        card = favs.setdefault(vin, {"vin": vin, "stock": str(car.get("stock") or "")})
+        card["removed_at"] = now
+        done += 1
+    FAVORITES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    FAVORITES_PATH.write_text(json.dumps(favs, ensure_ascii=False, indent=0), encoding="utf-8")
+    return done
+
+
 def add_favorites(cars: list[dict], costs: dict) -> dict:
     """Звёздочка на CarMax → машина в окне программы; кому нужен KBB — адрес KBB-автопилота для них (одна вкладка)."""
     from .normalize import split_model
@@ -391,7 +418,7 @@ def add_favorites(cars: list[dict], costs: dict) -> dict:
         if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
             continue
         card = {k: str(car.get(k) or "")[:2000] for k in ("stock", "title", "lane_run", "location", "miles", "announcements", "notes", "start", "lot_url", "photo")}
-        card["vin"], card["added"] = vin, favs.get(vin, {}).get("added") or today
+        card["vin"], card["added"], card["at"] = vin, favs.get(vin, {}).get("added") or today, time.time()
         added += vin not in favs
         favs[vin] = card
         if vin in known or vin in saved or re.search(r"\bKBB\s*(PP)?\s*\$?\s*[\d,]{3,}", card["notes"], re.I):
@@ -417,7 +444,7 @@ def favorite_rows(seen_vins: set[str]) -> list[dict[str, str]]:
     since = (dt.date.today() - dt.timedelta(days=FAVORITES_DAYS)).isoformat()
     out = []
     for vin, card in load_favorites().items():
-        if vin in seen_vins or card.get("added", "") < since:
+        if vin in seen_vins or card.get("added", "") < since or not (favorite_click(card) or (0, False))[1]:
             continue
         row = empty_row()
         row["source_file"], row["parsed_at"] = "CarMax ★ избранное", card.get("added", "")
@@ -434,6 +461,24 @@ def favorite_rows(seen_vins: set[str]) -> list[dict[str, str]]:
             row["photo_main_url"], row["no_photos"] = "", ""
         out.append(row)
     return out
+
+
+def set_favorite(row: dict, saved_at: float, card: dict | None) -> None:
+    """Избранное CarMax по самому свежему знанию: звёздочка на сохранённой странице или щелчок по ней (расширение).
+    row["favorite"] = «1» — в избранном; row["favorite_known"] = «1» — известно, в избранном или нет."""
+    known = []
+    if row.get("carmax_favorite") in ("0", "1"):
+        known.append((saved_at, row["carmax_favorite"] == "1"))
+    click = favorite_click(card) if card else None
+    if click:
+        known.append(click)
+    if not known:
+        return
+    on = max(known, key=lambda k: k[0])[1]
+    row["favorite"], row["favorite_known"] = ("1" if on else ""), "1"
+    # Машина с вашей заметкой вне избранного — её убрали сами: заметку CarMax сразу кладёт в избранное.
+    if not on and (row.get("site_notes") or (click and not click[1])):
+        row["favorite_removed"] = "1"
 
 
 _ROWS_MEMO: dict = {}
@@ -490,8 +535,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     for saved_at, page_rows in sources:
         for row in page_rows:
             row["_saved"] = saved_at
-            if row.get("vin") in favorites:
-                row["favorite"] = "1"
+            set_favorite(row, saved_at, favorites.get(row.get("vin", "")))
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
             if key in seen or not matches(row, query, year_from, year_to, max_miles):
                 continue
@@ -694,7 +738,7 @@ COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
            "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review",
-           "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite")
+           "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed")
 
 
 def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
@@ -828,7 +872,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 rows = search_rows(pages, cache, load_costs(costs_path), "")
-                self._send(json.dumps(notes.notes_for(rows), ensure_ascii=False).encode("utf-8"))
+                # Убранным из избранного CarMax заметку не пишем: запись в Notes вернула бы машину в избранное.
+                self._send(json.dumps(notes.notes_for([r for r in rows if not r.get("favorite_removed")]), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/links":
                 self._send(json.dumps(search_links(q.get("q", ""), num("y1"), num("y2")), ensure_ascii=False).encode("utf-8"))
             else:
@@ -847,6 +892,11 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 data = json.loads(self.rfile.read(length) or b"{}")
                 answer = add_favorites(list(data.get("cars") or [])[:50], load_costs(costs_path))
                 self._send(json.dumps(answer, ensure_ascii=False).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/unfavorite":     # расширение: звёздочку на CarMax сняли
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                self._send(json.dumps({"removed": remove_favorites(list(data.get("cars") or [])[:50])}).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/notes_report":     # расширение: что оно сделало с Notes на CarMax
                 length = int(self.headers.get("Content-Length") or 0)
@@ -1119,7 +1169,7 @@ $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${SORT_NOTE[sortBy]||'сверху самые выгодные'}</div>`;
 $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
-<div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="Отмечена звёздочкой на CarMax — KBB запрошен сам">★ избранное</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
+<div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="В избранном на CarMax — машина в списке на печать">★ избранное</span> ':''}${x.favorite_removed?'<span class="pill v-mid" title="Убрана из избранного на CarMax: в списке на печать её нет, заметку в Notes программа ей больше не пишет">☆ убрана из избранного</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
 <td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}</td>
 <td class="num">${x.condition_grade?`<span class="pill ${crCls(x.condition_grade)}">${esc(x.condition_grade.split(' ')[0])}</span>`:(x.seen_before?'':'—')}${x.seen_before?`<div class="seen" title="Эта машина (VIN) уже была на торгах — по вашей базе итогов">${esc(x.seen_before).replace(/; /g,'<br>')}</div>`:''}${x.cr_url?`<div><a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a></div>`:''}</td>
 <td class="num kbbcell">${x.vin?`<input class="kbb bid" data-vin="${esc(x.vin)}" value="${esc(x.my_proxy_usd)}" placeholder="ставка" inputmode="numeric" title="Ваша ставка (proxy bid). Enter — сохранить и пересчитать" onchange="saveBid(this)">`:money(x.my_proxy_usd)}${x.profit_at_my_bid_usd?`<div class="muted">прибыль <b class="${Number(x.profit_at_my_bid_usd)<0?'neg':'pos'}">${signed(x.profit_at_my_bid_usd)}</b></div>`:''}${x.current_bid_usd?`<div class="muted">на сайте ${money(x.current_bid_usd)}</div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg" href="${esc(x.lot_url)}#la-bid=${esc(String(x.my_proxy_usd).replace(/\D/g,''))}" target="_blank" rel="noopener" title="Откроет лот на CarMax и впишет ставку в «Set early bid» (вниз до шага $50). Способ оплаты и «Place bid» — вы сами">поставить на CarMax ↗</a></div>`:''}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}

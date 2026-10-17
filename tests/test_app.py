@@ -499,3 +499,37 @@ class FavoritesTest(unittest.TestCase):
         self.assertEqual(rows["1HGCR2F35FA000001"]["lot_number"], "A/5")
         self.assertEqual(rows["1HGCR2F35FA000002"]["kbb_private_party_usd"], "9100")
         app.FAVORITES_PATH.unlink(missing_ok=True)
+
+    def test_star_removed_drops_car_from_print_list_and_notes(self):
+        """Сняли звёздочку на CarMax — машины нет в списке на печать и заметку ей не пишем; поставили снова — вернулась."""
+        from lot_analyzer import app
+        from lot_analyzer.inspection import inspection_rows
+        app.FAVORITES_PATH.unlink(missing_ok=True)
+        vin = "1HGCR2F35FA000003"
+        row = {"auction": "CarMax", "vin": vin, "carmax_favorite": "1", "site_notes": "KBB 9,100$ 10/14/26"}
+        page_time = time.time() - 3600
+        app.set_favorite(row, page_time, None)
+        self.assertEqual((row["favorite"], row["favorite_known"]), ("1", "1"))
+        self.assertEqual(len(inspection_rows([row])), 1)
+        self.assertEqual(app.remove_favorites([{"vin": vin}]), 1)
+        row = {"auction": "CarMax", "vin": vin, "carmax_favorite": "1", "site_notes": "KBB 9,100$ 10/14/26"}
+        app.set_favorite(row, page_time, app.load_favorites()[vin])      # щелчок свежее страницы
+        self.assertEqual((row["favorite"], row.get("favorite_removed")), ("", "1"))
+        self.assertEqual(inspection_rows([row]), [])
+        self.assertFalse(app.favorite_rows(set()))
+        # страница, сохранённая после щелчка, со звёздочкой — снова в избранном
+        row = {"auction": "CarMax", "vin": vin, "carmax_favorite": "1"}
+        app.set_favorite(row, time.time() + 5, app.load_favorites()[vin])
+        self.assertEqual(row["favorite"], "1")
+        # заметка есть, а звёздочки на странице нет — убрали сами
+        row = {"auction": "CarMax", "vin": "1HGCR2F35FA000004", "carmax_favorite": "0", "site_notes": "KBB 5,000$"}
+        app.set_favorite(row, page_time, None)
+        self.assertEqual(row.get("favorite_removed"), "1")
+        app.FAVORITES_PATH.unlink(missing_ok=True)
+
+    def test_star_state_read_from_saved_carmax_card(self):
+        from bs4 import BeautifulSoup
+        from lot_analyzer.sites_text import _carmax_star
+        on = BeautifulSoup('<div id="70139392"><button data-click-event="FavoriteRemove" data-vehicle-id="70139392"></button></div>', "lxml").div
+        off = BeautifulSoup('<div id="70139393"><button data-click-event="FavoriteAdd" data-vehicle-id="70139393"></button></div>', "lxml").div
+        self.assertEqual((_carmax_star(on), _carmax_star(off), _carmax_star(BeautifulSoup("<div></div>", "lxml").div)), ("1", "0", ""))

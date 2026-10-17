@@ -1,5 +1,6 @@
 /* Lot Analyzer: звёздочка «в избранное» на CarMax → машина в окне программы, KBB запрашивается сам
    (вкладка kbb.com в фоне), а потом KBB с датой пишется в Notes этой машины (carmax_notes.js).
+   Звёздочку сняли — машина уходит из списка на печать, и Notes ей программа больше не пишет.
    Звёздочка — кнопка с data-click-event="FavoriteAdd" и номером машины data-vehicle-id. */
 (function () {
   var text = function (el) { return el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : ''; };
@@ -43,10 +44,22 @@
   };
   document.addEventListener('click', function (e) {
     var star = e.target && e.target.closest ? e.target.closest('[data-click-event]') : null;
-    if (!star || star.getAttribute('data-click-event') !== 'FavoriteAdd') { return; }
+    var kind = star ? star.getAttribute('data-click-event') : '';
+    if (kind !== 'FavoriteAdd' && kind !== 'FavoriteRemove') { return; }
     var stock = star.getAttribute('data-vehicle-id') || ((/vehicledetail\/(\d+)/.exec(location.pathname) || [])[1] || '');
     var box = cardOf(star) || document.body;
     var car = carFrom(box, stock);
+    if (kind === 'FavoriteRemove') {
+      /* Звёздочку сняли — машина уходит из списка на печать, и заметку ей программа больше не пишет. */
+      try {
+        chrome.runtime.sendMessage({ type: 'unfavorite', car: { vin: car.vin, stock: stock } }, function (answer) {
+          void chrome.runtime.lastError;
+          if (answer && answer.ok) { toast('Lot Analyzer: ' + (car.title || car.vin || stock) + ' — убрана из списка на печать'); }
+          else { toast('Lot Analyzer: окно программы не отвечает — машина останется в списке на печать, пока не сохраните эту страницу закладкой.'); }
+        });
+      } catch (err) { toast('Lot Analyzer: расширение обновлено — обновите эту страницу CarMax (⌘R).'); }
+      return;
+    }
     if (!car.vin) { return; }
     try {
       chrome.runtime.sendMessage({ type: 'favorite', car: car }, function (answer) {

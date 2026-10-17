@@ -412,8 +412,15 @@ def find_carmax_cards(html: str) -> list[dict[str, str]]:
         info["start"] = squeeze(str(started)).replace("Started on ", "").replace("Starts on ", "") if started else ""
         bid = card.find(string=re.compile(r"^\s*\$[\d,]+\s*$"))
         info["your_bid"] = squeeze(bid) if bid and card.find(string=re.compile("Your bid")) else ""
+        info["favorite"] = _carmax_star(card)
         cards.append(info)
     return cards or _carmax_tiles(soup, page_url) or _carmax_by_vin(soup, page_url)
+
+
+def _carmax_star(card) -> str:
+    """Звёздочка карточки: «FavoriteRemove» — машина в избранном («1»), «FavoriteAdd» — нет («0»), не видно — «»."""
+    star = card.find(attrs={"data-click-event": re.compile(r"^Favorite(Add|Remove)$")})
+    return {"FavoriteRemove": "1", "FavoriteAdd": "0"}.get(star.get("data-click-event") if star else "", "")
 
 
 def _carmax_tiles(soup, page_url: str = "") -> list[dict[str, str]]:
@@ -439,6 +446,7 @@ def _carmax_tiles(soup, page_url: str = "") -> list[dict[str, str]]:
         info["start"] = squeeze(str(started)).replace("Started on ", "").replace("Starts on ", "") if started else ""
         bid = next((t for t in after if re.fullmatch(r"\$[\d,]+", t)), "")
         info["your_bid"] = bid if card.find(string=re.compile("Your bid")) else ""
+        info["favorite"] = _carmax_star(card)
         cards.append(info)
     return cards
 
@@ -460,6 +468,7 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     if card.get("miles", "").isdigit():
         row["odometer_miles"] = card["miles"]
     row["sale_date"] = card.get("start", "")
+    row["carmax_favorite"] = card.get("favorite", "")    # звёздочка на сохранённой странице: «1» / «0» / не видно
     announcements = card.get("announcements", "")
     row["defects"] = announcements
     row["auction_notes"] = announcements or "no announcements"   # замечания самого аукциона — в Notes на сайте

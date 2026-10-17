@@ -52,6 +52,14 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
     favTimer = setTimeout(flushFavorites, 2500);
     return true;
   }
+  if (msg && msg.type === 'unfavorite' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
+    fetch('http://127.0.0.1:8765/api/unfavorite', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cars: [msg.car || {}] }) })
+      .then(function (r) { return r.json(); })
+      .then(function (a) { reply({ ok: !!(a && a.removed) }); })
+      .catch(function () { reply({ ok: false }); });
+    return true;
+  }
   if (msg && msg.type === 'notes') {
     fetch('http://127.0.0.1:8765/api/notes', { cache: 'no-store' })
       .then(function (r) { return r.json(); })
