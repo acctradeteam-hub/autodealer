@@ -121,6 +121,16 @@ class TestOneWindow(unittest.TestCase):
         self.assertIn("Убрать из списка", page)                      # перед печатью позиции можно убрать
         self.assertIn("Вернуть всё", page)
 
+    def test_old_runlist_pdf_without_date_is_passed(self) -> None:
+        import datetime as dt
+
+        now = dt.datetime(2026, 10, 17, 12, 0)
+        old = {"vin": "V1", "source_file": "CarMaxList (8).pdf", "sale_date": "", "_saved": str((now - dt.timedelta(days=5)).timestamp())}
+        fresh = dict(old, vin="V2", _saved=str((now - dt.timedelta(days=1)).timestamp()))
+        app.mark_passed([old, fresh], now)
+        self.assertIn("без даты торгов", old["passed"])
+        self.assertEqual(fresh["passed"], "")
+
     def test_inspection_one_group_per_place_and_day(self) -> None:
         """PDF-список даёт «Oct 19» или без даты, сайт — «Oct 19, 9:00am PT»: Oceanside всё равно одним списком."""
         import re

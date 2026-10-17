@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.0"
-PROGRAM_VERSION = "2026-10-17.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-17.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -222,6 +222,9 @@ def matches(row: dict[str, str], query: str, year_from: int | None, year_to: int
     return True
 
 
+RUNLIST_DAYS = 3
+
+
 def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> None:
     """row["passed"] — почему аукцион лота уже прошёл (окно такие по умолчанию скрывает): дата торгов в прошлом
     (день торгов закончился) или итог этой машины уже есть в базе после сохранения списка."""
@@ -238,6 +241,11 @@ def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> N
         result_day = history_by_vin.get(row.get("vin", ""), "")
         if not reason and result_day and result_day >= saved.strftime("%Y-%m-%d") and row.get("lot_status") != "Make Offer":
             reason = f"итог торгов {result_day} уже в базе"
+        # PDF-список без даты в имени («CarMaxList (8).pdf»): день торгов неизвестен. Список печатают за день-два до торгов —
+        # старше 3 дней он почти наверняка про прошедшие торги, такие машины на площадке уже не найти.
+        if (not reason and not row.get("sale_date") and str(row.get("source_file", "")).lower().endswith(".pdf")
+                and now - saved > dt.timedelta(days=RUNLIST_DAYS)):
+            reason = f"PDF-список от {saved.month}/{saved.day} без даты торгов — торги, скорее всего, прошли"
         row["passed"] = reason
 
 
