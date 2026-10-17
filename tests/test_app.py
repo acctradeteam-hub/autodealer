@@ -118,6 +118,8 @@ class TestOneWindow(unittest.TestCase):
         page = render_html(rows)
         self.assertIn("Потолок без дефекта", page)
         self.assertIn("A/70", page)                                  # Civic с «Major transmission defect»
+        self.assertIn("Убрать из списка", page)                      # перед печатью позиции можно убрать
+        self.assertIn("Вернуть всё", page)
 
     def test_http_api(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
