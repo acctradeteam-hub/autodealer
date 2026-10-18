@@ -32,7 +32,7 @@ class TestOneWindow(unittest.TestCase):
         shutil.copy(FIXTURES / "adesa_search_list.html", cls.tmp / "notes.html")                     # не от закладки
         old = cls.tmp / "ACV_old_2026-09-01_0900.html"
         shutil.copy(FIXTURES / "acv_search_list.html", old)
-        os.utime(old, (time.time() - 3 * 86400, time.time() - 3 * 86400))                            # старый файл
+        os.utime(old, (time.time() - 10 * 86400, time.time() - 10 * 86400))                          # старый файл (старше 7 дней)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -41,7 +41,22 @@ class TestOneWindow(unittest.TestCase):
     def test_find_pages_only_bookmarklet_files_within_hours(self) -> None:
         names = {p.name for p in app.find_pages([self.tmp], hours=24)}
         self.assertEqual(names, {"ADESA_ADESA_2026-09-29_1421.html", "CarMax_Member_Dashboard_2026-09-29_1430.html", "Manheim_Search_Results_2026-09-29_1425.html"})
-        self.assertIn("ACV_old_2026-09-01_0900.html", {p.name for p in app.find_pages([self.tmp], hours=24 * 7)})
+        self.assertIn("ACV_old_2026-09-01_0900.html", {p.name for p in app.find_pages([self.tmp], hours=24 * 11)})
+
+    def test_page_from_yesterday_stays_until_its_sale(self) -> None:
+        """Страница CarMax, сохранённая 2 дня назад, — в окне, хоть «Файлы за, часов» = 24: торги её машин впереди."""
+        tmp = Path(tempfile.mkdtemp())
+        page = tmp / "CarMax_Member_Dashboard_2026-10-16_0900.html"
+        shutil.copy(FIXTURES / "carmax_watchlist.html", page)
+        os.utime(page, (time.time() - 2 * 86400, time.time() - 2 * 86400))
+        kbb = tmp / "KBB_2015_honda_civic_19XFB2F58FE000000.html"
+        shutil.copy(FIXTURES / "carmax_watchlist.html", kbb)
+        os.utime(kbb, (time.time() - 2 * 86400, time.time() - 2 * 86400))
+        self.assertEqual([p.name for p in app.find_pages([tmp], hours=24)], [page.name])     # страница KBB — по «часам»
+        undated = {"sale_date": "", "_saved": str(time.time() - 2 * 86400)}
+        app.mark_passed([undated])
+        self.assertIn("без даты торгов", undated["passed"])
+        shutil.rmtree(tmp)
 
     def test_one_car_across_auctions(self) -> None:
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "honda civic", 2013, 2016)

@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.1"
-PROGRAM_VERSION = "2026-10-18"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-18.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -183,6 +183,9 @@ def is_own_window(path: Path) -> bool:
     return bool(OWN_WINDOW_RE.search(head))
 
 
+UPCOMING_DAYS = 7
+
+
 def find_pages(folders: list[Path], hours: float) -> list[Path]:
     """Страницы, сохранённые закладкой (имя «CarMax_…», «ACV_…» и т.п.) за последние `hours` часов."""
     cutoff = time.time() - hours * 3600
@@ -195,7 +198,10 @@ def find_pages(folders: list[Path], hours: float) -> list[Path]:
                 continue
             # Итоги торгов — за 30 дней, что бы ни стояло в «Файлы за, часов»: программу могли открыть через день-два.
             when = saved_time(path)
-            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path)):
+            # Страницы аукционов — за UPCOMING_DAYS дней: машины с торгами впереди не пропадают через сутки, а уходят
+            # вечером дня своих торгов («торги прошли»). «Файлы за, часов» — только для страниц без даты торгов.
+            if when < cutoff and not (when >= time.time() - 30 * 86400 and results.is_results_file(path)) and not (
+                    when >= time.time() - UPCOMING_DAYS * 86400 and SAVED_BY_BOOKMARKLET.match(path.name) and not path.name.startswith("KBB_")):
                 continue
             if results.is_runlist_pdf(path):     # печать списка с сайта CarMax («CarMaxList (8).pdf») — не наш файл
                 continue
@@ -235,6 +241,8 @@ def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> N
     for row in rows:
         saved = dt.datetime.fromtimestamp(float(row.get("_saved") or now.timestamp()))
         reason = schedule.passed(row, saved, now)
+        if not reason and not row.get("sale_date") and now - saved > dt.timedelta(hours=24) and row.get("lot_status") != "Make Offer":
+            reason = f"файл от {saved.month}/{saved.day} без даты торгов"   # старая страница: когда торги — неизвестно
         result_day = history_by_vin.get(row.get("vin", ""), "")
         if not reason and result_day and result_day >= saved.strftime("%Y-%m-%d") and row.get("lot_status") != "Make Offer":
             reason = f"итог торгов {result_day} уже в базе"
@@ -1082,7 +1090,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Потолок до, $<input id="maxbid" inputmode="numeric" value="15000" title="Машины с потолком выше — не показывать. Пусто — без ограничения"></label>
 <label title="Только машины без фотографий (CarMax: «Check back for images»): на них меньше конкурентов — смотреть самому на месте">Без фото<input id="nophoto" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="refresh()"></label>
 <label title="Раскрыть у всех машин, из каких сумм сложилась прибыль при покупке по средней цене">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
-<label>Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
+<label title="Страницы аукционов за 7 дней остаются, пока торги их машин впереди: машина уходит вечером дня своих торгов. Это число — для итогов без даты и страниц KBB">Файлы за, часов<input id="hours" inputmode="numeric" value="24"></label>
 <button>Показать</button>
 <button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
 <button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
