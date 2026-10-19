@@ -463,6 +463,35 @@ class CarmaxRunListPdfTest(unittest.TestCase):
             self.assertEqual(app.find_pages([tmp], 24), [])
 
 
+class VelocicastExportTest(unittest.TestCase):
+    def test_export_csv_read_as_results(self):
+        """«velocicast-auction-detailed-….csv»: SOLD / NOSALE, цена, день торгов по времени ставок (Калифорния). Данные выдуманные."""
+        from lot_analyzer import results
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "Carmax_auctions_ results_19102026.csv"
+        path.write_text("site,laneId,run,finalStatus,finalAmount,highMoney,bidFirstTs,year,make,model,trim,vin,miles,announcement,myNote,myPrebid\n"
+                        "CarMax Oceanside,14104,97,SOLD,2750,,2026-10-20T01:10:00Z,2004,Lexus,RX 330,(no trim),JTJHA31U000000001,128341,"
+                        "MAJOR ENGINE DEFECT | PRIOR RENTAL,\"KBB 5,140$ 10/16/26\",2800\n"
+                        "CarMax Roseville Auction Center,14063,5,NOSALE,0,4600,,2015,Honda,Civic,LX,19XFB2F50FE000002,90000,,,\n", encoding="utf-8")
+        self.assertTrue(results.is_results_file(path))
+        sold, nosale = results.read_file(path)
+        self.assertEqual((sold["date"], sold["auction"], sold["outcome"], sold["price"], sold["kbb"]), ("2026-10-19", "CarMax Oceanside", "Sold", "2750", "5140"))
+        self.assertIn("Major engine defect", sold["remarks"])
+        self.assertIn("ваша представка $2,800", sold["remarks"])
+        self.assertEqual((nosale["auction"], nosale["outcome"], nosale["price"], nosale["date"]), ("CarMax Roseville", "No Sale", "", "2026-10-19"))
+        self.assertIn("высшая ставка $4,600", nosale["remarks"])
+
+
+class KbbMilesCapTest(unittest.TestCase):
+    def test_low_miles_not_extrapolated(self):
+        """Corolla 2022 с 14 тыс. миль по похожим со 100 тыс.: не ×2, а не больше ×1.6."""
+        from lot_analyzer.kbb import Comp, KbbEstimator
+        est = KbbEstimator([], {})
+        value = est._adjust(Comp("Toyota", "Corolla", 2022, 100000, 15000, ""), 2022, 14000)
+        self.assertLessEqual(value, 15000 * 1.6 + 1)
+        self.assertAlmostEqual(est._adjust(Comp("Toyota", "Corolla", 2022, 100000, 15000, ""), 2022, 100000), 15000)
+
+
 class ReviewTest(unittest.TestCase):
     def test_forecast_frozen_and_compared_with_results(self):
         import datetime as dt

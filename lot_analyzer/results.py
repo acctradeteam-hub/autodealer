@@ -181,7 +181,7 @@ def is_runlist_pdf(path: Path) -> bool:
 
 
 def is_results_file(path: Path) -> bool:
-    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path)
+    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path)
             or is_postsale_pdf(path) or is_carmax_results(path))
 
 
@@ -337,6 +337,74 @@ def read_carmax(path: Path) -> list[dict]:
     return out
 
 
+VELOCICAST_EXPORT_COLUMNS = {"site", "run", "finalStatus", "finalAmount", "vin", "year", "make", "model"}
+
+
+def is_velocicast_export(path: Path) -> bool:
+    """Выгрузка итогов CarMax из Velocicast («velocicast-auction-detailed-….csv», «…-results-….csv»):
+    site, laneId, run, finalStatus (SOLD / NOSALE), finalAmount, VIN, покупатель, число участников, ваши заметка и представка."""
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            return VELOCICAST_EXPORT_COLUMNS <= _header(handle.read(4000))
+    except OSError:
+        return False
+
+
+def _export_date(path: Path, rows: list[dict]) -> str:
+    """День торгов: по времени ставок (UTC → время Калифорнии), иначе из имени («2026-10-19-…», «…_19102026», «…_10192026»)."""
+    from zoneinfo import ZoneInfo
+
+    for r in rows:
+        stamp = (r.get("bidFirstTs") or r.get("liveFirstTs") or r.get("bidLastTs") or "").strip()
+        if re.match(r"20\d\d-\d\d-\d\dT", stamp):
+            try:
+                return dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat()
+            except ValueError:
+                continue
+    found = re.search(r"(20\d\d)-(\d\d)-(\d\d)", path.stem)
+    if found:
+        return f"{found.group(1)}-{found.group(2)}-{found.group(3)}"
+    found = re.search(r"(\d{2})(\d{2})(20\d{2})(?!\d)", path.stem)
+    if found:
+        a, b, year = int(found.group(1)), int(found.group(2)), int(found.group(3))
+        for month, day in ((a, b), (b, a)):          # 10192026 (месяц-день) или 19102026 (день-месяц)
+            try:
+                return dt.date(year, month, day).isoformat()
+            except ValueError:
+                continue
+    return dt.date.fromtimestamp(path.stat().st_mtime).isoformat()
+
+
+def read_velocicast_export(path: Path) -> list[dict]:
+    from .normalize import split_model
+
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    date = _export_date(path, rows)
+    out = []
+    for r in rows:
+        status = (r.get("finalStatus") or "").strip().upper()
+        outcome = {"SOLD": "Sold", "NOSALE": "No Sale", "NO SALE": "No Sale", "IFSALE": "IF Sale"}.get(status, status.title() or "нет итога")
+        model, trim = split_model(f"{r.get('model', '')} {r.get('trim', '')}".replace("(no trim)", "").strip())
+        place = (r.get("site") or "").replace(" Auction Center", "").strip()
+        remarks = [x.strip().capitalize() for x in (r.get("announcement") or "").split("|") if x.strip()]
+        if outcome != "Sold" and _num(r.get("highMoney")):
+            remarks.append(f"высшая ставка ${int(_num(r.get('highMoney'))):,}")
+        if r.get("myPrebid"):
+            remarks.append(f"ваша представка ${int(_num(r['myPrebid']) or 0):,}")
+        kbb = re.search(r"\bKBB\s*(?:PP\s*)?\$?\s*([\d,]{3,})", r.get("myNote") or "", re.I)
+        rec = {"date": date, "auction": place, "code": "", "lot": (r.get("run") or "").strip(),
+               "vin": (r.get("vin") or "").strip().upper(), "year": (r.get("year") or "").strip(), "make": (r.get("make") or "").strip(),
+               "model": f"{model} {trim}".strip(), "miles": re.sub(r"\D", "", r.get("miles") or ""), "cr": "", "mmr": "",
+               "outcome": outcome, "price": str(int(_num(r.get("finalAmount")) or 0) or "") if outcome == "Sold" else "",
+               "source": path.name, "remarks": ", ".join(remarks), "kbb": kbb.group(1).replace(",", "") if kbb else ""}
+        rec["key"] = _key(rec)
+        out.append(rec)
+    return out
+
+
 def is_carmax_site_csv(path: Path) -> bool:
     if path.suffix.lower() != ".csv":
         return False
@@ -348,6 +416,8 @@ def is_carmax_site_csv(path: Path) -> bool:
 
 
 def read_file(path: Path) -> list[dict]:
+    if is_velocicast_export(path):
+        return read_velocicast_export(path)
     if is_carmax_site_csv(path):
         return read_carmax_site_table(path)
     if is_velocicast_page(path):

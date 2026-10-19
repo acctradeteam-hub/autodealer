@@ -76,6 +76,8 @@ class KbbEstimator:
         self.age = float(cfg.get("age_per_year", -0.10))
         self.elasticity = float(cfg.get("miles_elasticity", -0.40))
         self.max_years = int(cfg.get("max_year_gap", 2))
+        self.miles_floor = float(cfg.get("miles_floor", 40000))
+        self.miles_cap = float(cfg.get("miles_factor_cap", 1.6))
         self.min_comps = int(cfg.get("min_comps", 2))
         self.share = float((costs.get("market") or {}).get("kbb_clean") or 0.78)
         self.kbb: dict[tuple[str, str], list[Comp]] = {}
@@ -122,7 +124,10 @@ class KbbEstimator:
 
     def _adjust(self, comp: Comp, year: int, miles: float) -> float:
         value = comp.value * (1 + self.age) ** (comp.year - year)          # моложе — дороже
-        return value * (max(miles, 1000) / max(comp.miles, 1000)) ** self.elasticity
+        # Пробег: ниже ~40 тыс. миль KBB почти не растёт, а степенная поправка давала ×2 (Corolla 2022 с 14 тыс. миль
+        # по похожим со 100 тыс. — $36,600 вместо ~$22,000). Поэтому пробег не ниже порога и поправка не больше ×1.6.
+        factor = (max(miles, self.miles_floor) / max(comp.miles, self.miles_floor)) ** self.elasticity
+        return value * min(max(factor, 1 / self.miles_cap), self.miles_cap)
 
     def _from(self, comps: list[Comp], year: int, miles: float, exclude_vin: str) -> list[float]:
         near = [c for c in comps if abs(c.year - year) <= self.max_years and c.vin != exclude_vin or (not c.vin and abs(c.year - year) <= self.max_years)]
