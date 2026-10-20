@@ -30,8 +30,10 @@ HISTORY_PATH = Path(os.environ.get("LOT_ANALYZER_HISTORY") or DATA_DIR / "market
 # Тяжёлые дефекты: такие машины уходят заметно дешевле, в «чистую» сводку не берём.
 # Проблемы титула (Title Absent, 227) сюда не входят: по торгам 29.09 они снижают цену лишь на ~6%,
 # а сами правила для них — в bid.title_policy (лишние дни или пропуск).
+# Рама / Structural damage — тоже нет: по итогам CarMax 5–20.10 (318 продаж с KBB) такие уходят по 0.78 KBB,
+# почти как чистые (0.81), а Major Engine/Transmission — по 0.56. Риск рамы — в вердикте («РИСК: рама»), не в рынке.
 HEAVY = re.compile(
-    r"major (engine|transmission|transfer case) defect|structural|frame|salvage|rebuilt|total loss|"
+    r"major (engine|transmission|transfer case) defect|salvage|rebuilt|total loss|"
     r"not actual|flood|water intrusion|no runner|non[\s-]*runner|no start|as[\s-]?is|inop",
     re.I,
 )

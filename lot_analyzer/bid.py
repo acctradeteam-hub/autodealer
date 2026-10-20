@@ -363,6 +363,12 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
         share = float(market[f"kbb_{kind}"])
         hybrid_note = ""
+        if data.kbb_source:
+            # Предварительный KBB (по похожим) выше настоящего: на торгах CarMax 19–20.10 цена продажи таких машин
+            # была на 10–13% ниже нашей оценки рынка (162 продажи), с настоящим KBB — в пределах ±3%.
+            factor = float((costs.get("kbb_estimate") or {}).get("market_factor", 0.88))
+            share = round(share * factor, 3)
+            hybrid_note += f"; KBB — прикидка: × {factor:g} (по итогам торгов прикидка выше настоящего KBB)"
         if hybrid_high_miles(data, costs):
             cfg = hybrid_cfg(costs)
             factor = float(cfg.get("market_factor") or cfg.get("market_factor_default") or 1)

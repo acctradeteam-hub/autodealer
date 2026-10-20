@@ -508,6 +508,24 @@ class VelocicastExportTest(unittest.TestCase):
         self.assertIn("высшая ставка $4,600", nosale["remarks"])
 
 
+class CarmaxRuTableTest(unittest.TestCase):
+    def test_russian_headers_table(self):
+        """«Carmax_results_10202026.csv» с русскими колонками: продана / не продана / не торговалась (Pending). Данные выдуманные."""
+        from lot_analyzer import results
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "Carmax_results_10202026.csv"
+        path.write_text('"Аукцион","Лейн","Лот","Год","Марка","Модель","Полное наименование","VIN","Цвет","Пробег (миль)","Пробег число",'
+                        '"Статус","Продана/Не продана","Цена продажи","Цена число","Покупатель","Бейдж покупателя"\n'
+                        '"CarMax Chino Auction Center","A","1","2014","Volkswagen","Jetta TDI","2014 Volkswagen Jetta TDI","3VWLL7AJ1EM000001","Silver","115,358","115358","Sold","Продана","$1,600","1600","",""\n'
+                        '"CarMax Fremont","A","2","2015","Honda","Civic LX","2015 Honda Civic LX","19XFB2F50FE000002","Black","90,000","90000","Pending","Не торговалась","","","",""\n',
+                        encoding="utf-8")
+        self.assertTrue(results.is_results_file(path))
+        sold, pending = results.read_file(path)
+        self.assertEqual((sold["date"], sold["auction"], sold["lot"], sold["outcome"], sold["price"], sold["miles"]),
+                         ("2026-10-20", "CarMax Chino", "A/1", "Sold", "1600", "115358"))
+        self.assertEqual((pending["outcome"], pending["price"]), ("нет итога", ""))
+
+
 class KbbMilesCapTest(unittest.TestCase):
     def test_low_miles_not_extrapolated(self):
         """Corolla 2022 с 14 тыс. миль по похожим со 100 тыс.: не ×2, а не больше ×1.6."""

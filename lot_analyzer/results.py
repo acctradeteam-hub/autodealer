@@ -181,7 +181,7 @@ def is_runlist_pdf(path: Path) -> bool:
 
 
 def is_results_file(path: Path) -> bool:
-    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path)
+    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path) or is_carmax_ru_table(path)
             or is_postsale_pdf(path) or is_carmax_results(path))
 
 
@@ -405,6 +405,46 @@ def read_velocicast_export(path: Path) -> list[dict]:
     return out
 
 
+RU_TABLE_COLUMNS = {"Аукцион", "Лейн", "Лот", "Год", "Марка", "Модель", "VIN", "Статус"}
+
+
+def is_carmax_ru_table(path: Path) -> bool:
+    """Таблица итогов CarMax с русскими колонками («Аукцион, Лейн, Лот, Год, Марка, Модель, … VIN, … Статус,
+    Продана/Не продана, Цена продажи, Цена число, Покупатель»): Carmax_results_10202026.csv."""
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            return RU_TABLE_COLUMNS <= _header(handle.read(2000))
+    except OSError:
+        return False
+
+
+def read_carmax_ru_table(path: Path) -> list[dict]:
+    from .normalize import split_model
+
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    date = _export_date(path, [])
+    out = []
+    for r in rows:
+        status = (r.get("Статус") or "").strip().lower()
+        ru = (r.get("Продана/Не продана") or "").strip().lower()
+        outcome = ("Sold" if status == "sold" or ru == "продана" else "No Sale" if status == "no sale" or ru == "не продана"
+                   else "нет итога")                       # «Pending» / «Не торговалась» — машину не выставляли
+        model, trim = split_model((r.get("Модель") or "").replace("(no trim)", "").strip())
+        price = _num(r.get("Цена число")) or _num(r.get("Цена продажи"))
+        rec = {"date": date, "auction": (r.get("Аукцион") or "").replace(" Auction Center", "").strip(), "code": "",
+               "lot": f"{r.get('Лейн', '')}/{r.get('Лот', '')}".strip("/"), "vin": (r.get("VIN") or "").strip().upper(),
+               "year": (r.get("Год") or "").strip(), "make": (r.get("Марка") or "").strip(), "model": f"{model} {trim}".strip(),
+               "miles": re.sub(r"\D", "", r.get("Пробег число") or r.get("Пробег (миль)") or ""), "cr": "", "mmr": "",
+               "outcome": outcome, "price": str(int(price)) if price and outcome == "Sold" else "", "source": path.name,
+               "remarks": "", "kbb": ""}
+        rec["key"] = _key(rec)
+        out.append(rec)
+    return out
+
+
 def is_carmax_site_csv(path: Path) -> bool:
     if path.suffix.lower() != ".csv":
         return False
@@ -418,6 +458,8 @@ def is_carmax_site_csv(path: Path) -> bool:
 def read_file(path: Path) -> list[dict]:
     if is_velocicast_export(path):
         return read_velocicast_export(path)
+    if is_carmax_ru_table(path):
+        return read_carmax_ru_table(path)
     if is_carmax_site_csv(path):
         return read_carmax_site_table(path)
     if is_velocicast_page(path):
