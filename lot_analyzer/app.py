@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.1"
-PROGRAM_VERSION = "2026-10-20"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-20.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1159,7 +1159,7 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
 /* Вкладки: в каждой — только свои машины, сверху самые выгодные. Выбранная вкладка запоминается. */
-const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Mazda6, Highlander, Prius, Camry / CR-V / RAV4 Hybrid, Honda Clarity, Honda Insight, Chevrolet Volt, Lexus CT 200h / RX / IS / ES / GS, Model 3 2022 SR'],
+const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Mazda6, Highlander, Avalon, Prius, Camry / CR-V / RAV4 / Avalon Hybrid, Honda Clarity, Honda Insight, Chevrolet Volt, Lexus CT 200h / RX / IS / ES / GS, Model 3 2022 SR'],
  ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}

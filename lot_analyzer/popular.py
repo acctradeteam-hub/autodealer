@@ -21,6 +21,7 @@ DEFAULT = [
     {"make": "Mazda", "model": r"^(mazda\s*)?6\b"},
     {"make": "Toyota", "model": r"^prius(?!\s*[cv]\b)"},
     {"make": "Toyota", "model": r"^highlander"},
+    {"make": "Toyota", "model": r"^avalon\b"},
     {"make": "Honda", "model": r"^clarity\b"},
     {"make": "Honda", "model": r"^insight\b"},
     {"make": "Chevrolet", "model": r"^volt\b"},
