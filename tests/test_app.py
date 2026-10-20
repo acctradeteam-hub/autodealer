@@ -443,6 +443,32 @@ class PastSalesNoteTest(unittest.TestCase):
         self.assertEqual(strip_own("мой текст\nБыл: 9/28/26 CarMax Chino — продана $10,250"), "мой текст")
 
 
+class ReturnedAfterSaleTest(unittest.TestCase):
+    def test_car_sold_before_and_back_on_sale(self):
+        """Продана 10/5, снова на торгах 10/19 — «вернулась после продажи»; итог самого лота 10/19 — не «раньше»."""
+        import datetime as dt
+        from lot_analyzer import app, results
+        old = results.HISTORY_PATH.read_bytes() if results.HISTORY_PATH.exists() else None
+        vin = "19XFC2F50GE000001"
+        hist = {}
+        results.merge(hist, [
+            {"key": f"CarMax Murrieta|2026-10-05|{vin}", "date": "2026-10-05", "auction": "CarMax Murrieta", "lot": "A/1", "vin": vin, "outcome": "Sold", "price": "7000"},
+            {"key": f"CarMax Murrieta|2026-10-19|{vin}", "date": "2026-10-19", "auction": "CarMax Murrieta", "lot": "A/117", "vin": vin, "outcome": "Sold", "price": "4500"}])
+        results.save_history(hist)
+        try:
+            saved = dt.datetime(2026, 10, 18, 12).timestamp()
+            row = {"vin": vin, "sale_date": "Oct 19, 9:00am PT", "_saved": saved, "auction": "CarMax"}
+            undated = {"vin": vin, "sale_date": "", "_saved": dt.datetime(2026, 10, 5, 8).timestamp(), "auction": "CarMax"}
+            app.attach_results([row, undated], [], app.PageCache(), {})
+            self.assertEqual((row["returned"], row["returned_price"]), ("10/5/26 CarMax Murrieta — продана $7,000", "7000"))
+            self.assertEqual(undated["returned"], "")          # сохранена в день своих торгов — свой итог не «раньше»
+        finally:
+            if old is None:
+                results.HISTORY_PATH.unlink(missing_ok=True)
+            else:
+                results.HISTORY_PATH.write_bytes(old)
+
+
 class CarmaxRunListPdfTest(unittest.TestCase):
     def test_runlist_pdf_is_ignored(self):
         """«CarMaxList (8).pdf» — печать готового списка с сайта CarMax: ни машин, ни итогов из него не берём.
