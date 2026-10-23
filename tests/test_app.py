@@ -375,6 +375,23 @@ class SavedTimeTest(unittest.TestCase):
             self.assertAlmostEqual(app.saved_time_from_file(plain), plain.stat().st_mtime)
 
 
+class NewerPageWinsTest(unittest.TestCase):
+    def test_photos_added_today_not_no_photo(self):
+        """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
+        from unittest import mock
+        vin = "WBAPH5G5XBNM00001"
+        old = {"auction": "CarMax", "vin": vin, "year": "2011", "make": "BMW", "model": "328i", "no_photos": "да", "source_file": "old"}
+        new = {**old, "no_photos": "", "photo_main_url": "https://img2.carmax.com/x/1.jpg", "source_file": "new"}
+        tmp = Path(tempfile.mkdtemp())
+        p_old, p_new = tmp / "CarMax_Search_2026-10-22_1408.html", tmp / "CarMax_Search_2026-10-23_1248.html"
+        p_old.write_text("x"), p_new.write_text("x")
+        cache = app.PageCache()
+        with mock.patch.object(cache, "rows", side_effect=lambda p: [dict(new if p == p_new else old)]):
+            rows = app._search_rows([p_new, p_old], cache, load_costs(COSTS), "", only_no_photos=True)
+        self.assertEqual([r["vin"] for r in rows], [])
+        shutil.rmtree(tmp)
+
+
 class CarmaxNoPhotoTest(unittest.TestCase):
     def test_check_back_for_images_means_no_photos(self):
         from lot_analyzer.sites_text import find_carmax_cards

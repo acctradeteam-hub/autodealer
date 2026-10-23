@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.1"
-PROGRAM_VERSION = "2026-10-23.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-23.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -556,11 +556,15 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
             row["_saved"] = saved_at
             set_favorite(row, saved_at, favorites.get(row.get("vin", "")))
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
-            if key in seen or not matches(row, query, year_from, year_to, max_miles):
+            # Машину решает самый свежий файл: сначала «уже видели», потом фильтры — иначе вчерашняя строка
+            # (ещё без фото, с другим пробегом) проходила фильтр «без фото», когда сегодняшняя его не проходила.
+            if key in seen:
+                continue
+            seen.add(key)
+            if not matches(row, query, year_from, year_to, max_miles):
                 continue
             if only_no_photos and row.get("no_photos") != "да":
                 continue
-            seen.add(key)
             bid = bids.get(row.get("vin", ""))
             if bid:                           # ставка, вписанная в окне, — главнее «MP …» из заметки
                 row["my_proxy_usd"] = str(bid["usd"])
