@@ -375,6 +375,32 @@ class SavedTimeTest(unittest.TestCase):
             self.assertAlmostEqual(app.saved_time_from_file(plain), plain.stat().st_mtime)
 
 
+class RemovedFavoritesListTest(unittest.TestCase):
+    def test_unstarred_car_leaves_main_list(self):
+        """Сняли звёздочку на CarMax — машина уходит из общего списка в «☆ Убранные из избранного», окно узнаёт сразу."""
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html")
+        app.FAVORITES_PATH.unlink(missing_ok=True)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            before = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1").read())
+            files_before = urllib.request.urlopen(base + "/api/files").read()
+            vin = next(r["vin"] for r in before["rows"] if r.get("vin"))
+            self.assertEqual(app.remove_favorites([{"vin": vin}]), 1)
+            after = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1").read())
+            removed = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1&removed=1").read())
+            self.assertNotIn(vin, [r["vin"] for r in after["rows"]])
+            self.assertEqual([r["vin"] for r in removed["rows"]], [vin])
+            self.assertEqual(after["removed_total"], 1)
+            self.assertNotEqual(urllib.request.urlopen(base + "/api/files").read(), files_before)   # окно пересчитает сразу
+        finally:
+            server.shutdown()
+            app.FAVORITES_PATH.unlink(missing_ok=True)
+            shutil.rmtree(tmp)
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""

@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.1"
-PROGRAM_VERSION = "2026-10-23.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-23.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -814,6 +814,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 if chosen:
                     rows = [r for r in rows if any(str(r.get("make", "")).lower() == MODEL_BUTTONS[m][0]
                                                    and re.search(MODEL_BUTTONS[m][1], f"{r.get('model', '')} {r.get('trim', '')}", re.I) for m in chosen)]
+                # Сняли звёздочку на CarMax — машина не в общем списке, а в отдельном «☆ Убранные из избранного».
+                removed_total = sum(1 for r in rows if r.get("favorite_removed") and (q.get("passed") == "1" or not r.get("passed")))
+                rows = [r for r in rows if bool(r.get("favorite_removed")) == (q.get("removed") == "1")]
                 returned_total = sum(1 for r in rows if r.get("returned") and (q.get("passed") == "1" or not r.get("passed")))
                 if q.get("returned") == "1":     # «↩ Вернулись после продажи»: уже продавались и снова на торгах
                     rows = [r for r in rows if r.get("returned")]
@@ -869,7 +872,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
                                      "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "seen_before": r.get("seen_before", ""), "passed": r.get("passed", ""),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
-                                    for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
+                                    for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "removed_total": removed_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders],
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
@@ -886,7 +889,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(render_html(rows, title).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
-                self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages]).encode("utf-8"))
+                # + избранное CarMax: сняли звёздочку — окно пересчитывается сразу, не дожидаясь нового файла.
+                fav = f"favorites:{FAVORITES_PATH.stat().st_mtime:.0f}" if FAVORITES_PATH.exists() else ""
+                self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages] + ([fav] if fav else [])).encode("utf-8"))
             elif url.path == "/api/version":
                 self._send(json.dumps({"version": PROGRAM_VERSION}).encode("utf-8"))
             elif url.path == "/review":              # разбор торгов: наш прогноз ↔ итоги
@@ -1176,6 +1181,8 @@ let sortBy='';try{sortBy=localStorage.getItem('la-sort')||''}catch(e){}
 let defectBy='';try{defectBy=localStorage.getItem('la-defect')||''}catch(e){}
 let models=[];try{models=(localStorage.getItem('la-models')||'').split(',').filter(Boolean)}catch(e){}
 function toggleModel(m){models=models.includes(m)?models.filter(x=>x!==m):models.concat([m]);try{localStorage.setItem('la-models',models.join(','))}catch(e){}refresh()}
+let showRemoved=false;try{showRemoved=localStorage.getItem('la-removed')==='1'}catch(e){}
+function setRemoved(on){showRemoved=on;try{localStorage.setItem('la-removed',on?'1':'')}catch(e){}refresh()}
 let onlyReturned=false;try{onlyReturned=localStorage.getItem('la-returned')==='1'}catch(e){}
 function setReturned(on){onlyReturned=on;try{localStorage.setItem('la-returned',on?'1':'')}catch(e){}refresh()}
 function setDefect(v){defectBy=v;try{localStorage.setItem('la-defect',v)}catch(e){}refresh()}
@@ -1184,7 +1191,7 @@ function sortHead(){setSort(sortBy==='market'?'market_desc':'market')}
 function sortProfit(){setSort(sortBy==='profit'?'profit_asc':'profit')}
 const SORT_NOTE={market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};
 function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
-const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,returned:onlyReturned?'1':'',models:models.join(','),q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,returned:onlyReturned?'1':'',removed:showRemoved?'1':'',models:models.join(','),q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -1221,7 +1228,7 @@ if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  (d.kbb_learning&&d.kbb_learning.n?`<div class="muted" style="margin:4px 0" title="Каждая машина, у которой была прикидка, а потом пришёл настоящий KBB, — урок для прикидки">Обучение KBB: уточнено ${d.kbb_learning.n} машин; прикидка ошибалась в среднем на ${d.kbb_learning.abs}% и была ${d.kbb_learning.bias>0?'выше':'ниже'} настоящего KBB на ${Math.abs(d.kbb_learning.bias)}%${d.kbb_learning.factor?` → прикидки теперь × ${d.kbb_learning.factor}`:' (поправка — от 5 уточнённых машин)'}</div>`:'')+
  `<div class="sortbar" style="margin:6px 0"><span class="muted" title="Можно нажать одну или обе — обе модели будут одним списком">Модели:</span> `+[['civic','Honda Civic'],['corolla','Toyota Corolla']].map(([m,t])=>`<button type="button" class="tab${models.includes(m)?' on':''}" onclick="toggleModel('${m}')">${t}</button>`).join('')+(models.length?` <button type="button" class="tab" onclick="models=[];try{localStorage.setItem('la-models','')}catch(e){};refresh()">все модели</button>`:'')+`</div>`+
- `<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
+ `<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${showRemoved?' on':''}" onclick="setRemoved(${!showRemoved})" title="Машины, у которых вы сняли звёздочку на CarMax: в общем списке их нет, чтобы не мешали. Нажмите — покажу только их; ещё раз — обратно к общему списку">☆ Убранные из избранного <span class="cnt">${d.removed_total||0}</span></button> <button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
  `<div class="sortbar" style="margin:6px 0"><span class="muted" title="Только машины CarMax с такими замечаниями аукциона">Major-дефекты (CarMax):</span> `+[['','выкл'],['engine','двигатель'],['trans','коробка'],['both','двигатель + коробка'],['any','любой из двух'],['none','без дефекта']].map(([v,t])=>`<button type="button" class="tab${defectBy===v?' on':''}" onclick="setDefect('${v}')">${t}</button>`).join('')+`</div>`+
  `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде'],['profit','прибыль ↓ (самые интересные сверху)'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${SORT_NOTE[sortBy]||'сверху самые выгодные'}</div>`;
@@ -1273,10 +1280,10 @@ async function kbbSold(){const btn=$('soldbtn');
 /* Что сейчас сужает список — видно сразу (фильтры запоминаются между запусками). */
 function activeFilters(){const f=[];const v=id=>($(id)&&$(id).value||'').trim();
  if(place)f.push((placeList().length>1?'площадки: ':'площадка: ')+placeList().join(', '));if($('picked')&&$('picked').checked)f.push('только отобранные (KBB или ставка)');
- if($('nophoto')&&$('nophoto').checked)f.push('без фото');if(onlyReturned)f.push('только вернувшиеся после продажи');if(models.length)f.push('модели: '+models.map(m=>({civic:'Honda Civic',corolla:'Toyota Corolla'}[m])).join(' + '));if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух',none:'без дефекта'}[defectBy]||defectBy));
+ if($('nophoto')&&$('nophoto').checked)f.push('без фото');if(showRemoved)f.push('только убранные из избранного CarMax');if(onlyReturned)f.push('только вернувшиеся после продажи');if(models.length)f.push('модели: '+models.map(m=>({civic:'Honda Civic',corolla:'Toyota Corolla'}[m])).join(' + '));if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух',none:'без дефекта'}[defectBy]||defectBy));
  if(v('q'))f.push('машина: «'+v('q')+'»');if(v('y1')||v('y2'))f.push('годы '+(v('y1')||'…')+'–'+(v('y2')||'…'));if(v('miles'))f.push('пробег до '+v('miles'));
  if(v('maxbid')&&v('maxbid')!=='15000')f.push('потолок до $'+v('maxbid'));return f}
-function resetFilters(){place='';defectBy='';onlyReturned=false;models=[];try{localStorage.setItem('la-models','');localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-returned','');localStorage.setItem('la-picked','')}catch(e){}
+function resetFilters(){place='';defectBy='';onlyReturned=false;showRemoved=false;models=[];try{localStorage.setItem('la-removed','');localStorage.setItem('la-models','');localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-returned','');localStorage.setItem('la-picked','')}catch(e){}
  ['q','y1','y2','miles'].forEach(id=>{if($(id))$(id).value=''});if($('maxbid'))$('maxbid').value='15000';if($('picked'))$('picked').checked=false;if($('nophoto'))$('nophoto').checked=false;refresh()}
 function showFilters(){const e=$('filters');if(!e)return;const f=activeFilters();
  e.innerHTML=f.length?`<b>Включены фильтры:</b> ${esc(f.join(' · '))} — в списке не все машины. <button type="button" class="tab" onclick="resetFilters()">сбросить фильтры</button>`:''}
