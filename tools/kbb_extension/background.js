@@ -27,6 +27,8 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   if (msg && msg.type === 'open-bg' && sender.tab && /^http:\/\/127\.0\.0\.1:8765\//.test(sender.url || '') && /^https:\/\//.test(msg.url || '')) {
     chrome.tabs.create({ url: msg.url, active: false, index: sender.tab.index + 1, openerTabId: sender.tab.id }, function (tab) {
       if (msg.cars && tab) { var item = {}; item['cars-' + tab.id] = msg.cars; chrome.storage.session.set(item); }
+      /* Вкладка сбора владельцев: CarMax может переадресовать и потерять #la-owners — помним её сами. */
+      if (tab && /#la-owners/.test(msg.url)) { var own = {}; own['owners-' + tab.id] = 1; chrome.storage.session.set(own); }
     });
     return false;
   }
@@ -34,6 +36,26 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
     var key = 'cars-' + sender.tab.id;
     chrome.storage.session.get(key, function (got) { chrome.storage.session.remove(key); reply({ cars: (got || {})[key] || '' }); });
     return true;
+  }
+  if (msg && msg.type === 'owners' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
+    fetch('http://127.0.0.1:8765/api/owners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cars: msg.cars || [] }) })
+      .then(function (r) { return r.json(); }).then(function (a) { reply(a); }).catch(function () { reply(null); });
+    return true;
+  }
+  if (msg && msg.type === 'owners-needed') {
+    fetch('http://127.0.0.1:8765/api/owners_needed', { cache: 'no-store' })
+      .then(function (r) { return r.json(); }).then(function (a) { reply(a); }).catch(function () { reply({ vins: [] }); });
+    return true;
+  }
+  if (msg && msg.type === 'owners-tab' && sender.tab) {
+    chrome.storage.session.get('owners-' + sender.tab.id, function (got) { reply({ yes: !!(got || {})['owners-' + sender.tab.id] }); });
+    return true;
+  }
+  /* Вкладку сбора владельцев закрывает она сама, когда закончила, — только ту, что открыли для этого. */
+  if (msg && msg.type === 'close' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
+    var key = 'owners-' + sender.tab.id;
+    chrome.storage.session.get(key, function (got) { if ((got || {})[key]) { chrome.storage.session.remove(key); chrome.tabs.remove(sender.tab.id); } });
+    return false;
   }
   if (msg && msg.type === 'close' && sender.tab && /^https:\/\/www\.kbb\.com\//.test(sender.tab.url || '')) {
     chrome.tabs.remove(sender.tab.id);

@@ -401,6 +401,38 @@ class RemovedFavoritesListTest(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class PhotoWaitTest(unittest.TestCase):
+    def test_wait_pictures_then_arrived(self):
+        from lot_analyzer import photo_wait
+        data = {}
+        day1, day2 = time.mktime((2026, 10, 22, 14, 0, 0, 0, 0, -1)), time.mktime((2026, 10, 23, 12, 0, 0, 0, 0, -1))
+        row = {"vin": "WBAPH5G5XBNM00001", "no_photos": "да"}
+        self.assertTrue(photo_wait.update([row], data, now=day1))
+        self.assertEqual(row["photo_wait"], "2026-10-22")
+        row = {"vin": "WBAPH5G5XBNM00001", "no_photos": ""}
+        self.assertTrue(photo_wait.update([row], data, now=day2))
+        self.assertEqual((row.get("photo_wait"), row["photo_arrived"]), (None, "2026-10-23"))
+        row = {"vin": "WBAPH5G5XBNM00001", "no_photos": ""}
+        photo_wait.update([row], data, now=day2 + 8 * 86400)      # через неделю пометка уходит
+        self.assertNotIn("photo_arrived", row)
+
+
+class OwnersTest(unittest.TestCase):
+    def test_owners_saved_needed_and_shown(self):
+        app.OWNERS_PATH.unlink(missing_ok=True)
+        try:
+            rows = [{"auction": "CarMax", "vin": "1HGCR2F30FA000001", "group": "popular", "calc_verdict": "МОЖНО до $5,000", "calc_profit_market_usd": "900"},
+                    {"auction": "CarMax", "vin": "1HGCR2F30FA000002", "group": "other", "calc_verdict": "ПРОПУСТИТЬ: рама"},
+                    {"auction": "Manheim", "vin": "1HGCR2F30FA000003", "group": "popular", "calc_verdict": "МОЖНО"}]
+            self.assertEqual(app.owners_needed(rows), ["1HGCR2F30FA000001"])
+            self.assertEqual(app.save_owners([{"vin": "1HGCR2F30FA000001", "owners": 3, "note": "Number of Owners 3"}]), 1)
+            self.assertEqual(app.save_owners([{"vin": "1HGCR2F30FA000001", "owners": 0, "note": "не нашёл"}]), 0)   # не затирает
+            self.assertEqual(app.load_owners()["1HGCR2F30FA000001"]["owners"], 3)
+            self.assertEqual(app.owners_needed(rows), [])
+        finally:
+            app.OWNERS_PATH.unlink(missing_ok=True)
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
