@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.1"
-PROGRAM_VERSION = "2026-10-23"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-23.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -688,9 +688,14 @@ def by_place(rows: list[dict], q: dict) -> tuple[list[dict], list[list]]:
     for r in rows:
         counts[r["place"]] = counts.get(r["place"], 0) + 1
     places = sorted(([name, n] for name, n in counts.items()), key=lambda x: (-x[1], x[0]))
-    if q.get("place"):
-        rows = [r for r in rows if r["place"] == q["place"]]
+    chosen = place_choice(q)
+    if chosen:                                   # одна или несколько площадок («CarMax Chino|CarMax Oxnard»)
+        rows = [r for r in rows if r["place"] in chosen]
     return rows, places
+
+
+def place_choice(q: dict) -> set[str]:
+    return {p for p in str(q.get("place", "")).split("|") if p}
 
 
 def verdict_rank(verdict: str) -> float:
@@ -872,7 +877,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                    float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None, max_bid=num("maxbid"))
                 rows = [r for r in rows if not r.get("passed")]
                 rows, _ = by_place(rows, q)
-                title = ("На осмотр" + (f" — {q['place']}" if q.get("place") else "") + (" — отобранные" if q.get("picked") == "1" else "")
+                title = ("На осмотр" + (f" — {', '.join(sorted(place_choice(q)))}" if q.get("place") else "") + (" — отобранные" if q.get("picked") == "1" else "")
                          + (f" — {q['q']}" if q.get("q") else "" if q.get("place") or q.get("picked") == "1" else " — все машины из файлов"))
                 self._send(render_html(rows, title).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
@@ -1155,7 +1160,10 @@ function resultCell(x){if(!x.auction_result)return '';const p=Number(x.auction_r
 const crCls=g=>{const n=parseFloat(g);return isNaN(n)?'':n>=4?'v-ok':n>=3?'v-mid':'v-bad'};
 let place='';try{place=localStorage.getItem('la-place')||''}catch(e){}
 try{$('picked').checked=localStorage.getItem('la-picked')==='1'}catch(e){}
+/* Площадки — можно выбрать одну, две, три …: place = «CarMax Chino|CarMax Oxnard»; пусто — все. */
+const placeList=()=>place?place.split('|'):[];
 function setPlace(p){place=p;try{localStorage.setItem('la-place',p)}catch(e){}refresh()}
+function togglePlace(p){const l=placeList();setPlace((l.includes(p)?l.filter(x=>x!==p):l.concat([p])).join('|'))}
 function setPicked(on){try{localStorage.setItem('la-picked',on?'1':'')}catch(e){}refresh()}
 let showPassed=false;try{showPassed=localStorage.getItem('la-passed')==='1'}catch(e){}
 /* Сортировка списка: '' — по выгоде (как раньше), 'market' — средняя цена покупки на аукционе по возрастанию, 'market_desc' — по убыванию. */
@@ -1200,9 +1208,9 @@ async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=tr
  try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
  finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
 function render(d){shown=d.rows;setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
-if(place&&!(d.places||[]).some(([p])=>p===place)&&(d.places||[]).length){place='';try{localStorage.setItem('la-place','')}catch(e){};refresh();return}
+{const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'));return}}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
- (d.places||[]).map(([p,n])=>`<button type="button" class="tab${p===place?' on':''}" onclick="setPlace(this.dataset.p)" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
+ (d.places||[]).map(([p,n])=>`<button type="button" class="tab${placeList().includes(p)?' on':''}" onclick="togglePlace(this.dataset.p)" title="Нажмите ещё площадки — они добавятся в список; нажмите снова — уберётся" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
  `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`+
  `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов закончился), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
@@ -1260,7 +1268,7 @@ async function kbbSold(){const btn=$('soldbtn');
  openKbb(soldList);$('stat').textContent=`KBB для ${soldList.length} проданных машин: вкладка kbb.com работает в фоне, цены попадут в вашу базу итогов (цена продажи ÷ KBB).`;setTimeout(loadSold,60000)}
 /* Что сейчас сужает список — видно сразу (фильтры запоминаются между запусками). */
 function activeFilters(){const f=[];const v=id=>($(id)&&$(id).value||'').trim();
- if(place)f.push('площадка: '+place);if($('picked')&&$('picked').checked)f.push('только отобранные (KBB или ставка)');
+ if(place)f.push((placeList().length>1?'площадки: ':'площадка: ')+placeList().join(', '));if($('picked')&&$('picked').checked)f.push('только отобранные (KBB или ставка)');
  if($('nophoto')&&$('nophoto').checked)f.push('без фото');if(onlyReturned)f.push('только вернувшиеся после продажи');if(models.length)f.push('модели: '+models.map(m=>({civic:'Honda Civic',corolla:'Toyota Corolla'}[m])).join(' + '));if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух',none:'без дефекта'}[defectBy]||defectBy));
  if(v('q'))f.push('машина: «'+v('q')+'»');if(v('y1')||v('y2'))f.push('годы '+(v('y1')||'…')+'–'+(v('y2')||'…'));if(v('miles'))f.push('пробег до '+v('miles'));
  if(v('maxbid')&&v('maxbid')!=='15000')f.push('потолок до $'+v('maxbid'));return f}

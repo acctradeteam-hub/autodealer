@@ -212,6 +212,9 @@ class PlaceTest(unittest.TestCase):
         self.assertEqual(len(only), 2)
         self.assertEqual(places, [["CarMax Murrieta", 2], ["CarMax Oceanside", 1]])
         self.assertEqual(len(app.by_place(rows, {"place": "CarMax Murrieta", "picked": "1"})[0]), 1)
+        rows.append({"place": "CarMax Chino"})
+        self.assertEqual(len(app.by_place(rows, {"place": "CarMax Murrieta|CarMax Chino"})[0]), 3)    # несколько площадок сразу
+        self.assertEqual(len(app.by_place(rows, {"place": "CarMax Oceanside|CarMax Chino"})[0]), 2)
 
 
 class PassedTest(unittest.TestCase):
