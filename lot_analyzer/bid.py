@@ -363,7 +363,7 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
         share = float(market[f"kbb_{kind}"])
         hybrid_note = ""
-        if data.kbb_source:
+        if data.kbb_source and "по вашим уточнениям" not in data.kbb_source:   # уже поправлена обучением — не дважды
             # Предварительный KBB (по похожим) выше настоящего: на торгах CarMax 19–20.10 цена продажи таких машин
             # была на 10–13% ниже нашей оценки рынка (162 продажи), с настоящим KBB — в пределах ±3%.
             factor = float((costs.get("kbb_estimate") or {}).get("market_factor", 0.88))
@@ -785,7 +785,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         estimator.add_rows(rows)
     cfg = costs.get("kbb_estimate") or {}
     for row in rows:
-        row["kbb_estimate_usd"] = row["kbb_estimate_source"] = ""
+        row["kbb_estimate_usd"] = row["kbb_estimate_source"] = row["kbb_estimate_raw_usd"] = ""
         if estimator is not None and not (parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))):
             year = int(row["year"]) if str(row.get("year", "")).isdigit() else None
             miles = parse_money(row.get("odometer_miles"))
@@ -793,6 +793,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
             market_based = est is not None and est.source.startswith("по рынку")
             if est and (not market_based or (cfg.get("use_market_comps", True) and est.n >= int(cfg.get("min_market_comps", 5)))):
                 row["kbb_estimate_usd"] = f"{est.value:.0f}"
+                row["kbb_estimate_raw_usd"] = f"{est.raw:.0f}" if getattr(est, "raw", None) else ""
                 row["kbb_estimate_source"] = est.source + (" (грубо, ±20%)" if market_based else "")
         data = input_from_row(row)
         if not data.kbb_private_party and row.get("kbb_estimate_usd"):

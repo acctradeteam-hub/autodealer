@@ -25,11 +25,7 @@ DEFAULT = [
     {"make": "Honda", "model": r"^clarity\b"},
     {"make": "Honda", "model": r"^insight\b"},
     {"make": "Chevrolet", "model": r"^volt\b"},
-    {"make": "Lexus", "model": r"^ct\s*\d*h?\b"},
-    {"make": "Lexus", "model": r"^rx\s*\d*h?\b"},
-    {"make": "Lexus", "model": r"^is\s*\d*\b"},
-    {"make": "Lexus", "model": r"^es\s*\d*h?\b"},
-    {"make": "Lexus", "model": r"^gs\s*\d*[ht]?\b"},
+    {"make": "Lexus", "model": r"."},                     # все Lexus
     {"make": "Tesla", "model": r"^model\s*3\b(?!.*(long range|performance|awd|dual motor))", "years": [2022]},
 ]
 

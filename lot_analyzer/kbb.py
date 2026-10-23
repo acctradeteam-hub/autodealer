@@ -44,6 +44,7 @@ class Estimate:
     source: str           # «точно», «по KBB N похожих», «по рынку: N продаж»
     n: int
     spread: float         # разброс пересчитанных значений (межквартильный, доля)
+    raw: float | None = None   # прикидка до поправки по вашим уточнениям (kbb_learning)
 
 
 def model_key(make: str, model: str) -> tuple[str, str]:

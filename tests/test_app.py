@@ -180,9 +180,10 @@ class PopularTest(unittest.TestCase):
                ("2022", "Tesla", "Model 3", "Standard Range"), ("2020", "Mazda", "CX-5", "Touring"), ("2012", "Toyota", "Corolla", "LE"),
                ("2014", "Lexus", "CT", "CT 200h"), ("2013", "Lexus", "CT 200h", "Base"), ("2016", "Lexus", "RX 450h", ""), ("2018", "Lexus", "RX", "350"),
                ("2016", "Lexus", "IS", "200t Base"), ("2014", "Lexus", "IS 250", ""), ("2017", "Lexus", "ES 350", ""), ("2020", "Lexus", "ES", "300h"), ("2018", "Honda", "Clarity Plug-in Hybrid", "Base"), ("2017", "Honda", "Clarity", "Electric"),
-               ("2019", "Honda", "Insight", "EX"), ("2012", "Mazda", "Mazda3", "i Touring")]
+               ("2019", "Honda", "Insight", "EX"), ("2012", "Mazda", "Mazda3", "i Touring"),
+               ("2018", "Lexus", "GX", "460"), ("2019", "Lexus", "NX", "300"), ("2015", "Lexus", "LS 460", "")]   # все Lexus
         no = [("2021", "Toyota", "Corolla Cross", "LE"), ("2022", "Tesla", "Model 3", "Long Range"), ("2023", "Tesla", "Model 3", "Standard Range"),
-              ("2018", "Honda", "Civic Type R", "Touring"), ("2015", "Toyota", "Prius v", "Three"), ("2020", "Mazda", "CX-30", ""), ("2016", "Ford", "Focus", "SE"), ("2018", "Lexus", "GX", "460"), ("2019", "Lexus", "NX", "300"),
+              ("2018", "Honda", "Civic Type R", "Touring"), ("2015", "Toyota", "Prius v", "Three"), ("2020", "Mazda", "CX-30", ""), ("2016", "Ford", "Focus", "SE"),
               ("2011", "Mazda", "Mazda3", "s Sport")]
         for y, mk, md, tr in yes:
             self.assertTrue(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), md)
@@ -524,6 +525,29 @@ class CarmaxRuTableTest(unittest.TestCase):
         self.assertEqual((sold["date"], sold["auction"], sold["lot"], sold["outcome"], sold["price"], sold["miles"]),
                          ("2026-10-20", "CarMax Chino", "A/1", "Sold", "1600", "115358"))
         self.assertEqual((pending["outcome"], pending["price"]), ("нет итога", ""))
+
+
+class KbbLearningTest(unittest.TestCase):
+    def test_prelim_then_real_kbb_is_a_lesson(self):
+        """Прикидка $10,000 запомнена; пришёл настоящий KBB $9,000 — «прикидка была ≈ $10,000 (+11%)», поправка ×0.9."""
+        from lot_analyzer import kbb_learning
+        data = {"prelim": {}, "learned": {}}
+        cars = [(f"1HGCR2F3XFA00000{i}", 10000, 9000) for i in range(5)]
+        for vin, est, _ in cars:
+            self.assertTrue(kbb_learning.update([{"vin": vin, "make": "Honda", "model": "Accord", "kbb_estimate_usd": str(est)}], data))
+        self.assertEqual(len(data["prelim"]), 5)
+        row = {}
+        for vin, _, real in cars:
+            row = {"vin": vin, "make": "Honda", "model": "Accord", "kbb_private_party_usd": str(real)}
+            kbb_learning.update([row], data)
+        self.assertEqual((row["kbb_prelim_usd"], row["kbb_prelim_pct"]), ("10000", "+11"))
+        self.assertEqual((len(data["prelim"]), len(data["learned"])), (0, 5))
+        table = kbb_learning.factors(data["learned"])
+        self.assertAlmostEqual(table["*"][0], 0.9)
+        factor, note = kbb_learning.correction(table, "Honda", "Accord EX")
+        self.assertAlmostEqual(factor, 0.9)
+        self.assertIn("этой модели", note)
+        self.assertEqual(kbb_learning.summary(data["learned"]), {"n": 5, "bias": 11, "abs": 11, "factor": 0.9})
 
 
 class KbbMilesCapTest(unittest.TestCase):

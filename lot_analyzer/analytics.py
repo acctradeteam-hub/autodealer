@@ -142,9 +142,11 @@ class PreKbb:
     Проверка на 180 ваших KBB (каждая машина — по остальным): оценка есть у ~80%, ошибка обычно ±9%,
     в пределах ±20% — 86%. Точный KBB — кнопкой «получить KBB»."""
 
-    def __init__(self, log: dict[str, dict], costs: dict):
+    def __init__(self, log: dict[str, dict], costs: dict, learned: dict | None = None):
         from .kbb import Comp, KbbEstimator
+        from .kbb_learning import factors
 
+        self.learn = factors(learned or {})              # поправки по вашим «прикидка → настоящий KBB»
         self.by_mmr = OwnKbb(log)
         self.similar = KbbEstimator([], costs)
         for rec in log.values():
@@ -155,7 +157,7 @@ class PreKbb:
 
     def copy(self) -> "PreKbb":
         clone = PreKbb.__new__(PreKbb)
-        clone.by_mmr, clone.similar = self.by_mmr, self.similar.copy()
+        clone.by_mmr, clone.similar, clone.learn = self.by_mmr, self.similar.copy(), self.learn
         return clone
 
     def add_rows(self, rows: list[dict]) -> None:
@@ -164,12 +166,18 @@ class PreKbb:
 
     def estimate(self, make: str, model: str, year: int | None, miles: float | None, vin: str = ""):
         from .kbb import Estimate
+        from .kbb_learning import correction
 
         found = self.similar.estimate(make, model, year, miles, exclude_vin=vin)
         if found and found.source.startswith("по KBB похожих"):
-            return Estimate(value=found.value, n=found.n, spread=found.spread,
-                            source=f"прикидка по вашей базе KBB: {found.n} похожих ({model.split(' ')[0]} ±2 года, на этот год и пробег), обычно ±10%")
-        return self.by_mmr.estimate(make, model, year, miles, vin)
+            est = Estimate(value=found.value, n=found.n, spread=found.spread,
+                           source=f"прикидка по вашей базе KBB: {found.n} похожих ({model.split(' ')[0]} ±2 года, на этот год и пробег), обычно ±10%")
+        else:
+            est = self.by_mmr.estimate(make, model, year, miles, vin)
+        if est is None:
+            return None
+        factor, note = correction(self.learn, make, model)
+        return Estimate(value=est.value * factor, source=est.source + (f"; {note}" if note else ""), n=est.n, spread=est.spread, raw=est.value)
 
 
 def _model_key(make: str, model: str) -> tuple[str, str]:
