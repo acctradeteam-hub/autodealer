@@ -472,6 +472,33 @@ class PrintListNoPicturesTest(unittest.TestCase):
         self.assertIn("$5,200", page)                          # моя ставка (MP)
 
 
+class MyBidsFilterTest(unittest.TestCase):
+    def test_only_cars_with_my_bid_by_profit(self):
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html")
+        old_bids = app.BIDS_PATH.read_bytes() if app.BIDS_PATH.exists() else None
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            allrows = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1").read())["rows"]
+            vins = [r["vin"] for r in allrows if r.get("vin")][:3]
+            app.BIDS_PATH.write_text(json.dumps({v: {"usd": 1000 + 500 * i} for i, v in enumerate(vins)}), encoding="utf-8")
+            got = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1&bids=1&sort=market").read())
+            rows = got["rows"]
+            had_mp = [r["vin"] for r in allrows if r.get("my_proxy_usd")]     # ставка уже в заметке (MP)
+            self.assertEqual(sorted(r["vin"] for r in rows), sorted(set(vins) | set(had_mp)))
+            profits = [float(r.get("profit_at_my_bid_usd") or -1e9) for r in rows]
+            self.assertEqual(profits, sorted(profits, reverse=True))     # сверху — самая прибыльная при ставке
+        finally:
+            server.shutdown()
+            if old_bids is None:
+                app.BIDS_PATH.unlink(missing_ok=True)
+            else:
+                app.BIDS_PATH.write_bytes(old_bids)
+            shutil.rmtree(tmp)
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
