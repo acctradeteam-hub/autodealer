@@ -7,6 +7,7 @@
     KBB 19,530$ 10/2/26                            ← KBB Private Party и дата, на которую он посчитан
     MP 15000                                       ← ваша ставка, вписанная в окне («Наша ставка»)
     Был: 9/28/26 CarMax Murrieta — продана $1,600  ← прошлые торги этой машины (по VIN, из вашей базы итогов)
+    Голос: дефекта нет · коробка переключается мягко ← надиктовано на аукционе (voice.py)
     CarMax: Major transmission defect, Prior rental ← замечания самого аукциона (announcements)
 Замечания аукциона нужны потом, при разборе итогов торгов: дешёвая продажа с «Major engine defect» —
 не показатель цены. Строку «KBB …$» окно читает обратно; строку аукциона при чтении заметки пропускает
@@ -19,7 +20,7 @@ import datetime as dt
 import re
 
 # Строки, которые пишет программа (и прежний формат «LA …»): при пересчёте заменяются, при чтении пропускаются.
-OWN_PREFIXES = ("LA ", "CarMax: ", "Manheim: ", "ACV: ", "ADESA: ", "Был: ")
+OWN_PREFIXES = ("LA ", "CarMax: ", "Manheim: ", "ACV: ", "ADESA: ", "Был: ", "Голос: ")
 
 
 def _date(iso: str = "") -> str:
@@ -51,7 +52,8 @@ def lot_note(row: dict) -> str:
     bid = str(row.get("my_proxy_usd") or "").replace(",", "") if row.get("my_bid_from_window") else ""
     has_bid = bid.replace(".", "", 1).isdigit() and float(bid) > 0
     history = past_sales(row)
-    if not has_kbb and not has_bid and not history:
+    voice = str(row.get("voice_notes") or "").strip()        # надиктовано на аукционе (приложение «Голосовые заметки»)
+    if not has_kbb and not has_bid and not history and not voice:
         return ""
     lines = [f"KBB {float(kbb):,.0f}$ {_date(row.get('kbb_date', ''))}"] if has_kbb else []
     if has_bid:
@@ -62,6 +64,8 @@ def lot_note(row: dict) -> str:
         remarks = ""
     if remarks:
         lines.append(f"{row.get('auction') or 'Auction'}: {remarks}")
+    if voice:
+        lines.append(f"Голос: {voice}")
     return "\n".join(lines)
 
 

@@ -15,7 +15,7 @@
     if (hide) { var t = toast; toast = null; setTimeout(function () { t.remove(); }, hide); }
   };
   var pause = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
-  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: |Был: )/;
+  var OWN = /^(LA |CarMax: |Manheim: |ACV: |ADESA: |Был: |Голос: )/;
   /* То же правило, что на CarMax: строка KBB с датой (тот же KBB — не трогаем), MP — заменяется, замечания аукциона — свежие. */
   var merged = function (current, note) {
     var parts = note.split('\n');

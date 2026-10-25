@@ -499,6 +499,40 @@ class MyBidsFilterTest(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class VoiceNotesTest(unittest.TestCase):
+    def test_list_to_phone_and_notes_back(self):
+        """«📱 На телефон» кладёт список в закрытый репозиторий; заметки с телефона — в строки и в Notes («Голос: …»)."""
+        import base64
+        from unittest import mock
+        from lot_analyzer import inbox, voice
+        from lot_analyzer.notes import lot_note, strip_own
+        voice.LOCAL_PATH.unlink(missing_ok=True)
+        calls = []
+        notes_file = {"notes": {"1hgcr2f30fa000001": {"text": "коробка переключается мягко", "tags": ["дефекта нет", "беру"]}}}
+
+        def fake(method, url, token, body=None):
+            calls.append((method, url.split("/contents/")[-1], body))
+            if method == "GET" and url.endswith("voice/notes.json"):
+                return 200, {"content": base64.b64encode(json.dumps(notes_file).encode()).decode()}
+            return (404, {}) if method == "GET" else (201, {})
+        rows = [{"auction": "CarMax", "vin": "1HGCR2F30FA000001", "lot_number": "A/5", "place": "CarMax Murrieta", "favorite_known": "1",
+                 "favorite": "1", "year": "2015", "make": "Honda", "model": "Accord", "kbb_private_party_usd": "9100", "calc_verdict": "МОЖНО"}]
+        with mock.patch.object(inbox, "load_settings", return_value={"repo": "me/inbox", "token": "t"}), \
+             mock.patch.object(inbox, "_is_private", return_value=True), mock.patch.object(inbox, "_request", side_effect=fake):
+            self.assertEqual(voice.push_list(rows), {"ok": True, "cars": 1})
+            sent = json.loads(base64.b64decode(calls[-1][2]["content"]))
+            self.assertEqual((calls[-1][1], sent["cars"][0]["lot"], sent["cars"][0]["car"]), ("voice/list.json", "A/5", "2015 Honda Accord"))
+            self.assertTrue(voice.pull())
+        voice.attach(rows)
+        self.assertEqual(rows[0]["voice_notes"], "дефекта нет, беру · коробка переключается мягко")
+        self.assertIn("Голос: дефекта нет, беру · коробка переключается мягко", lot_note(rows[0]))
+        self.assertEqual(strip_own("мой текст\nГолос: беру"), "мой текст")
+        with mock.patch.object(inbox, "load_settings", return_value={"repo": "me/inbox", "token": "t"}), \
+             mock.patch.object(inbox, "_is_private", return_value=False):
+            self.assertFalse(voice.push_list(rows)["ok"])            # открытый репозиторий — никогда
+        voice.LOCAL_PATH.unlink(missing_ok=True)
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
