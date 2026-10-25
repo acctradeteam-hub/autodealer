@@ -131,7 +131,8 @@ class TestOneWindow(unittest.TestCase):
         self.assertTrue(picked)
         self.assertTrue(all(r["inspect"] and not r["calc_verdict"].startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО")) for r in picked))
         page = render_html(rows)
-        self.assertIn("Потолок без дефекта", page)
+        self.assertIn("Моя оценка", page)
+        self.assertNotIn("Почему в списке", page)
         self.assertIn("A/70", page)                                  # Civic с «Major transmission defect»
         self.assertIn("Убрать из списка", page)                      # перед печатью позиции можно убрать
         self.assertIn("Вернуть всё", page)
@@ -449,6 +450,26 @@ class SaleDateFromOlderPageTest(unittest.TestCase):
         self.assertEqual(row["sale_date"], "Oct 26, 9:00am PT")
         self.assertNotIn("без даты", row.get("passed", ""))
         shutil.rmtree(tmp)
+
+
+class PrintListNoPicturesTest(unittest.TestCase):
+    def test_no_pictures_in_print_list_with_notes(self):
+        from lot_analyzer.inspection import render_html
+        base = {"auction": "CarMax", "location": "Murrieta, CA", "sale_date": "Oct 26, 9:00am PT", "favorite_known": "1"}
+        rows = [dict(base, vin="V1", lot_number="A/1", year="2015", make="Honda", model="Civic", no_photos="да", calc_verdict="НУЖЕН KBB",
+                     site_notes="KBB 9,000$ 10/22/26\nправая дверь помята", kbb_private_party_usd="9100", kbb_date="2026-10-25"),
+                dict(base, vin="V2", lot_number="A/2", no_photos="да", calc_verdict="ПРОПУСТИТЬ: нет титула"),     # не смотрим
+                dict(base, vin="V3", lot_number="A/3", no_photos="да", calc_verdict="МОЖНО", favorite_removed="1"),  # сняли звёздочку
+                dict(base, vin="V4", lot_number="A/4", calc_verdict="МОЖНО", favorite="1", my_proxy_usd="5200")]
+        page = render_html(rows)
+        self.assertIn("data-id='V1'", page)
+        self.assertIn("NO PICTURES", page)
+        self.assertIn("Мои заметки: правая дверь помята", page)
+        self.assertNotIn("Мои заметки: KBB", page)            # строка программы — не «моя»
+        self.assertNotIn("data-id='V2'", page)
+        self.assertNotIn("data-id='V3'", page)
+        self.assertIn("data-id='V4'", page)
+        self.assertIn("$5,200", page)                          # моя ставка (MP)
 
 
 class NewerPageWinsTest(unittest.TestCase):
