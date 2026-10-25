@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.2"
-PROGRAM_VERSION = "2026-10-23.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-25"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -603,9 +603,18 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     # Новые файлы первыми: дубликаты берутся из свежего. В конце — машины со звёздочкой на CarMax, которых нет в списках.
     favorites = load_favorites()
     sources = [(saved_time(path), cache.rows(path)) for path in pages] + [(time.time(), favorite_rows(set()))]
+    # День торгов машины — с самой свежей страницы, где он указан: в части видов CarMax (watch list) даты нет,
+    # и машина со свежей страницы без даты на следующий день пряталась как «без даты торгов» (A/2 Murrieta 23.10).
+    sale_days: dict[str, str] = {}
+    for _, page_rows in sources:
+        for row in page_rows:
+            if row.get("vin") and row.get("sale_date"):
+                sale_days.setdefault(row["vin"], row["sale_date"])
     for saved_at, page_rows in sources:
         for row in page_rows:
             row["_saved"] = saved_at
+            if not row.get("sale_date") and sale_days.get(row.get("vin", "")):
+                row["sale_date"] = sale_days[row["vin"]]
             set_favorite(row, saved_at, favorites.get(row.get("vin", "")))
             key = row.get("vin") or f"{row.get('auction')}:{row.get('lot_number')}:{row.get('location')}"
             # Машину решает самый свежий файл: сначала «уже видели», потом фильтры — иначе вчерашняя строка

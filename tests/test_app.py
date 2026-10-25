@@ -433,6 +433,24 @@ class OwnersTest(unittest.TestCase):
             app.OWNERS_PATH.unlink(missing_ok=True)
 
 
+class SaleDateFromOlderPageTest(unittest.TestCase):
+    def test_newest_page_without_date_takes_it_from_older(self):
+        """Свежая страница (watch list) без даты торгов, на вчерашней — «Oct 26»: машина не прячется как «без даты»."""
+        from unittest import mock
+        vin = "JTDS4RCE7LJ000001"
+        old = {"auction": "CarMax", "vin": vin, "year": "2020", "make": "Toyota", "model": "Corolla", "sale_date": "Oct 26, 9:00am PT"}
+        new = {**old, "sale_date": ""}
+        tmp = Path(tempfile.mkdtemp())
+        p_old, p_new = tmp / "CarMax_Search_2026-10-22_2047.html", tmp / "CarMax_Search_2026-10-23_1215.html"
+        p_old.write_text("x"), p_new.write_text("x")
+        cache = app.PageCache()
+        with mock.patch.object(cache, "rows", side_effect=lambda p: [dict(new if p == p_new else old)]):
+            (row,) = app._search_rows([p_new, p_old], cache, load_costs(COSTS), "")
+        self.assertEqual(row["sale_date"], "Oct 26, 9:00am PT")
+        self.assertNotIn("без даты", row.get("passed", ""))
+        shutil.rmtree(tmp)
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
