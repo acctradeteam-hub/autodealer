@@ -1,0 +1,103 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Аукцион: заметки</title>
+<style>
+:root{color-scheme:light}body{margin:0}
+/* Layout: одна колонка карточек лотов, как ряд машин на стоянке; снизу — постоянная полоса «Отправить в программу». */
+:root{
+  --bg:#eef0f1; --card:#ffffff; --fg:#16191c; --muted:#5d656d; --line:#d3d8dc;
+  --accent:#e8a800; --accent-ink:#1b1400; --ok:#1f7a45; --bad:#b3261e; --chip:#e3e7ea;
+  --f-display:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#121518; --card:#1b1f23; --fg:#e9ecee; --muted:#9aa3ab; --line:#2e353b;
+  --accent:#f2b81c; --accent-ink:#1b1400; --ok:#53c084; --bad:#ff8a80; --chip:#262c31; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#121518; --card:#1b1f23; --fg:#e9ecee; --muted:#9aa3ab; --line:#2e353b;
+  --accent:#f2b81c; --accent-ink:#1b1400; --ok:#53c084; --bad:#ff8a80; --chip:#262c31; color-scheme:dark}
+html,body{background:var(--bg);color:var(--fg)}
+[hidden]{display:none!important}
+body{font:16px/1.4 var(--f-body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px 96px}
+h1{font:700 24px/1.1 var(--f-display);letter-spacing:.3px;margin:0;text-wrap:balance}
+.top{display:flex;flex-direction:column;gap:8px;max-width:720px;margin:0 auto}
+.status{color:var(--muted);font-size:14px}
+.status b{color:var(--fg);font-weight:600}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,input,textarea{font:inherit;color:inherit}
+button{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:10px 14px;cursor:pointer;min-height:44px}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+input[type=search]{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+.chip{flex:none;border-radius:999px;padding:8px 12px;min-height:40px;background:var(--chip);border-color:transparent;font-size:15px}
+.chip.on{background:var(--fg);color:var(--bg)}
+.list{display:flex;flex-direction:column;gap:12px;max-width:720px;margin:12px auto 0}
+.car{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.car.done{border-left:6px solid var(--ok)}
+.head{display:flex;gap:12px;align-items:baseline;min-width:0}
+.lot{font:700 30px/1 var(--f-display);font-variant-numeric:tabular-nums;flex:none}
+.name{font:600 18px/1.2 var(--f-display);min-width:0}
+.name small{display:block;font:400 14px/1.3 var(--f-body);color:var(--muted)}
+.nopics{display:inline-block;margin-top:4px;font:700 13px/1 var(--f-display);letter-spacing:1px;background:var(--fg);color:var(--bg);padding:4px 6px;border-radius:4px}
+.nums{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+@media (max-width:520px){.nums{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.num{background:var(--chip);border-radius:8px;padding:6px 8px;min-width:0}
+.num span{display:block;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
+.num b{font:600 17px/1.2 var(--f-display);font-variant-numeric:tabular-nums}
+.prog{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:2px}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{border-radius:999px;padding:8px 12px;font-size:15px}
+.tag.on.good{background:var(--ok);border-color:var(--ok);color:#fff}
+.tag.on.badc{background:var(--bad);border-color:var(--bad);color:#fff}
+.mic{flex:none;width:56px;height:56px;border-radius:50%;background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-size:26px;padding:0}
+.say{display:flex;gap:8px;align-items:flex-start}
+.say textarea{flex:1;min-width:0}
+textarea{width:100%;box-sizing:border-box;min-height:84px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);resize:vertical;font-size:17px}
+.saved{font-size:13px;color:var(--muted)}
+.empty{max-width:720px;margin:24px auto;background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px}
+.empty ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+.warn{color:var(--bad);font-size:14px}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);
+  padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
+  display:flex;gap:10px;align-items:center;z-index:5}
+.bar .status{flex:1;min-width:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+details.cfg{font-size:14px;color:var(--muted)}
+details.cfg input,details.cfg button{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);margin-top:4px}
+@media (prefers-reduced-motion:no-preference){.car{transition:border-color .2s}}
+</style>
+</head><body>
+<div class="top">
+  <h1>Аукцион: заметки</h1>
+  <div class="status" id="liststate">Загружаю список машин…</div>
+  <div class="row">
+    <input type="search" id="q" placeholder="Лот, модель или конец VIN" autocomplete="off">
+    <button type="button" id="reload">Обновить список</button>
+  </div>
+  <div class="chips" id="places"></div>
+  <details class="cfg" id="cfg"><summary>Настройки GitHub</summary>
+    <label for="repo">Закрытый репозиторий (владелец/имя)</label>
+    <input id="repo" value="acctradeteam-hub/autodealer-inbox" autocomplete="off">
+    <label for="token">Токен GitHub (только этот репозиторий, Contents: Read and write)</label>
+    <input id="token" type="password" placeholder="github_pat_…" autocomplete="off">
+    <button type="button" id="savecfg">Сохранить</button>
+    <div id="cfgstate"></div>
+  </details>
+</div>
+<div id="empty" class="empty" hidden>
+  <b>Список машин пока не загружен</b>
+  <ol>
+    <li>Один раз: откройте «Настройки GitHub» выше и вставьте токен.</li>
+    <li>На компьютере в программе нажмите «📱 На телефон».</li>
+    <li>Здесь нажмите «Обновить список».</li>
+    <li>У машины нажмите 🎤 и говорите — текст встанет в заметку.</li>
+  </ol>
+  <div class="warn" id="emptywhy"></div>
+</div>
+<div class="list" id="list"></div>
+<div class="bar">
+  <div class="status" id="sync">Заметки сохраняются сами.</div>
+  <button type="button" class="primary" id="send">Отправить в программу</button>
+</div>
+<script src="app.js"></script>
+</body></html>

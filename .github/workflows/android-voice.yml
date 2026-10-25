@@ -1,0 +1,37 @@
+# Сборка приложения «Аукцион: заметки» (tools/android_voice) — .apk для Android.
+# Готовый файл — в Releases репозитория (voice-app-N): скачать на телефон и установить.
+name: Android voice app
+
+on:
+  push:
+    paths:
+      - "tools/android_voice/**"
+      - ".github/workflows/android-voice.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Build APK
+        run: gradle -p tools/android_voice assembleDebug --no-daemon
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp tools/android_voice/app/build/outputs/apk/debug/app-debug.apk auction-notes.apk
+          gh release create "voice-app-${{ github.run_number }}" auction-notes.apk \
+            --target "${{ github.sha }}" --prerelease \
+            --title "Аукцион: заметки (Android) — сборка ${{ github.run_number }}" \
+            --notes "Скачайте auction-notes.apk на телефон Android и установите (разрешите установку из этого источника)."
