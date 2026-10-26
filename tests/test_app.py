@@ -430,7 +430,10 @@ class OwnersTest(unittest.TestCase):
             self.assertEqual(app.save_owners([{"vin": "1HGCR2F30FA000001", "owners": 0, "note": "не нашёл"}]), 0)   # не затирает
             self.assertEqual(app.load_owners()["1HGCR2F30FA000001"]["owners"], 3)
             self.assertEqual(app.owners_needed(rows), [])
+            app.OWNERS_SCOPE.update(vins=["1HGCR2F30FA000001", "1HGCR2F30FA000009"], at=time.time())   # список окна
+            self.assertEqual(app.owners_needed(rows), ["1HGCR2F30FA000009"])          # известные — пропускаем
         finally:
+            app.OWNERS_SCOPE.update(vins=[], at=0.0)
             app.OWNERS_PATH.unlink(missing_ok=True)
 
 
