@@ -181,7 +181,7 @@ def is_runlist_pdf(path: Path) -> bool:
 
 
 def is_results_file(path: Path) -> bool:
-    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path) or is_carmax_ru_table(path)
+    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path) or is_carmax_ru_table(path) or is_carmax_sale_results(path)
             or is_postsale_pdf(path) or is_carmax_results(path))
 
 
@@ -445,6 +445,45 @@ def read_carmax_ru_table(path: Path) -> list[dict]:
     return out
 
 
+RESULTS_SALE_COLUMNS = {"Sale", "Lane", "Run", "VIN", "Status", "FinalBid"}
+
+
+def is_carmax_sale_results(path: Path) -> bool:
+    """Итоги CarMax / Velocicast «Sale, Lane, EventID, SaleStatus, … Run, VIN, … Status, FinalBid, WinnerBadge …»
+    (carmax-velocicast-results-10262026.csv)."""
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            return RESULTS_SALE_COLUMNS <= _header(handle.read(4000))
+    except OSError:
+        return False
+
+
+def read_carmax_sale_results(path: Path) -> list[dict]:
+    from .normalize import split_model
+
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    date = _export_date(path, [])
+    out = []
+    for r in rows:
+        status = (r.get("Status") or "").strip().upper()
+        outcome = {"SOLD": "Sold", "NOSALE": "No Sale", "NO SALE": "No Sale", "IFSALE": "IF Sale"}.get(status, status.title() or "нет итога")
+        model, trim = split_model(f"{r.get('Model', '')} {r.get('Trim', '')}".replace("(no trim)", "").strip())
+        price = _num(r.get("FinalBid"))
+        remarks = [x.strip().capitalize() for x in re.split(r"[;|]", r.get("Announcements") or "") if x.strip()]
+        rec = {"date": date, "auction": (r.get("Sale") or "").replace(" Auction Center", "").strip(), "code": "",
+               "lot": f"{(r.get('Lane') or '').strip()}/{(r.get('Run') or '').strip()}".strip("/"),
+               "vin": (r.get("VIN") or "").strip().upper(), "year": (r.get("Year") or "").strip(), "make": (r.get("Make") or "").strip(),
+               "model": f"{model} {trim}".strip(), "miles": re.sub(r"\D", "", r.get("Miles") or ""), "cr": "", "mmr": "",
+               "outcome": outcome, "price": str(int(price)) if price and outcome == "Sold" else "", "source": path.name,
+               "remarks": ", ".join(remarks), "kbb": ""}
+        rec["key"] = _key(rec)
+        out.append(rec)
+    return out
+
+
 def is_carmax_site_csv(path: Path) -> bool:
     if path.suffix.lower() != ".csv":
         return False
@@ -460,6 +499,8 @@ def read_file(path: Path) -> list[dict]:
         return read_velocicast_export(path)
     if is_carmax_ru_table(path):
         return read_carmax_ru_table(path)
+    if is_carmax_sale_results(path):
+        return read_carmax_sale_results(path)
     if is_carmax_site_csv(path):
         return read_carmax_site_table(path)
     if is_velocicast_page(path):

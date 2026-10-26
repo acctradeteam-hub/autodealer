@@ -752,6 +752,23 @@ class KbbLearningTest(unittest.TestCase):
         self.assertEqual(kbb_learning.summary(data["learned"]), {"n": 5, "bias": 11, "abs": 11, "factor": 0.9})
 
 
+class CarmaxSaleResultsTest(unittest.TestCase):
+    def test_sale_lane_run_finalbid_format(self):
+        """«carmax-velocicast-results-10262026.csv»: Sale, Lane, Run, VIN, Status, FinalBid … Данные выдуманные."""
+        from lot_analyzer import results
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "carmax-velocicast-results-10262026.csv"
+        path.write_text("Sale,Lane,EventID,SaleStatus,SaleTime,Run,ItemID,VIN,Stock,Year,Make,Model,Trim,Miles,OdoUnits,Announcements,Status,FinalBid,WinnerBadge\n"
+                        "CarMax Murrieta,B,14141,FINISHED,12:00PM EDT,128,1,1HGCR2F87DA000001,7031,2013,Honda,Accord,EX-L,122962,M,PRIOR LEASE; MAJOR ENGINE DEFECT,SOLD,6400,600\n"
+                        "CarMax Murrieta,B,14141,FINISHED,12:00PM EDT,129,2,1HGCR2F87DA000002,7032,2014,Honda,Civic,LX,90000,M,,NOSALE,4100,\n",
+                        encoding="utf-8")
+        self.assertTrue(results.is_results_file(path))
+        sold, nosale = results.read_file(path)
+        self.assertEqual((sold["date"], sold["auction"], sold["lot"], sold["outcome"], sold["price"]), ("2026-10-26", "CarMax Murrieta", "B/128", "Sold", "6400"))
+        self.assertIn("Major engine defect", sold["remarks"])
+        self.assertEqual((nosale["outcome"], nosale["price"]), ("No Sale", ""))
+
+
 class KbbMilesCapTest(unittest.TestCase):
     def test_low_miles_not_extrapolated(self):
         """Corolla 2022 с 14 тыс. миль по похожим со 100 тыс.: не ×2, а не больше ×1.6."""
