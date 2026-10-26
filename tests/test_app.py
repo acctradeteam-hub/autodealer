@@ -566,6 +566,21 @@ class CeilingBidTest(unittest.TestCase):
         self.assertIsNone(app.ceiling_bid({"calc_max_bid_usd": ""}))
 
 
+class SaleDayTest(unittest.TestCase):
+    def test_todays_lots_stay_until_end_of_day(self):
+        import datetime as dt
+        from unittest import mock
+        from lot_analyzer import results
+        now = dt.datetime(2026, 10, 26, 18, 0)
+        row = {"vin": "1HGCR2F87DA000001", "sale_date": "Oct 26, 9:00am PT", "lot_status": "Ended", "_saved": dt.datetime(2026, 10, 26, 8).timestamp()}
+        with mock.patch.object(results, "load_history", return_value={}):
+            app.mark_passed([row], now)
+            self.assertEqual(row["passed"], "")                          # торги сегодня — до конца дня в списке
+            self.assertTrue(row["today_done"])
+            app.mark_passed([row], dt.datetime(2026, 10, 27, 9, 0))
+            self.assertTrue(row["passed"])                               # на следующий день — в прошедших
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
