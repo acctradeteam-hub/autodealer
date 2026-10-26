@@ -473,7 +473,12 @@ def read_carmax_sale_results(path: Path) -> list[dict]:
         model, trim = split_model(f"{r.get('Model', '')} {r.get('Trim', '')}".replace("(no trim)", "").strip())
         price = _num(r.get("FinalBid"))
         remarks = [x.strip().capitalize() for x in re.split(r"[;|]", r.get("Announcements") or "") if x.strip()]
-        rec = {"date": date, "auction": (r.get("Sale") or "").replace(" Auction Center", "").strip(), "code": "",
+        if outcome != "Sold" and _num(r.get("HighBid")):
+            remarks.append(f"высшая ставка ${int(_num(r.get('HighBid'))):,}")
+        if _num(r.get("MyBid")):
+            remarks.append(f"ваша ставка ${int(_num(r.get('MyBid'))):,}")
+        day = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(20\d{2})", (r.get("Date") or "").strip())      # своя колонка «Date» (MM/DD/YYYY)
+        rec = {"date": f"{day.group(3)}-{int(day.group(1)):02d}-{int(day.group(2)):02d}" if day else date, "auction": (r.get("Sale") or "").replace(" Auction Center", "").strip(), "code": "",
                "lot": f"{(r.get('Lane') or '').strip()}/{(r.get('Run') or '').strip()}".strip("/"),
                "vin": (r.get("VIN") or "").strip().upper(), "year": (r.get("Year") or "").strip(), "make": (r.get("Make") or "").strip(),
                "model": f"{model} {trim}".strip(), "miles": re.sub(r"\D", "", r.get("Miles") or ""), "cr": "", "mmr": "",

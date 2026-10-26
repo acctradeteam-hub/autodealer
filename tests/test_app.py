@@ -767,6 +767,12 @@ class CarmaxSaleResultsTest(unittest.TestCase):
         self.assertEqual((sold["date"], sold["auction"], sold["lot"], sold["outcome"], sold["price"]), ("2026-10-26", "CarMax Murrieta", "B/128", "Sold", "6400"))
         self.assertIn("Major engine defect", sold["remarks"])
         self.assertEqual((nosale["outcome"], nosale["price"]), ("No Sale", ""))
+        path.write_text("Sale,Date,Lane,Run,VIN,Year,Make,Model,Miles,Announcements,Status,FinalBid,HighBid,MyBid\n"
+                        "CarMax Oceanside,10/27/2026,A,5,1HGCR2F87DA000003,2015,Honda,Civic,90000,,NOSALE,0,4100,3900\n", encoding="utf-8")
+        (rec,) = results.read_file(path)
+        self.assertEqual((rec["date"], rec["lot"]), ("2026-10-27", "A/5"))
+        self.assertIn("высшая ставка $4,100", rec["remarks"])
+        self.assertIn("ваша ставка $3,900", rec["remarks"])
 
 
 class KbbMilesCapTest(unittest.TestCase):
