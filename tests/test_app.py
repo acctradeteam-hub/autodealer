@@ -557,6 +557,15 @@ class NoPicturesNoteTest(unittest.TestCase):
         self.assertEqual(row.get("no_photos"), "да")
 
 
+class CeilingBidTest(unittest.TestCase):
+    def test_mp_equals_ceiling_rounded_down(self):
+        self.assertEqual(app.ceiling_bid({"calc_max_bid_usd": "8275"}), 8250)
+        self.assertEqual(app.ceiling_bid({"calc_max_bid_usd": "3575"}), 3500)
+        self.assertEqual(app.ceiling_bid({"calc_max_bid_usd": "1625"}), 1600)
+        self.assertEqual(app.ceiling_bid({"calc_max_bid_usd": "14200", "calc_max_bid_if_defect_usd": "11225"}), 11000)   # Major defect
+        self.assertIsNone(app.ceiling_bid({"calc_max_bid_usd": ""}))
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
