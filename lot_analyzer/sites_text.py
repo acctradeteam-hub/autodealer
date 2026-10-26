@@ -503,7 +503,10 @@ def row_from_carmax_card(row: dict[str, str], card: dict[str, str]) -> list[str]
     if user_notes:
         extra.append(f"заметки: {user_notes}")
     row["lot_description"] = "; ".join(extra)
-    if NO_PHOTOS_RE.search(f"{user_notes} {announcements}") or not card.get("photo"):
+    # Фото на странице есть — решает страница: ваша старая заметка «no pictures» (фото тогда не было) уже не про сейчас.
+    # Заметка решает, только когда по странице не видно, есть ли фото («x» — карточка из избранного, без страницы).
+    photo = card.get("photo", "")
+    if not photo or (photo == "x" and NO_PHOTOS_RE.search(f"{user_notes} {announcements}")):
         row["no_photos"] = "да"
         row["photo_count"] = "0"
     if card.get("status") == "Ended":

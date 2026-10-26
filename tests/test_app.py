@@ -533,6 +533,23 @@ class VoiceNotesTest(unittest.TestCase):
         voice.LOCAL_PATH.unlink(missing_ok=True)
 
 
+class NoPicturesNoteTest(unittest.TestCase):
+    def test_photo_on_page_beats_old_no_pictures_note(self):
+        from lot_analyzer.parsers import empty_row
+        from lot_analyzer.sites_text import row_from_carmax_card
+        base = {"vin": "1HGCR2F87DA000001", "title": "2013 Honda Accord EX-L", "lane_run": "B/128", "location": "Murrieta, CA",
+                "miles": "120000", "announcements": "", "notes": "no pictures", "start": "Oct 26, 9:00am PT"}
+        row = empty_row()
+        row_from_carmax_card(row, dict(base, photo="https://img2.carmax.com/assets/1/image/1.jpg"))
+        self.assertNotEqual(row.get("no_photos"), "да")        # фото появились — заметка устарела
+        row = empty_row()
+        row_from_carmax_card(row, dict(base, photo=""))
+        self.assertEqual(row.get("no_photos"), "да")
+        row = empty_row()
+        row_from_carmax_card(row, dict(base, photo="x"))       # по странице не видно — верим заметке
+        self.assertEqual(row.get("no_photos"), "да")
+
+
 class NewerPageWinsTest(unittest.TestCase):
     def test_photos_added_today_not_no_photo(self):
         """Вчера фото не было, сегодня появились: фильтр «без фото» не берёт вчерашнюю строку этой машины."""
