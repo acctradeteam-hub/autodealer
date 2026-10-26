@@ -493,6 +493,10 @@ class MyBidsFilterTest(unittest.TestCase):
             self.assertEqual(sorted(r["vin"] for r in rows), sorted(set(vins) | set(had_mp)))
             profits = [float(r.get("profit_at_my_bid_usd") or -1e9) for r in rows]
             self.assertEqual(profits, sorted(profits, reverse=True))     # сверху — самая прибыльная при ставке
+            lanes = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1&sort=lane").read())["rows"]
+            keys = [(r.get("lot_number") or "~/999999").split("/") for r in lanes if r.get("group") == "popular"]
+            keys = [(a.strip(), int(b)) for a, b in keys if b.strip().isdigit()]
+            self.assertEqual(keys, sorted(keys))                         # A/1, A/2 … B/1 …
         finally:
             server.shutdown()
             if old_bids is None:

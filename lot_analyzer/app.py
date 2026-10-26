@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.3"
-PROGRAM_VERSION = "2026-10-26.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-26.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -924,7 +924,12 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 # …или по прибыли при покупке по средней цене (сверху — самая большая), одним списком, без деления по вердиктам.
                 sorts = {"market": ("market_estimate_usd", 1), "market_desc": ("market_estimate_usd", -1),
                          "profit": ("calc_profit_market_usd", -1), "profit_asc": ("calc_profit_market_usd", 1)}
-                if q.get("sort") in sorts and q.get("bids") != "1":   # «Мои ставки» — всегда по прибыли при ставке
+                if q.get("sort") == "lane":      # по линии и номеру: A/1, A/2 … B/1 … — как идут машины на торгах
+                    def lane_key(r: dict) -> tuple:
+                        found = re.match(r"^\s*([A-Z]{1,2})\s*/\s*(\d+)", str(r.get("lot_number", "")))
+                        return (r.get("place", ""), found.group(1) if found else "~", int(found.group(2)) if found else 10**6)
+                    rows = sorted(rows, key=lane_key)
+                elif q.get("sort") in sorts and q.get("bids") != "1":   # «Мои ставки» — всегда по прибыли при ставке
                     field, sign = sorts[q["sort"]]
 
                     def value(r: dict, field: str = field) -> float | None:
@@ -1313,7 +1318,7 @@ function setDefect(v){defectBy=v;try{localStorage.setItem('la-defect',v)}catch(e
 function setSort(v){sortBy=v;try{localStorage.setItem('la-sort',v)}catch(e){}refresh()}
 function sortHead(){setSort(sortBy==='market'?'market_desc':'market')}
 function sortProfit(){setSort(sortBy==='profit'?'profit_asc':'profit')}
-const SORT_NOTE={market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};
+const SORT_NOTE={lane:'по линии и номеру: A/1, A/2 … затем B/1 … — каждая площадка отдельно',market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};
 function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
 const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,returned:onlyReturned?'1':'',removed:showRemoved?'1':'',arrived:onlyArrived?'1':'',bids:onlyBids?'1':'',models:models.join(','),q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
@@ -1354,7 +1359,7 @@ $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab
 
  `<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${onlyBids?' on':''}" onclick="setBids(${!onlyBids})" title="Только машины, на которые вы поставили ставку (MP в заметке или ставка в окне), сверху — самая большая прибыль при вашей ставке">💰 Мои ставки <span class="cnt">${d.bids_total||0}</span></button> <button type="button" class="tab${onlyArrived?' on':''}" onclick="setArrived(${!onlyArrived})" title="Машины, у которых при прошлом сохранении не было фото (Wait Pictures), а на свежей странице фото появились — за последние 7 дней. Пересмотрите их">📷 Фото появились <span class="cnt">${d.arrived_total||0}</span></button> <button type="button" class="tab${showRemoved?' on':''}" onclick="setRemoved(${!showRemoved})" title="Машины, у которых вы сняли звёздочку на CarMax: в общем списке их нет, чтобы не мешали. Нажмите — покажу только их; ещё раз — обратно к общему списку">☆ Убранные из избранного <span class="cnt">${d.removed_total||0}</span></button> <button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
  `<div class="sortbar" style="margin:6px 0"><span class="muted" title="Только машины CarMax с такими замечаниями аукциона">Major-дефекты (CarMax):</span> `+[['','выкл'],['engine','двигатель'],['trans','коробка'],['both','двигатель + коробка'],['any','любой из двух'],['none','без дефекта']].map(([v,t])=>`<button type="button" class="tab${defectBy===v?' on':''}" onclick="setDefect('${v}')">${t}</button>`).join('')+`</div>`+
- `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде: сначала «МОЖНО» с настоящим KBB'],['profit','прибыль ↓ (все вместе, и с прикидкой KBB)'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
+ `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде: сначала «МОЖНО» с настоящим KBB'],['profit','прибыль ↓ (все вместе, и с прикидкой KBB)'],['lane','лот: A1, A2, A3 …'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${SORT_NOTE[sortBy]||'сверху самые выгодные'}</div>`;
 $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
