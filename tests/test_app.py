@@ -426,7 +426,8 @@ class OwnersTest(unittest.TestCase):
                     {"auction": "CarMax", "vin": "1HGCR2F30FA000002", "group": "other", "calc_verdict": "ПРОПУСТИТЬ: рама"},
                     {"auction": "Manheim", "vin": "1HGCR2F30FA000003", "group": "popular", "calc_verdict": "МОЖНО"}]
             self.assertEqual(app.owners_needed(rows), ["1HGCR2F30FA000001"])
-            self.assertEqual(app.save_owners([{"vin": "1HGCR2F30FA000001", "owners": 3, "note": "Number of Owners 3"}]), 1)
+            self.assertEqual(app.save_owners([{"vin": "1HGCR2F30FA000001", "owners": 3, "note": "Number of Owners 3", "accidents": 1}]), 1)
+            self.assertEqual(app.load_owners()["1HGCR2F30FA000001"]["accidents"], 1)
             self.assertEqual(app.save_owners([{"vin": "1HGCR2F30FA000001", "owners": 0, "note": "не нашёл"}]), 0)   # не затирает
             self.assertEqual(app.load_owners()["1HGCR2F30FA000001"]["owners"], 3)
             self.assertEqual(app.owners_needed(rows), [])

@@ -1,4 +1,4 @@
-/* Lot Analyzer: число владельцев из AutoCheck на CarMax (carmaxauctions.com/autocheck/<VIN>) — в окно программы.
+/* Lot Analyzer: число владельцев и ДТП из AutoCheck на CarMax (carmaxauctions.com/autocheck/<VIN>) — в окно программы.
    — Открыли отчёт AutoCheck сами — число владельцев уходит в программу.
    — Кнопка окна «👤 Владельцы (AutoCheck)» открывает CarMax с #la-owners: здесь по очереди (невидимым окошком
      той же страницы, с вашим входом) открываются отчёты машин, у которых владельцев ещё не знаем, и вкладка закрывается сама. */
@@ -26,6 +26,18 @@
     if (seq) { var max = Math.max.apply(null, seq.map(function (s) { return Number(s.replace(/\D/g, '')); })); if (max > 0 && max < 20) { return { owners: max, note: 'Owner 1 … Owner ' + max }; } }
     return null;
   };
+  /* ДТП: «No accidents reported», «Accident Check: No issues», «2 Accidents reported», «Accidents: 1», «Accident records found: 3».
+     -1 — в тексте не нашли. */
+  var accidentsFrom = function (t) {
+    var m = /\bno\s+(?:accidents?|accident\s+records?)(?:\s+or\s+damage)?\s+(?:reported|found|records?)/i.exec(t) ||
+            /accident\s+check\s*[:\-]?\s*no\s+(?:issues?|problems?|accidents?)/i.exec(t);
+    if (m) { return { accidents: 0, note: m[0] }; }
+    m = /\b(\d{1,2})\s+accidents?\b(?!\s+check)(?:\s+(?:reported|records?|found))?/i.exec(t) ||
+        /accidents?(?:\s+(?:reported|records?(?:\s+found)?))?\s*[:\-]\s*(\d{1,2})\b/i.exec(t) ||
+        /accident\s+check[^.]{0,40}?(\d{1,2})\s+(?:issues?|records?|accidents?)/i.exec(t);
+    if (m) { return { accidents: Number(m[1]), note: m[0] }; }
+    return { accidents: -1, note: '' };
+  };
   var send = function (cars, cb) {
     try { chrome.runtime.sendMessage({ type: 'owners', cars: cars }, function (a) { void chrome.runtime.lastError; if (cb) { cb(a); } }); } catch (e) { if (cb) { cb(null); } }
   };
@@ -37,8 +49,8 @@
   if (own) {
     var tries = 0;
     var look = function () {
-      var found = ownersFrom(text(document));
-      if (found) { send([{ vin: own, owners: found.owners, note: found.note }]); return; }
+      var t = text(document), found = ownersFrom(t), acc = accidentsFrom(t);
+      if (found) { send([{ vin: own, owners: found.owners, note: found.note, accidents: acc.accidents, accidents_note: acc.note }]); return; }
       if (++tries < 20) { setTimeout(look, 1000); }
     };
     setTimeout(look, 1500);
@@ -66,10 +78,17 @@
       await pause(1000);
       try { found = ownersFrom(text(frame.contentDocument)); } catch (e) { break; }
     }
+    var acc = { accidents: -1, note: '' };
+    for (var a = 0; a < 3 && found; a++) {            // ДТП в отчёте бывают ниже владельцев — даём странице дорисоваться
+      try { acc = accidentsFrom(text(frame.contentDocument)); } catch (e) { break; }
+      if (acc.accidents >= 0) { break; }
+      await pause(1000);
+    }
     var sample = '';
     try { sample = text(frame.contentDocument).slice(0, 160); } catch (e) { sample = ''; }
     frame.remove();
-    return found ? { vin: vin, owners: found.owners, note: found.note } : { vin: vin, owners: 0, note: 'не нашёл число владельцев: ' + sample };
+    return found ? { vin: vin, owners: found.owners, note: found.note, accidents: acc.accidents, accidents_note: acc.note }
+                 : { vin: vin, owners: 0, note: 'не нашёл число владельцев: ' + sample };
   };
   (async function () {
     if (!(await isOwnersTab())) { return; }
