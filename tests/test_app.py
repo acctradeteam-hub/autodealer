@@ -798,6 +798,8 @@ class CarmaxSaleResultsTest(unittest.TestCase):
         self.assertEqual((rec["date"], rec["lot"]), ("2026-10-27", "A/5"))
         self.assertIn("высшая ставка $4,100", rec["remarks"])
         self.assertIn("ваша ставка $3,900", rec["remarks"])
+        path.write_text("Sale,Date,Lane,Run,VIN,Status,FinalBid\nCarMax Chino,10/27/2026,A,7,1HGCR2F87DA000004,NOTRUN,0\n", encoding="utf-8")
+        self.assertEqual(results.read_file(path)[0]["outcome"], "нет итога")      # не выставлялась
 
 
 class KbbMilesCapTest(unittest.TestCase):

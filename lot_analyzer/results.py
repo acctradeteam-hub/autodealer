@@ -469,7 +469,7 @@ def read_carmax_sale_results(path: Path) -> list[dict]:
     out = []
     for r in rows:
         status = (r.get("Status") or "").strip().upper()
-        outcome = {"SOLD": "Sold", "NOSALE": "No Sale", "NO SALE": "No Sale", "IFSALE": "IF Sale"}.get(status, status.title() or "нет итога")
+        outcome = {"SOLD": "Sold", "NOSALE": "No Sale", "NO SALE": "No Sale", "IFSALE": "IF Sale"}.get(status, "нет итога")   # NOTRUN, пусто
         model, trim = split_model(f"{r.get('Model', '')} {r.get('Trim', '')}".replace("(no trim)", "").strip())
         price = _num(r.get("FinalBid"))
         remarks = [x.strip().capitalize() for x in re.split(r"[;|]", r.get("Announcements") or "") if x.strip()]
