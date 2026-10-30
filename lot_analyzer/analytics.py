@@ -142,7 +142,7 @@ class PreKbb:
     Проверка на 180 ваших KBB (каждая машина — по остальным): оценка есть у ~80%, ошибка обычно ±9%,
     в пределах ±20% — 86%. Точный KBB — кнопкой «получить KBB»."""
 
-    def __init__(self, log: dict[str, dict], costs: dict, learned: dict | None = None):
+    def __init__(self, log: dict[str, dict], costs: dict, learned: dict | None = None, history: dict[str, dict] | None = None):
         from .kbb import Comp, KbbEstimator
         from .kbb_learning import factors
 
@@ -154,10 +154,12 @@ class PreKbb:
             if kbb and kbb > 500 and miles and str(rec.get("year", "")).isdigit():
                 comp = Comp(rec.get("make", ""), f"{rec.get('model', '')} {rec.get('trim', '')}".strip(), int(rec["year"]), miles, kbb, rec.get("vin", ""))
                 self.similar.kbb.setdefault(_model_key(comp.make, comp.model), []).append(comp)
+        self.sales, self.sales_factor = sales_estimator(history or {}, costs)
 
     def copy(self) -> "PreKbb":
         clone = PreKbb.__new__(PreKbb)
         clone.by_mmr, clone.similar, clone.learn = self.by_mmr, self.similar.copy(), self.learn
+        clone.sales, clone.sales_factor = self.sales, self.sales_factor
         return clone
 
     def add_rows(self, rows: list[dict]) -> None:
@@ -174,10 +176,52 @@ class PreKbb:
                            source=f"прикидка по вашей базе KBB: {found.n} похожих ({model.split(' ')[0]} ±2 года, на этот год и пробег), обычно ±10%")
         else:
             est = self.by_mmr.estimate(make, model, year, miles, vin)
+        if est is None and self.sales is not None:      # нет похожих в базе KBB — по продажам CarMax той же модели
+            found = self.sales.estimate(make, model, year, miles, exclude_vin=vin)
+            if found:
+                est = Estimate(value=found.value * self.sales_factor, n=found.n, spread=found.spread,
+                               source=f"прикидка по продажам CarMax: {found.n} похожих ({model.split(' ')[0]} ±2 года, на этот год и пробег), обычно ±10–15%")
         if est is None:
             return None
         factor, note = correction(self.learn, make, model)
         return Estimate(value=est.value * factor, source=est.source + (f"; {note}" if note else ""), n=est.n, spread=est.spread, raw=est.value)
+
+
+# Цена продажи на CarMax → KBB Private Party: дешёвые уходят много ниже KBB, дорогие — почти по KBB
+# (ваши продажи с настоящим KBB, октябрь 2026: <$4k — 0,60; $4–7k — 0,70; $7–10k — 0,79; $10–15k — 0,85; дороже — 0,95).
+SALE_TO_KBB = ((4000, 0.60), (7000, 0.70), (10000, 0.79), (15000, 0.85), (float("inf"), 0.95))
+SALES_FACTOR_DEFAULT = 1.1          # по проверке на ваших KBB: оценка по продажам без поправки ниже настоящего KBB на ~10%
+
+
+def _sale_ratio(price: float) -> float:
+    return next(ratio for top, ratio in SALE_TO_KBB if price < top)
+
+
+def sales_estimator(history: dict[str, dict], costs: dict):
+    """Оценка KBB по проданным на CarMax машинам той же модели ±2 года (без тяжёлых дефектов): цена продажи ÷ доля KBB
+    для её цены, пересчёт на год и пробег. Поправка — по вашим машинам с настоящим KBB (каждая — по остальным)."""
+    from .kbb import Comp, KbbEstimator
+
+    sales = KbbEstimator([], costs)
+    sales.min_comps = 3
+    for rec in history.values():
+        price, miles = _num(rec.get("price")), _num(rec.get("miles"))
+        if (not str(rec.get("auction", "")).startswith("CarMax") or str(rec.get("outcome", "")).lower() != "sold"
+                or not price or price < 300 or not miles or not str(rec.get("year", "")).isdigit() or HEAVY.search(rec.get("remarks") or "")):
+            continue
+        comp = Comp(rec.get("make", ""), rec.get("model", ""), int(rec["year"]), miles, price / _sale_ratio(price), rec.get("vin", ""))
+        sales.kbb.setdefault(_model_key(comp.make, comp.model), []).append(comp)
+    if not sales.kbb:
+        return None, 1.0
+    ratios = []
+    for rec in history.values():
+        kbb, miles = _num(rec.get("kbb")), _num(rec.get("miles"))
+        if kbb and kbb > 500 and miles and str(rec.get("year", "")).isdigit():
+            found = sales.estimate(rec.get("make", ""), rec.get("model", ""), int(rec["year"]), miles, exclude_vin=rec.get("vin") or "-")
+            if found and found.value > 0:
+                ratios.append(kbb / found.value)
+    factor = min(max(statistics.median(ratios), 0.85), 1.3) if len(ratios) >= 20 else SALES_FACTOR_DEFAULT
+    return sales, factor
 
 
 def _model_key(make: str, model: str) -> tuple[str, str]:

@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.7"
-PROGRAM_VERSION = "2026-10-30.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-30.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -737,7 +737,8 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
         pass
     # Машинам без KBB — предварительная цена продажи по вашей базе (KBB ÷ MMR той же модели), а не MMR × 1.3.
     learning = kbb_learning.load()
-    apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs, learning["learned"]))   # предварительный KBB — по вашей базе
+    # нет похожих в базе KBB — по вашим итогам продаж CarMax той же модели
+    apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs, learning["learned"], results.load_history()))
     if kbb_learning.update(rows, learning):          # прикидка → настоящий KBB: насколько ошиблись, поправка на будущее
         try:
             kbb_learning.save(learning)

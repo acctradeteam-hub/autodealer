@@ -943,3 +943,19 @@ class TidyDownloadsTest(unittest.TestCase):
             self.assertEqual(int((archive / "CarMax_Search_2026-10-30_0702.html").stat().st_mtime), 1700000000)
             self.assertTrue((archive / "Kelley Blue Book Civic_files" / "a.js").exists())
             self.assertEqual(app.tidy_downloads(downloads, archive), 0)
+
+
+class SalesPreKbbTest(unittest.TestCase):
+    def test_no_similar_kbb_uses_carmax_sales(self):
+        from lot_analyzer import analytics
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, load_costs
+        history = {}
+        for i, (price, remarks) in enumerate([(8000, ""), (8400, "Prior lease"), (7600, ""), (2000, "Major engine defect"), (8200, "")]):
+            history[str(i)] = {"auction": "CarMax Murrieta", "outcome": "Sold", "price": str(price), "year": "2016", "make": "Acura",
+                               "model": "MDX Base", "miles": "120000", "vin": f"VIN{i}", "remarks": remarks, "kbb": ""}
+        pre = analytics.PreKbb({}, load_costs(DEFAULT_COSTS_PATH), {}, history)
+        est = pre.estimate("Acura", "MDX Tech", 2016, 120000)
+        self.assertIsNotNone(est)
+        self.assertIn("по продажам CarMax", est.source)
+        self.assertAlmostEqual(est.value, 8100 / 0.79 * analytics.SALES_FACTOR_DEFAULT, delta=300)   # дефектная за $2000 не в счёт
+        self.assertIsNone(pre.estimate("Acura", "TLX", 2016, 120000))
