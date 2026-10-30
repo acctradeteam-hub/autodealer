@@ -21,7 +21,7 @@
     /* Автосбор CarMax: состояние для окна и кнопка «Собрать сейчас». */
     if (e.data.type === 'auto-status' || e.data.type === 'auto-run') {
       try {
-        chrome.runtime.sendMessage({ type: e.data.type }, function (a) {
+        chrome.runtime.sendMessage({ type: e.data.type, which: String(e.data.which || '') }, function (a) {
           void chrome.runtime.lastError;
           window.postMessage({ source: 'lot-analyzer-ext', type: e.data.type, answer: a || null }, '*');
         });

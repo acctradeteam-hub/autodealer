@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.5"
-PROGRAM_VERSION = "2026-10-30.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.6"
+PROGRAM_VERSION = "2026-10-30.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1564,12 +1564,13 @@ window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.sourc
 /* Автосбор CarMax (расширение, по пятницам утром): что собрано для аукционов понедельника и вторника. */
 const AUTO_WHY={empty:'машин пока нет',short:'загрузилось не всё',login:'войдите на CarMax в Chrome',error:'ошибка'};
 function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML='';return}
+ if(a.busy)setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),5000);
  const st=a.state,days=Object.keys(st).filter(k=>/^\d{4}-\d\d-\d\d$/.test(k)).sort().slice(-2);
  const parts=days.map(k=>{const d=st[k],pl=a.places[d.which]||[],got=pl.filter(p=>d.places[p]&&d.places[p].status==='ok');
   const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>d.places[p]&&d.places[p].status!=='ok').map(p=>`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}`);
   return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
- e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'ещё не собирал')+` <button type="button" class="tab" onclick="autoRun()" title="Собрать все площадки ближайших понедельника и вторника прямо сейчас (окно Chrome откроется и закроется само, 5–10 минут). Нужен вход на carmaxauctions.com">Собрать сейчас</button>`}
-function autoRun(){window.postMessage({source:'lot-analyzer',type:'auto-run'},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
+ e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'ещё не собирал')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
+function autoRun(w){window.postMessage({source:'lot-analyzer',type:'auto-run',which:w||''},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='auto-status')drawAuto(e.data.answer)});
 setInterval(()=>{if(hasExt())window.postMessage({source:'lot-analyzer',type:'auto-status'},'*')},20000);setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),2500);
 function pingExt(){window.postMessage({source:'lot-analyzer',type:'ping'},'*');if(extPong&&Date.now()-extPong>4000){extPong=0;extState()}}

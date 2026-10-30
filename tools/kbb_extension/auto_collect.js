@@ -98,8 +98,8 @@ function autoOne(place, focused) {
 }
 
 /* Собрать то, что пора: все площадки открытых окон сбора, кроме уже собранных (и пустых / неполных — не чаще раза в 3 часа).
-   force — кнопка окна программы «Собрать сейчас»: ближайшие торги, даже если сейчас не пятница. */
-function autoRun(force) {
+   force — кнопка окна программы «Собрать …»: ближайшие торги, даже если сейчас не пятница; only — 'mon' / 'tue' (иначе оба дня). */
+function autoRun(force, only) {
   if (autoBusy) { return Promise.resolve(false); }
   var now = new Date(), targets = autoTargets(now);
   if (force) {                                                     // ближайшие понедельник и вторник
@@ -108,7 +108,7 @@ function autoRun(force) {
       var sale = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       sale.setDate(sale.getDate() + ((pair[1] - sale.getDay() + 7) % 7));
       if (now >= new Date(sale.getFullYear(), sale.getMonth(), sale.getDate(), AUTO_DEADLINE_HOUR)) { sale.setDate(sale.getDate() + 7); }
-      targets[pair[0]] = autoIso(sale);
+      if (!only || only === pair[0]) { targets[pair[0]] = autoIso(sale); }
     });
   }
   if (!Object.keys(targets).length) { return Promise.resolve(false); }
@@ -146,7 +146,7 @@ function autoRun(force) {
 chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   if (msg && msg.type === 'auto-page' && sender.tab && autoWaiting[sender.tab.id]) { autoWaiting[sender.tab.id](msg); return false; }
   if (msg && msg.type === 'auto-status') { autoState(function (state) { reply({ state: state, busy: autoBusy, places: AUTO_PLACES }); }); return true; }
-  if (msg && msg.type === 'auto-run') { autoRun(true); reply({ started: !autoBusy }); return false; }
+  if (msg && msg.type === 'auto-run') { var busy = autoBusy; autoRun(true, msg.which === 'mon' || msg.which === 'tue' ? msg.which : ''); reply({ started: !busy }); return false; }
   return false;
 });
 
