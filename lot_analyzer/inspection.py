@@ -61,6 +61,8 @@ def _groups(rows: list[dict[str, str]]) -> dict[int, tuple[str, str]]:
 def wanted(row: dict[str, str]) -> bool:
     if row.get("favorite_removed"):
         return False                                   # сняли звёздочку — сами решили не смотреть
+    if row.get("rejected"):
+        return False                                   # «🚫 Отбой» в окне — посмотрели лот, не покупать
     if row.get("no_photos") == "да" and (row.get("favorite") or not row.get("calc_verdict", "").startswith("ПРОПУСТИТЬ")):
         return True                                    # NO PICTURES — осматривать обязательно (кроме «ПРОПУСТИТЬ»: титул, salvage …)
     if row.get("auction") == "CarMax" and row.get("favorite_known"):

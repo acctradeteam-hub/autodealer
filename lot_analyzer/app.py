@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.7"
-PROGRAM_VERSION = "2026-10-30.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-30.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -438,6 +438,31 @@ OWNERS_PER_RUN = 60
 OWNERS_WARN = 3                                          # от стольких владельцев — пометка в вердикте
 
 
+REJECTED_PATH = DATA_DIR / "rejected.json"             # «🚫 Отбой — не покупать»: VIN → {date, car}
+
+
+def load_rejected() -> dict[str, dict]:
+    try:
+        return json.loads(REJECTED_PATH.read_text(encoding="utf-8")) if REJECTED_PATH.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_rejected(vin: str, on: bool, car: str = "") -> bool:
+    """Отбой после просмотра лота: машина уходит из списка, списка на печать и автозапроса KBB; «вернуть» — обратно."""
+    vin = str(vin or "").strip().upper()
+    if not vin:
+        return False
+    data = load_rejected()
+    if on:
+        data[vin] = {"date": time.strftime("%Y-%m-%d"), "car": str(car or "")[:120]}
+    else:
+        data.pop(vin, None)
+    REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REJECTED_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    return True
+
+
 def load_owners() -> dict[str, dict]:
     try:
         return json.loads(OWNERS_PATH.read_text(encoding="utf-8")) if OWNERS_PATH.exists() else {}
@@ -489,7 +514,7 @@ def owners_needed(rows: list[dict]) -> list[str]:
     for r in sorted(rows, key=lambda r: (not r.get("favorite"), r.get("group") != "popular", -expected_gain(r))):
         vin = r.get("vin", "")
         rec = known.get(vin) or {}
-        if (r.get("auction") != "CarMax" or not vin or r.get("passed") or r.get("favorite_removed")
+        if (r.get("auction") != "CarMax" or not vin or r.get("passed") or r.get("favorite_removed") or r.get("rejected")
                 or r.get("calc_verdict", "").startswith("ПРОПУСТИТЬ") or (rec.get("owners") and "accidents" in rec) or rec.get("date") == today):
             continue
         out.append(vin)
@@ -628,7 +653,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwarg
         except OSError:
             return 0.0
     key = (tuple((str(p), stamp(p)) for p in pages), json.dumps(costs, sort_keys=True, default=str), args, tuple(sorted(kwargs.items())),
-           tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH)),
+           tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH)),
            int(time.time() // 60))                    # раз в минуту — заново: «торги прошли» зависит от времени
     with _ROWS_GUARD:
         lock = _ROWS_LOCKS.setdefault(key, threading.Lock())
@@ -641,7 +666,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwarg
                 _ROWS_MEMO.clear()
                 _ROWS_LOCKS.clear()
             # Ключ — с временем файлов базы после расчёта: сам расчёт мог дописать итоги / журнал KBB.
-            after = key[:4] + (tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH)), key[5])
+            after = key[:4] + (tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH)), key[5])
             _ROWS_MEMO[after] = rows
         return [dict(r) for r in rows]
 
@@ -757,6 +782,10 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
         r["high_miles_value"] = "да" if r["popular"] and HIGH_MILES[0] <= miles <= HIGH_MILES[1] else ""
         r["group"] = "popular" if r["popular"] else "truck" if popular.is_pickup(r) else "ev" if is_electric(r) else "other"
     voice.attach(rows)                               # надиктовано на аукционе — в окно, список на печать и Notes
+    rejected = load_rejected()
+    for r in rows:
+        if r.get("vin", "").upper() in rejected:
+            r["rejected"] = rejected[r["vin"].upper()].get("date", "") or "да"
     owners = load_owners()
     for r in rows:                                   # AutoCheck: владельцев много — продать сложнее, видно сразу
         rec = owners.get(r.get("vin", "")) or {}
@@ -795,6 +824,20 @@ def save_bid(vin: str, usd: float | None) -> None:
 def bid_step(usd: float) -> int:
     """Шаг ставки на CarMax (как в итогах торгов): до $2,000 — $50, до $5,000 — $100, дальше — $250."""
     return 50 if usd < 2000 else 100 if usd < 5000 else 250
+
+
+def auto_kbb_cars(rows: list[dict], costs: dict, limit: int = 30) -> list[dict]:
+    """Популярные машины без фото (NO PICTURES): KBB для них окно запрашивает само — смотреть их всё равно ехать на площадку.
+    Только с торгами впереди, без настоящего KBB и не «ПРОПУСТИТЬ»."""
+    out = []
+    for r in rows:
+        if (r.get("popular") and r.get("no_photos") == "да" and not r.get("kbb_private_party_usd") and not r.get("passed")
+                and not r.get("rejected") and not str(r.get("calc_verdict", "")).startswith("ПРОПУСТИТЬ")
+                and (r.get("vin") or r.get("lot_number")) and r.get("year") and r.get("make") and r.get("odometer_miles")):
+            car = {k: r.get(k, "") for k in ("vin", "lot_number", "year", "make", "model", "trim", "odometer_miles")}
+            car["kbb_open"] = kbb_site.browser_url(costs, car["year"], car["make"], car["model"], car["odometer_miles"])
+            out.append(car)
+    return out[:limit]
 
 
 def buyable(row: dict) -> bool:
@@ -960,7 +1003,7 @@ COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
            "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review",
-           "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed",
+           "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed", "rejected", "window_note",
            "returned", "returned_price", "returned_times", "high_miles_value", "kbb_prelim_usd", "kbb_prelim_pct",
            "photo_wait", "photo_arrived", "owners", "owners_note", "accidents", "accidents_note", "voice_notes", "today_done")
 
@@ -1024,6 +1067,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 if q.get("arrived") == "1":      # «📷 Фото появились»: ждали фото — появились, пересмотреть
                     rows = [r for r in rows if r.get("photo_arrived")]
                 # Сняли звёздочку на CarMax — машина не в общем списке, а в отдельном «☆ Убранные из избранного».
+                # «🚫 Отбой»: посмотрели лот — не покупать. В общем списке их нет, отдельная кнопка показывает только их.
+                rejected_total = sum(1 for r in rows if r.get("rejected") and not r.get("passed"))
+                if not vin_q:
+                    rows = [r for r in rows if bool(r.get("rejected")) == (q.get("rejected") == "1")]
                 removed_total = sum(1 for r in rows if r.get("favorite_removed") and (q.get("passed") == "1" or not r.get("passed")))
                 if q.get("removed_any") != "1":
                     rows = [r for r in rows if bool(r.get("favorite_removed")) == (q.get("removed") == "1")]
@@ -1100,7 +1147,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
                                      "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "seen_before": r.get("seen_before", ""), "passed": r.get("passed", ""),
                                      "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
-                                    for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "removed_total": removed_total, "vin_search": vin_q,
+                                    for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders],
@@ -1119,9 +1166,13 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 # + избранное CarMax: сняли звёздочку — окно пересчитывается сразу, не дожидаясь нового файла.
-                extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH) if path.exists()]
+                extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH) if path.exists()]
                 voice.pull_soon()                     # заметки с телефона — раз в пару минут, в фоне
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages] + extra).encode("utf-8"))
+            elif url.path == "/api/auto_kbb":           # окно: популярные без фото — KBB сразу, без кнопки
+                costs_now = load_costs(costs_path)
+                rows = search_rows(find_pages(folders, 168), cache, costs_now, "")
+                self._send(json.dumps({"cars": auto_kbb_cars(rows, costs_now)}).encode("utf-8"))
             elif url.path == "/api/owners_needed":      # расширение: для каких машин открыть AutoCheck
                 rows = search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")
                 self._send(json.dumps({"vins": owners_needed(rows)}).encode("utf-8"))
@@ -1190,6 +1241,17 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
                 self._send(json.dumps({"saved": save_owners(list(data.get("cars") or [])[:50])}).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/reject":         # окно: «🚫 Отбой» / «↩ вернуть»
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                self._send(json.dumps({"ok": set_rejected(data.get("vin", ""), bool(data.get("on")), data.get("car", ""))}).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/window_note":    # окно: заметка к машине (🎤 голосом или текстом)
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                voice.save_window_note(data.get("vin", ""), data.get("text", ""))
+                self._send(json.dumps({"ok": True}).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/unfavorite":     # расширение: звёздочку на CarMax сняли
                 length = int(self.headers.get("Content-Length") or 0)
@@ -1381,7 +1443,7 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 input.kbb{width:80px;min-width:0;padding:4px 6px;text-align:right}
 td.kbbcell,th.kbbcell{width:96px;max-width:96px;white-space:normal;overflow-wrap:anywhere}td.kbbcell .muted{font-size:11px;line-height:1.25}
 .tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}button.tab{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:600}
-button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}#places button.tab{font-weight:500;padding:5px 10px;font-size:13px}label.pickl{flex-direction:row;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--fg)}label.pickl input{min-width:auto;width:18px;height:18px}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
+button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.acts{margin-top:4px;white-space:nowrap}.acts button.tab{padding:2px 8px;font-size:12px;margin:0}.acts button.tab.bad{color:var(--bad)}.acts button.mic.on{background:var(--bad);border-color:var(--bad);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}#places button.tab{font-weight:500;padding:5px 10px;font-size:13px}label.pickl{flex-direction:row;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--fg)}label.pickl input{min-width:auto;width:18px;height:18px}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
@@ -1465,6 +1527,27 @@ function dayLabel(k){const [m,d]=k.split('-').map(Number);const t=new Date();con
 function drawDays(d){const e=$('days');if(!e)return;const list=d.days||[];
  if(saleDay&&!list.some(([k])=>k===saleDay)){saleDay='';try{localStorage.setItem('la-day','')}catch(x){}}
  e.innerHTML=list.length>1||saleDay?`<span class="muted">День торгов:</span> <button type="button" class="tab${saleDay?'':' on'}" onclick="setDay('')">Все дни</button>`+list.map(([k,n])=>`<button type="button" class="tab${k===saleDay?' on':''}" onclick="setDay('${k}')" title="Только машины торгов этого дня — вместе с уже прошедшими лотами (для разбора)">${dayLabel(k)} <span class="cnt">${n}</span></button>`).join(''):''}
+let showRejected=false;try{showRejected=localStorage.getItem('la-rejected')==='1'}catch(e){}
+function setRejected(on){showRejected=on;try{localStorage.setItem('la-rejected',on?'1':'')}catch(e){}refresh()}
+async function reject(el,on){el.disabled=true;
+ try{await fetch('/api/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,on,car:el.dataset.car||''})});
+  const tr=el.closest('tr');if(tr)tr.style.opacity='.35';setTimeout(refresh,400)}catch(e){el.disabled=false;alert('Не сохранилось: '+e)}}
+async function saveNote(vin,text){await fetch('/api/window_note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin,text})})}
+function noteOf(vin){const x=(lastData&&lastData.rows||[]).find(r=>r.vin===vin);return x&&x.window_note||''}
+async function editNote(el){const vin=el.dataset.vin,t=prompt('Заметка к машине (пусто — удалить):',noteOf(vin));if(t===null)return;
+ try{await saveNote(vin,t);refresh()}catch(e){alert('Не сохранилось: '+e)}}
+/* 🎤 Голос: распознавание речи Chrome (русский) — текст дописывается к заметке машины. */
+let rec=null;
+function dictate(el){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){alert('Голос работает в Chrome: откройте окно программы в Chrome.');return}
+ if(rec){rec.stop();return}
+ const vin=el.dataset.vin;rec=new SR();rec.lang='ru-RU';rec.continuous=true;rec.interimResults=false;let said=[];
+ el.classList.add('on');el.textContent='⏺ говорите…';
+ rec.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++)if(e.results[i].isFinal)said.push(e.results[i][0].transcript.trim())};
+ rec.onerror=e=>{if(e.error==='not-allowed')alert('Chrome не дал доступ к микрофону: разрешите микрофон для 127.0.0.1 (значок 🎤 в адресной строке).')};
+ rec.onend=async()=>{rec=null;el.classList.remove('on');el.textContent='🎤';const text=said.join('. ').trim();if(!text)return;
+  const old=noteOf(vin);try{await saveNote(vin,old?old+(/[.!?]$/.test(old)?' ':'. ')+text:text);refresh()}catch(e){alert('Не сохранилось: '+e)}};
+ rec.start()}
 let onlyBuyable=false;try{onlyBuyable=localStorage.getItem('la-buyable')==='1'}catch(e){}
 function setBuyable(on){onlyBuyable=on;try{localStorage.setItem('la-buyable',on?'1':'')}catch(e){}refresh()}
 let onlyBids=false;try{onlyBids=localStorage.getItem('la-bids')==='1'}catch(e){}
@@ -1481,7 +1564,7 @@ function sortHead(){setSort(sortBy==='market'?'market_desc':'market')}
 function sortProfit(){setSort(sortBy==='profit'?'profit_asc':'profit')}
 const SORT_NOTE={lane:'по линии и номеру: A/1, A/2 … затем B/1 … — каждая площадка отдельно',market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};
 function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
-const params=()=>new URLSearchParams({place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,returned:onlyReturned?'1':'',buyable:onlyBuyable?'1':'',day:saleDay,vin:($('vin')&&$('vin').value||'').trim(),removed:showRemoved?'1':'',arrived:onlyArrived?'1':'',bids:onlyBids?'1':'',models:models.join(','),q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+const params=()=>new URLSearchParams({rejected:showRejected?'1':'',place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,returned:onlyReturned?'1':'',buyable:onlyBuyable?'1':'',day:saleDay,vin:($('vin')&&$('vin').value||'').trim(),removed:showRemoved?'1':'',arrived:onlyArrived?'1':'',bids:onlyBids?'1':'',models:models.join(','),q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -1518,14 +1601,14 @@ if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  (d.kbb_learning&&d.kbb_learning.n?`<div class="muted" style="margin:4px 0" title="Каждая машина, у которой была прикидка, а потом пришёл настоящий KBB, — урок для прикидки">Обучение KBB: уточнено ${d.kbb_learning.n} машин; прикидка ошибалась в среднем на ${d.kbb_learning.abs}% и была ${d.kbb_learning.bias>0?'выше':'ниже'} настоящего KBB на ${Math.abs(d.kbb_learning.bias)}%${d.kbb_learning.factor?` → прикидки теперь × ${d.kbb_learning.factor}`:' (поправка — от 5 уточнённых машин)'}</div>`:'')+
 
- `<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${onlyBids?' on':''}" onclick="setBids(${!onlyBids})" title="Только машины, на которые вы поставили ставку (MP в заметке или ставка в окне), сверху — самая большая прибыль при вашей ставке">💰 Мои ставки <span class="cnt">${d.bids_total||0}</span></button> <button type="button" class="tab${onlyBuyable?' on':''}" onclick="setBuyable(${!onlyBuyable})" title="Только машины, где наш потолок не ниже средней цены покупки на аукционе: их реально купить. Если средняя выше потолка — такую машину почти всегда забирают дороже, осмотр на неё обычно впустую">✅ Реально купить <span class="cnt">${d.buyable_total||0}</span></button> <button type="button" class="tab${onlyArrived?' on':''}" onclick="setArrived(${!onlyArrived})" title="Машины, у которых при прошлом сохранении не было фото (Wait Pictures), а на свежей странице фото появились — за последние 7 дней. Пересмотрите их">📷 Фото появились <span class="cnt">${d.arrived_total||0}</span></button> <button type="button" class="tab${showRemoved?' on':''}" onclick="setRemoved(${!showRemoved})" title="Машины, у которых вы сняли звёздочку на CarMax: в общем списке их нет, чтобы не мешали. Нажмите — покажу только их; ещё раз — обратно к общему списку">☆ Убранные из избранного <span class="cnt">${d.removed_total||0}</span></button> <button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
+ `<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${onlyBids?' on':''}" onclick="setBids(${!onlyBids})" title="Только машины, на которые вы поставили ставку (MP в заметке или ставка в окне), сверху — самая большая прибыль при вашей ставке">💰 Мои ставки <span class="cnt">${d.bids_total||0}</span></button> <button type="button" class="tab${showRejected?' on':''}" onclick="setRejected(${!showRejected})" title="Машины, на которые вы нажали «🚫 Отбой» после просмотра лота: в общем списке их нет. Нажмите — покажу только их (там же «↩ вернуть»)">🚫 Отбой <span class="cnt">${d.rejected_total||0}</span></button> <button type="button" class="tab${onlyBuyable?' on':''}" onclick="setBuyable(${!onlyBuyable})" title="Только машины, где наш потолок не ниже средней цены покупки на аукционе: их реально купить. Если средняя выше потолка — такую машину почти всегда забирают дороже, осмотр на неё обычно впустую">✅ Реально купить <span class="cnt">${d.buyable_total||0}</span></button> <button type="button" class="tab${onlyArrived?' on':''}" onclick="setArrived(${!onlyArrived})" title="Машины, у которых при прошлом сохранении не было фото (Wait Pictures), а на свежей странице фото появились — за последние 7 дней. Пересмотрите их">📷 Фото появились <span class="cnt">${d.arrived_total||0}</span></button> <button type="button" class="tab${showRemoved?' on':''}" onclick="setRemoved(${!showRemoved})" title="Машины, у которых вы сняли звёздочку на CarMax: в общем списке их нет, чтобы не мешали. Нажмите — покажу только их; ещё раз — обратно к общему списку">☆ Убранные из избранного <span class="cnt">${d.removed_total||0}</span></button> <button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
  `<div class="sortbar" style="margin:6px 0"><span class="muted" title="Только машины CarMax с такими замечаниями аукциона">Major-дефекты (CarMax):</span> `+[['','выкл'],['engine','двигатель'],['trans','коробка'],['both','двигатель + коробка'],['any','любой из двух'],['none','без дефекта']].map(([v,t])=>`<button type="button" class="tab${defectBy===v?' on':''}" onclick="setDefect('${v}')">${t}</button>`).join('')+`</div>`+
  `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде: сначала «МОЖНО» с настоящим KBB'],['profit','прибыль ↓ (все вместе, и с прикидкой KBB)'],['lane','лот: A1, A2, A3 …'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${SORT_NOTE[sortBy]||'сверху самые выгодные'}</div>`;
 if(keepOrder){const at=new Map(keepOrder.map((v,i)=>[v,i]));d.rows=d.rows.slice().sort((a,b)=>(at.has(a.vin)?at.get(a.vin):1e9)-(at.has(b.vin)?at.get(b.vin):1e9))}
 $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr data-vin="${esc(x.vin||'')}"><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
-<div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="В избранном на CarMax — машина в списке на печать">★ избранное</span> ':''}${x.voice_notes?`<div class="voice" title="Надиктовано на аукционе (приложение «Голосовые заметки»)">🎤 ${esc(x.voice_notes)}</div>`:''}${x.photo_wait?`<span class="pill v-mid" title="При сохранении списка ${esc(x.photo_wait)} фото не было — ждём: сохраните список позже, программа отметит, когда фото появятся">📷 NO PICTURES — ждём фото</span> `:''}${x.photo_arrived?`<span class="pill v-ok" title="Фото не было, теперь появились — пересмотрите машину">📷 Фото появились ${esc(x.photo_arrived.slice(5).replace('-','/'))}</span> `:''}${x.owners?`<span class="pill ${Number(x.owners)<=1?'v-ok':Number(x.owners)<=2?'v-mid':'v-bad'}" title="AutoCheck: владельцев ${esc(x.owners)}${x.owners_note?' — '+esc(x.owners_note):''}">👤 ${esc(x.owners)} ${Number(x.owners)===1?'владелец':Number(x.owners)<5?'владельца':'владельцев'}</span> `:''}${x.accidents!==undefined&&x.accidents!==''?`<div><span class="pill ${Number(x.accidents)===0?'v-ok':Number(x.accidents)===1?'v-mid':'v-bad'}" title="AutoCheck: ${esc(x.accidents_note||'')}">💥 ${Number(x.accidents)===0?'без ДТП':esc(x.accidents)+' ДТП'}</span></div>`:''}${x.returned?`<span class="pill v-mid" title="${esc(x.seen_before||'')}">↩ уже продана ${esc(x.returned)}${Number(x.returned_times)>1?' (продавалась '+esc(x.returned_times)+' раза)':''}${x.returned_price&&x.calc_max_bid_usd?' · наш потолок '+money(Number(x.calc_max_bid_usd)):''}</span> `:''}${x.favorite_removed?'<span class="pill v-mid" title="Убрана из избранного на CarMax: в списке на печать её нет, заметку в Notes программа ей больше не пишет">☆ убрана из избранного</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}</td>
+<div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="В избранном на CarMax — машина в списке на печать">★ избранное</span> ':''}${x.voice_notes?`<div class="voice" title="Надиктовано на аукционе (приложение «Голосовые заметки»)">🎤 ${esc(x.voice_notes)}</div>`:''}${x.photo_wait?`<span class="pill v-mid" title="При сохранении списка ${esc(x.photo_wait)} фото не было — ждём: сохраните список позже, программа отметит, когда фото появятся">📷 NO PICTURES — ждём фото</span> `:''}${x.photo_arrived?`<span class="pill v-ok" title="Фото не было, теперь появились — пересмотрите машину">📷 Фото появились ${esc(x.photo_arrived.slice(5).replace('-','/'))}</span> `:''}${x.owners?`<span class="pill ${Number(x.owners)<=1?'v-ok':Number(x.owners)<=2?'v-mid':'v-bad'}" title="AutoCheck: владельцев ${esc(x.owners)}${x.owners_note?' — '+esc(x.owners_note):''}">👤 ${esc(x.owners)} ${Number(x.owners)===1?'владелец':Number(x.owners)<5?'владельца':'владельцев'}</span> `:''}${x.accidents!==undefined&&x.accidents!==''?`<div><span class="pill ${Number(x.accidents)===0?'v-ok':Number(x.accidents)===1?'v-mid':'v-bad'}" title="AutoCheck: ${esc(x.accidents_note||'')}">💥 ${Number(x.accidents)===0?'без ДТП':esc(x.accidents)+' ДТП'}</span></div>`:''}${x.returned?`<span class="pill v-mid" title="${esc(x.seen_before||'')}">↩ уже продана ${esc(x.returned)}${Number(x.returned_times)>1?' (продавалась '+esc(x.returned_times)+' раза)':''}${x.returned_price&&x.calc_max_bid_usd?' · наш потолок '+money(Number(x.calc_max_bid_usd)):''}</span> `:''}${x.favorite_removed?'<span class="pill v-mid" title="Убрана из избранного на CarMax: в списке на печать её нет, заметку в Notes программа ей больше не пишет">☆ убрана из избранного</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a></div>`:''}${x.vin?`<div class="acts"><button type="button" class="tab mic" data-vin="${esc(x.vin)}" onclick="dictate(this)" title="Надиктовать заметку к машине (что не устроило на фото, дефекты …): нажмите и говорите, текст сам допишется в заметку «🎤». Ещё раз — остановить">🎤</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="editNote(this)" title="Написать или поправить заметку руками">✏</button> ${x.rejected?`<button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="reject(this,false)" title="Отбой ${esc(x.rejected)} — вернуть машину в общий список">↩ вернуть</button>`:`<button type="button" class="tab bad" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" onclick="reject(this,true)" title="Посмотрели лот — брать не будем: машина уйдёт из списка, из списка на печать и из автозапроса KBB. Найти её — кнопкой «🚫 Отбой» над списком">🚫 Отбой</button>`}</div>`:''}</td>
 <td class="num">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}${x.high_miles_value?'<div><span class="pill v-ok" title="Пробег 140–180 тыс. миль: на CarMax такие уходят дешевле всего относительно KBB (≈0,74 за октябрь). У Toyota / Honda / Lexus — хороший запас">🛣 большой пробег — дёшево</span></div>':''}</td>
 <td class="num">${x.condition_grade?`<span class="pill ${crCls(x.condition_grade)}">${esc(x.condition_grade.split(' ')[0])}</span>`:(x.seen_before?'':'—')}${x.seen_before?`<div class="seen" title="Эта машина (VIN) уже была на торгах — по вашей базе итогов">${esc(x.seen_before).replace(/; /g,'<br>')}</div>`:''}${x.cr_url?`<div><a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a></div>`:''}</td>
 <td class="num kbbcell">${x.vin?`<input class="kbb bid" data-vin="${esc(x.vin)}" value="${esc(x.my_proxy_usd)}" placeholder="ставка" inputmode="numeric" title="Ваша ставка (proxy bid). Enter — сохранить и пересчитать" oninput="previewBid(this)" onchange="saveBid(this)"><div class="muted pv" id="pv-${esc(x.vin)}"></div>`:money(x.my_proxy_usd)}${x.profit_at_my_bid_usd?`<div class="muted">прибыль <b class="${Number(x.profit_at_my_bid_usd)<0?'neg':'pos'}">${signed(x.profit_at_my_bid_usd)}</b></div>`:''}${x.current_bid_usd?`<div class="muted">на сайте ${money(x.current_bid_usd)}</div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg" href="${esc(x.lot_url)}#la-bid=${esc(String(x.my_proxy_usd).replace(/\D/g,''))}" target="_blank" rel="noopener" title="Откроет лот на CarMax и впишет ставку в «Set early bid» (вниз до шага $50). Способ оплаты и «Place bid» — вы сами">поставить на CarMax ↗</a></div>`:''}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
@@ -1582,10 +1665,10 @@ async function kbbSold(){const btn=$('soldbtn');
 /* Что сейчас сужает список — видно сразу (фильтры запоминаются между запусками). */
 function activeFilters(){const f=[];const v=id=>($(id)&&$(id).value||'').trim();
  if(place)f.push((placeList().length>1?'площадки: ':'площадка: ')+placeList().join(', '));if($('picked')&&$('picked').checked)f.push('только отобранные (KBB или ставка)');
- if($('nophoto')&&$('nophoto').checked)f.push('без фото');if($('vin')&&$('vin').value.trim())f.push('VIN: '+$('vin').value.trim().toUpperCase()+' (остальные фильтры не действуют)');if(saleDay)f.push('день торгов: '+dayLabel(saleDay));if(onlyBids)f.push('только мои ставки (по прибыли)');if(onlyArrived)f.push('только «фото появились»');if(showRemoved)f.push('только убранные из избранного CarMax');if(onlyReturned)f.push('только вернувшиеся после продажи');if(onlyBuyable)f.push('реально купить (потолок ≥ средней цены)');if(models.length)f.push('модели: '+models.map(m=>({civic:'Honda Civic',corolla:'Toyota Corolla'}[m])).join(' + '));if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух',none:'без дефекта'}[defectBy]||defectBy));
+ if($('nophoto')&&$('nophoto').checked)f.push('без фото');if($('vin')&&$('vin').value.trim())f.push('VIN: '+$('vin').value.trim().toUpperCase()+' (остальные фильтры не действуют)');if(saleDay)f.push('день торгов: '+dayLabel(saleDay));if(onlyBids)f.push('только мои ставки (по прибыли)');if(onlyArrived)f.push('только «фото появились»');if(showRemoved)f.push('только убранные из избранного CarMax');if(onlyReturned)f.push('только вернувшиеся после продажи');if(onlyBuyable)f.push('реально купить (потолок ≥ средней цены)');if(showRejected)f.push('только «🚫 Отбой»');if(models.length)f.push('модели: '+models.map(m=>({civic:'Honda Civic',corolla:'Toyota Corolla'}[m])).join(' + '));if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух',none:'без дефекта'}[defectBy]||defectBy));
  if(v('q'))f.push('машина: «'+v('q')+'»');if(v('y1')||v('y2'))f.push('годы '+(v('y1')||'…')+'–'+(v('y2')||'…'));if(v('miles'))f.push('пробег до '+v('miles'));
  if(v('maxbid')&&v('maxbid')!=='15000')f.push('потолок до $'+v('maxbid'));return f}
-function resetFilters(){place='';defectBy='';onlyReturned=false;onlyBuyable=false;try{localStorage.setItem('la-buyable','')}catch(e){}showRemoved=false;onlyArrived=false;onlyBids=false;models=[];saleDay='';try{localStorage.setItem('la-day','');localStorage.setItem('la-bids','');localStorage.setItem('la-arrived','');localStorage.setItem('la-removed','');localStorage.setItem('la-models','');localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-returned','');localStorage.setItem('la-picked','')}catch(e){}
+function resetFilters(){place='';defectBy='';onlyReturned=false;onlyBuyable=false;showRejected=false;try{localStorage.setItem('la-buyable','');localStorage.setItem('la-rejected','')}catch(e){}showRemoved=false;onlyArrived=false;onlyBids=false;models=[];saleDay='';try{localStorage.setItem('la-day','');localStorage.setItem('la-bids','');localStorage.setItem('la-arrived','');localStorage.setItem('la-removed','');localStorage.setItem('la-models','');localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-returned','');localStorage.setItem('la-picked','')}catch(e){}
  ['q','y1','y2','miles','vin'].forEach(id=>{if($(id))$(id).value=''});if($('maxbid'))$('maxbid').value='15000';if($('picked'))$('picked').checked=false;if($('nophoto'))$('nophoto').checked=false;refresh()}
 function showFilters(){drawModels();const e=$('filters');if(!e)return;const f=activeFilters();
  e.innerHTML=f.length?`<b>Включены фильтры:</b> ${esc(f.join(' · '))} — в списке не все машины. <button type="button" class="tab" onclick="resetFilters()">сбросить фильтры</button>`:''}
@@ -1593,6 +1676,15 @@ function showFilters(){drawModels();const e=$('filters');if(!e)return;const f=ac
 const ASKED_HOURS=3;
 function askedKbb(){let a={};try{a=JSON.parse(localStorage.getItem('la-kbb-asked')||'{}')}catch(e){}const since=Date.now()-ASKED_HOURS*3600e3;for(const k in a)if(a[k]<since)delete a[k];return a}
 function rememberAsked(list){const a=askedKbb();const now=Date.now();list.forEach(x=>{a[x.vin||x.lot_number]=now});try{localStorage.setItem('la-kbb-asked',JSON.stringify(a))}catch(e){}}
+/* Популярные без фото — KBB сам: раз в 5 минут окно спрашивает программу, для каких ещё не запрошен (помним 2 дня). */
+let autoKbbAt=0;
+async function autoKbb(){if(!hasExt()||Date.now()-autoKbbAt<5*60e3)return;autoKbbAt=Date.now();
+ let a={};try{a=JSON.parse(localStorage.getItem('la-kbb-auto')||'{}')}catch(e){}const since=Date.now()-2*864e5;for(const k in a)if(a[k]<since)delete a[k];
+ let cars=[];try{cars=(await (await fetch('/api/auto_kbb')).json()).cars||[]}catch(e){return}
+ const asked=askedKbb(),list=cars.filter(x=>!a[x.vin||x.lot_number]&&!asked[x.vin||x.lot_number]).slice(0,15);if(!list.length)return;
+ openKbb(list);rememberAsked(list);list.forEach(x=>{a[x.vin||x.lot_number]=Date.now()});try{localStorage.setItem('la-kbb-auto',JSON.stringify(a))}catch(e){}
+ $('stat').textContent=`📷 Популярные без фото: KBB запрошен сам для ${list.length} машин — вкладка kbb.com работает в фоне, цены появятся здесь.`}
+setInterval(autoKbb,60e3);setTimeout(autoKbb,15e3);
 function kbbTop(){const asked=askedKbb();let skipped=0;
 const fresh=x=>(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles&&!x.kbb_private_party_usd&&!(x.calc_verdict||'').startsWith('ПРОПУСТИТЬ');
 const need=x=>{if(!fresh(x))return false;if(asked[x.vin||x.lot_number]){skipped++;return false}return true};

@@ -959,3 +959,28 @@ class SalesPreKbbTest(unittest.TestCase):
         self.assertIn("по продажам CarMax", est.source)
         self.assertAlmostEqual(est.value, 8100 / 0.79 * analytics.SALES_FACTOR_DEFAULT, delta=300)   # дефектная за $2000 не в счёт
         self.assertIsNone(pre.estimate("Acura", "TLX", 2016, 120000))
+
+
+class RejectAndNotesTest(unittest.TestCase):
+    def test_reject_note_and_auto_kbb(self):
+        import tempfile
+        from unittest import mock
+        from lot_analyzer import app, inspection, voice
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(app, "REJECTED_PATH", Path(tmp) / "rejected.json"), mock.patch.object(voice, "WINDOW_PATH", Path(tmp) / "w.json"), \
+                    mock.patch.object(voice, "LOCAL_PATH", Path(tmp) / "v.json"):
+                self.assertTrue(app.set_rejected("abc123", True, "2016 Toyota Corolla"))
+                self.assertIn("ABC123", app.load_rejected())
+                voice.save_window_note("ABC123", "  ржавчина   на пороге ")
+                rows = [{"vin": "ABC123"}]
+                voice.attach(rows)
+                self.assertEqual(rows[0]["voice_notes"], "ржавчина на пороге")
+                voice.save_window_note("ABC123", "")
+                self.assertEqual(voice.load_window(), {})
+                app.set_rejected("ABC123", False)
+                self.assertEqual(app.load_rejected(), {})
+        self.assertFalse(inspection.wanted({"rejected": "2026-10-30", "no_photos": "да", "favorite": "1"}))
+        car = {"popular": "да", "no_photos": "да", "vin": "V1", "year": "2016", "make": "Toyota", "model": "Corolla", "odometer_miles": "100000"}
+        costs = {}
+        self.assertEqual([c["vin"] for c in app.auto_kbb_cars([car, {**car, "vin": "V2", "kbb_private_party_usd": "9000"},
+                                                               {**car, "vin": "V3", "rejected": "1"}, {**car, "vin": "V4", "no_photos": ""}], costs)], ["V1"])

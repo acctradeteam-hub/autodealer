@@ -19,6 +19,7 @@ from . import inbox
 from .paths import DATA_DIR
 
 LOCAL_PATH = DATA_DIR / "voice_notes.json"
+WINDOW_PATH = DATA_DIR / "window_notes.json"     # надиктовано / написано в окне программы (с телефона приходит в LOCAL_PATH)
 LIST_PATH, NOTES_PATH = "voice/list.json", "voice/notes.json"
 PULL_EVERY = 120
 _state = {"pulled": 0.0, "pushed": "", "error": "", "busy": False}
@@ -132,9 +133,37 @@ def text_of(note: dict) -> str:
     return " · ".join(x for x in (", ".join(tags), str(note.get("text") or "").strip()) if x).replace("\n", " ")[:400]
 
 
+def load_window() -> dict[str, dict]:
+    try:
+        return json.loads(WINDOW_PATH.read_text(encoding="utf-8")) if WINDOW_PATH.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_window_note(vin: str, text: str) -> dict[str, dict]:
+    """Заметка окна к машине (VIN): пустой текст — убрать."""
+    vin = str(vin or "").strip().upper()
+    notes = load_window()
+    text = " ".join(str(text or "").split())[:1000]
+    if not vin:
+        return notes
+    if text:
+        notes[vin] = {"text": text, "at": int(time.time() * 1000)}
+    else:
+        notes.pop(vin, None)
+    WINDOW_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WINDOW_PATH.write_text(json.dumps(notes, ensure_ascii=False, indent=0), encoding="utf-8")
+    return notes
+
+
 def attach(rows: list[dict]) -> None:
-    notes = load()
+    """С телефона и из окна — одной строкой «🎤 …»: в окне, в списке на печать и в Notes на CarMax."""
+    notes, window = load(), load_window()
     for row in rows:
-        note = notes.get(row.get("vin", ""))
-        if note and text_of(note):
-            row["voice_notes"] = text_of(note)
+        vin = row.get("vin", "")
+        note, own = notes.get(vin), window.get(vin)
+        parts = [x for x in ((text_of(note) if note else ""), (own or {}).get("text", "")) if x]
+        if parts:
+            row["voice_notes"] = " · ".join(parts)[:600]
+        if own:
+            row["window_note"] = own.get("text", "")
