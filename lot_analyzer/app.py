@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.7"
-PROGRAM_VERSION = "2026-10-30.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-30.7"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -764,6 +764,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     learning = kbb_learning.load()
     # нет похожих в базе KBB — по вашим итогам продаж CarMax той же модели
     apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs, learning["learned"], results.load_history()))
+    goal_bids(rows, costs)                           # ставка на 15% прибыли — под потолком (10%)
     if kbb_learning.update(rows, learning):          # прикидка → настоящий KBB: насколько ошиблись, поправка на будущее
         try:
             kbb_learning.save(learning)
@@ -824,6 +825,28 @@ def save_bid(vin: str, usd: float | None) -> None:
 def bid_step(usd: float) -> int:
     """Шаг ставки на CarMax (как в итогах торгов): до $2,000 — $50, до $5,000 — $100, дальше — $250."""
     return 50 if usd < 2000 else 100 if usd < 5000 else 250
+
+
+def goal_bids(rows: list[dict], costs: dict) -> None:
+    """Ставка на цель прибыли (profit_goal_pct, 15% от цены продажи): потолок (10%) минус разница целей,
+    вниз до шага ставки. Потолок — предел, выше не идём; ставка на 15% — с чего начинать."""
+    from .bid import target_profit
+    goal = float(costs.get("profit_goal_pct") or 0)
+    if not goal:
+        return
+    for r in rows:
+        try:
+            cap, sale = float(r.get("calc_max_bid_usd") or 0), float(r.get("sale_estimate_usd") or 0)
+        except ValueError:
+            continue
+        extra = sale * goal - target_profit(sale, costs) if cap > 0 and sale > 0 else 0
+        if extra <= 0:
+            continue
+        bid = cap - extra
+        step = bid_step(bid)
+        if bid >= step:
+            r["calc_bid_goal_usd"] = str(int(bid // step * step))
+            r["calc_goal_pct"] = f"{goal:.0%}"
 
 
 def auto_kbb_cars(rows: list[dict], costs: dict, limit: int = 30) -> list[dict]:
@@ -1002,7 +1025,7 @@ def save_link(query: str, auction: str, url: str) -> None:
 COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim", "exterior_color", "odometer_miles", "current_bid_usd",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
-           "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "defects", "source_file", "calc_breakdown", "needs_review",
+           "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "calc_bid_goal_usd", "calc_goal_pct", "defects", "source_file", "calc_breakdown", "needs_review",
            "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed", "rejected", "window_note",
            "returned", "returned_price", "returned_times", "high_miles_value", "kbb_prelim_usd", "kbb_prelim_pct",
            "photo_wait", "photo_arrived", "owners", "owners_note", "accidents", "accidents_note", "voice_notes", "today_done")
@@ -1443,7 +1466,7 @@ th{position:sticky;top:0;background:var(--card);font-weight:600}td.num{text-alig
 input.kbb{width:80px;min-width:0;padding:4px 6px;text-align:right}
 td.kbbcell,th.kbbcell{width:96px;max-width:96px;white-space:normal;overflow-wrap:anywhere}td.kbbcell .muted{font-size:11px;line-height:1.25}
 .tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}button.tab{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:600}
-button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.acts{margin-top:4px;white-space:nowrap}.acts button.tab{padding:2px 8px;font-size:12px;margin:0}.acts button.tab.bad{color:var(--bad)}.acts button.mic.on{background:var(--bad);border-color:var(--bad);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}#places button.tab{font-weight:500;padding:5px 10px;font-size:13px}label.pickl{flex-direction:row;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--fg)}label.pickl input{min-width:auto;width:18px;height:18px}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
+button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.goal{margin-top:3px;font-size:12px;font-weight:600;color:var(--ok);white-space:nowrap}.acts{margin-top:4px;white-space:nowrap}.acts button.tab{padding:2px 8px;font-size:12px;margin:0}.acts button.tab.bad{color:var(--bad)}.acts button.mic.on{background:var(--bad);border-color:var(--bad);color:#fff}button.tab .cnt{font-weight:400;opacity:.8;margin-left:4px}.tabnote{flex-basis:100%}#places button.tab{font-weight:500;padding:5px 10px;font-size:13px}label.pickl{flex-direction:row;align-items:center;gap:6px;margin-left:8px;font-size:13px;color:var(--fg)}label.pickl input{min-width:auto;width:18px;height:18px}a.jump{margin-left:10px;padding:4px 12px;font-size:13px}th.w110{min-width:112px}
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:block}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
@@ -1616,7 +1639,7 @@ ${!x.kbb_private_party_usd&&x.kbb_estimate_usd?`<div class="muted" title="${esc(
 
 <td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}</td>
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
-<td class="num" title="Максимальная ставка, при которой остаётся ваша цель прибыли"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}</td>
+<td class="num" title="Потолок — предел: выше не ставить, прибыль при нём ≈ 10% от цены продажи (KBB). Ниже — ставка на 15% прибыли: с неё начинать"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}${x.calc_bid_goal_usd?`<div class="goal" title="Ставка, при которой прибыль ≈ ${esc(x.calc_goal_pct)} от цены продажи (KBB)">${esc(x.calc_goal_pct)}: ${money(x.calc_bid_goal_usd)}</div>`:''}</td>
 <td>${x.passed?`<span class="pill v-bad" title="Аукцион этой машины уже прошёл">⏱ ${esc(x.passed)}</span> ${passedPrice(x)}`:''}${x.today_done?`<span class="pill v-mid" title="Торги сегодня — машина в списке до конца дня, для разбора">⏱ торги сегодня прошли</span> ${passedPrice(x)}`:''}<span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.vin_search?`По VIN «${esc(d.vin_search)}» машины нет в сохранённых страницах за 30 дней — сохраните страницу аукциона с этой машиной закладкой.`:d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;keepOrder=null;setTimeout(afterRender,0);
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;

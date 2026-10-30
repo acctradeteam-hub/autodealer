@@ -984,3 +984,14 @@ class RejectAndNotesTest(unittest.TestCase):
         costs = {}
         self.assertEqual([c["vin"] for c in app.auto_kbb_cars([car, {**car, "vin": "V2", "kbb_private_party_usd": "9000"},
                                                                {**car, "vin": "V3", "rejected": "1"}, {**car, "vin": "V4", "no_photos": ""}], costs)], ["V1"])
+
+
+class GoalBidTest(unittest.TestCase):
+    def test_goal_bid_under_ceiling(self):
+        from lot_analyzer import app
+        costs = {"profit_tiers": [[9999999, 0.10]], "profit_goal_pct": 0.15}
+        rows = [{"calc_max_bid_usd": "6000", "sale_estimate_usd": "10000"}, {"calc_max_bid_usd": "", "sale_estimate_usd": "9000"}]
+        app.goal_bids(rows, costs)
+        self.assertEqual(rows[0]["calc_bid_goal_usd"], "5500")          # 6000 − 5% × 10000, шаг $250
+        self.assertEqual(rows[0]["calc_goal_pct"], "15%")
+        self.assertNotIn("calc_bid_goal_usd", rows[1])
