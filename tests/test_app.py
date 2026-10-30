@@ -191,6 +191,26 @@ class PopularTest(unittest.TestCase):
         for y, mk, md, tr in no:
             self.assertFalse(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), f"{y} {md} {tr}")
 
+    def test_acura_scion(self):
+        from lot_analyzer.bid import DEFAULT_COSTS_PATH, load_costs
+        from lot_analyzer.popular import DEFAULT, is_popular
+        for costs in (load_costs(DEFAULT_COSTS_PATH), {"popular_models": DEFAULT}):
+            yes = [("2009", "Scion", "xB", ""), ("2016", "Scion", "iM", ""), ("2013", "Acura", "TSX", ""), ("2016", "Acura", "ILX", "Premium"),
+                   ("2016", "Acura", "TLX", "Tech"), ("2015", "Acura", "RDX", "AWD"), ("2014", "Acura", "MDX", "Tech")]
+            no = [("2008", "Acura", "TL", ""), ("2016", "Acura", "TLX", "V6 Tech"), ("2019", "Acura", "TLX", "SH-AWD A-Spec"),
+                  ("2019", "Acura", "RDX", "A-Spec"), ("2005", "Acura", "MDX", "Touring"), ("2021", "Acura", "MDX", "")]
+            for y, mk, md, tr in yes:
+                self.assertTrue(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), f"{y} {md} {tr}")
+            for y, mk, md, tr in no:
+                self.assertFalse(is_popular({"year": y, "make": mk, "model": md, "trim": tr}, costs), f"{y} {md} {tr}")
+
+    def test_buyable(self):
+        from lot_analyzer import app
+        self.assertTrue(app.buyable({"calc_max_bid_usd": "6000", "market_estimate_usd": "5800"}))
+        self.assertFalse(app.buyable({"calc_max_bid_usd": "5000", "market_estimate_usd": "5800"}))
+        self.assertTrue(app.buyable({"calc_max_bid_usd": "5000", "calc_max_bid_if_defect_usd": "6000", "market_estimate_usd": "5800"}))
+        self.assertFalse(app.buyable({"calc_max_bid_usd": "6000", "market_estimate_usd": ""}))
+
 
 class PickupTest(unittest.TestCase):
     def test_pickups(self):

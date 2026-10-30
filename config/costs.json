@@ -1,7 +1,7 @@
 {
   "_about": "Настройки расчёта максимальной ставки. Все суммы в долларах. Поля, начинающиеся с «_», — пояснения, программа их не читает.",
 
-  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Civic Hybrid — отдельной строкой, Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Highlander (и Hybrid); Avalon (и Hybrid); Mazda6; Honda Clarity, Honda Insight, Chevrolet Volt; все Lexus; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года.",
+  "_popular_models": "Популярные модели: в окне идут первыми (своя сортировка по выгоде), остальные — ниже. Corolla (без Cross), Civic (без Type R), Civic Hybrid — отдельной строкой, Camry (и Hybrid), Accord, Mazda3 (с 2012 года); CR-V (и Hybrid), RAV4 (и Hybrid), CX-5; Prius (и Prime, без c / v); Highlander (и Hybrid); Avalon (и Hybrid); Mazda6; Honda Clarity, Honda Insight, Chevrolet Volt; все Lexus; Acura TSX / ILX / RSX, TLX (4 цилиндра, без V6 / SH-AWD / Type S), RDX по 2018, MDX 2007–2020; все Scion; Tesla Model 3 2022 Standard Range (без Long Range / Performance). model — регулярное выражение по «модель + комплектация»; years — только эти годы, year_from — с этого года, year_to — по этот год.",
   "_stats_models": "Кроме популярных — что ещё собирать в свою статистику (кнопка «KBB для проданных»): Tesla Model 3 2022–2023, все комплектации.",
   "stats_models": [{"make": "Tesla", "model": "^model\\s*3\\b", "years": [2022, 2023]}],
 
@@ -23,6 +23,11 @@
     {"make": "Honda", "model": "^insight\\b"},
     {"make": "Chevrolet", "model": "^volt\\b"},
     {"make": "Lexus", "model": "."},
+    {"make": "Acura", "model": "^(tsx|ilx|rsx)\\b"},
+    {"make": "Acura", "model": "^tlx\\b(?!.*\\b(v6|sh-?awd|type\\s*s)\\b)"},
+    {"make": "Acura", "model": "^rdx\\b", "year_to": 2018},
+    {"make": "Acura", "model": "^mdx\\b", "year_from": 2007, "year_to": 2020},
+    {"make": "Scion", "model": "."},
     {"make": "Tesla", "model": "^model\\s*3\\b(?!.*(long range|performance|awd|dual motor))", "years": [2022]}
   ],
 

@@ -1,7 +1,7 @@
 """Популярные модели — идут в окне первыми (настройка popular_models в config/costs.json).
 
 Правило: марка, регулярное выражение для «модель + комплектация» (без учёта регистра), необязательно
-годы списком (years) или «с такого-то года» (year_from).
+годы списком (years), «с такого-то года» (year_from) и «по такой-то год» (year_to).
 """
 
 from __future__ import annotations
@@ -26,6 +26,12 @@ DEFAULT = [
     {"make": "Honda", "model": r"^insight\b"},
     {"make": "Chevrolet", "model": r"^volt\b"},
     {"make": "Lexus", "model": r"."},                     # все Lexus
+    # Acura — техника Honda; без V6-АКПП 2000-х (TL 2004–2010, MDX 2003–2006) и V6 / SH-AWD у TLX
+    {"make": "Acura", "model": r"^(tsx|ilx|rsx)\b"},
+    {"make": "Acura", "model": r"^tlx\b(?!.*\b(v6|sh-?awd|type\s*s)\b)"},
+    {"make": "Acura", "model": r"^rdx\b", "year_to": 2018},
+    {"make": "Acura", "model": r"^mdx\b", "year_from": 2007, "year_to": 2020},
+    {"make": "Scion", "model": r"."},                     # все Scion — это Toyota
     {"make": "Tesla", "model": r"^model\s*3\b(?!.*(long range|performance|awd|dual motor))", "years": [2022]},
 ]
 
@@ -44,6 +50,8 @@ def is_popular(row: dict, costs: dict) -> bool:
         if rule.get("years") and year not in {str(y) for y in rule["years"]}:
             continue
         if rule.get("year_from") and not (year.isdigit() and int(year) >= int(rule["year_from"])):
+            continue
+        if rule.get("year_to") and not (year.isdigit() and int(year) <= int(rule["year_to"])):
             continue
         if re.search(rule["model"], text, re.I):
             return True
