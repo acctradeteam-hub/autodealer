@@ -23,6 +23,9 @@ class TestBookmarklet(unittest.TestCase):
         self.assertEqual(self.url, build.build_url(self.source), "запустите python3 tools/bookmarklet/build.py")
         page = (DIR / "install.html").read_text(encoding="utf-8")
         self.assertIn(f'href="{html.escape(self.url, quote=True)}"', page, "install.html устарел — запустите build.py")
+        auto = (DIR.parent / "kbb_extension" / "save_page.js").read_text(encoding="utf-8")
+        self.assertTrue(auto.endswith(self.source), "kbb_extension/save_page.js устарел — запустите build.py")
+        self.assertIn("window.laAutoSave(name, html, saveDiag", self.source)
 
     def test_single_line_javascript_url(self) -> None:
         self.assertTrue(self.url.startswith("javascript:(function"))

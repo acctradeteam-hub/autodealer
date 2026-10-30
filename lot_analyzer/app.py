@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.4"
-PROGRAM_VERSION = "2026-10-30.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.5"
+PROGRAM_VERSION = "2026-10-30.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1367,7 +1367,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th>Машина</th><th>Пробег</th><th>CR</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110 sorth" onclick="sortHead()" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов). Нажмите — сортировка по ней: от низкой к высокой, ещё раз — наоборот">Средняя цена покупки<br>на аукционе <span id="sortmark">⇅</span></th><th class="w110 sorth" onclick="sortProfit()" title="Нажмите — сортировка по прибыли при покупке по средней цене: сверху самая большая, одним списком; ещё раз — наоборот">Прибыль при покупке<br>по средней цене <span id="sortmark2">⇅</span></th><th>Потолок</th><th>Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -1410,7 +1410,8 @@ let saleDay='';try{saleDay=localStorage.getItem('la-day')||''}catch(e){}
 function setDay(v){saleDay=v;try{localStorage.setItem('la-day',v)}catch(e){}refresh()}
 const MON=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
 function dayLabel(k){const [m,d]=k.split('-').map(Number);const t=new Date();const dt=new Date(t.getFullYear(),m-1,d);const diff=Math.round((dt-new Date(t.getFullYear(),t.getMonth(),t.getDate()))/864e5);
- return `${d} ${MON[m-1]}`+(diff===0?' · сегодня':diff===1?' · завтра':diff===-1?' · вчера':'')}
+ const wd=dt.getDay(),name=wd===1?'Аукцион понедельника ':wd===2?'Аукцион вторника ':['вс ','','','ср ','чт ','пт ','сб '][wd];
+ return `${name}${d} ${MON[m-1]}`+(diff===0?' · сегодня':diff===1?' · завтра':diff===-1?' · вчера':'')}
 function drawDays(d){const e=$('days');if(!e)return;const list=d.days||[];
  if(saleDay&&!list.some(([k])=>k===saleDay)){saleDay='';try{localStorage.setItem('la-day','')}catch(x){}}
  e.innerHTML=list.length>1||saleDay?`<span class="muted">День торгов:</span> <button type="button" class="tab${saleDay?'':' on'}" onclick="setDay('')">Все дни</button>`+list.map(([k,n])=>`<button type="button" class="tab${k===saleDay?' on':''}" onclick="setDay('${k}')" title="Только машины торгов этого дня — вместе с уже прошедшими лотами (для разбора)">${dayLabel(k)} <span class="cnt">${n}</span></button>`).join(''):''}
@@ -1560,6 +1561,17 @@ $('stat').textContent=why+`KBB для ${list.length} машин: на вклад
    и тогда ссылки открываются обычной вкладкой, а не «пропадают». */
 let extPong=0;
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='pong'){const first=!extPong;extPong=Date.now();if(e.data.v)document.documentElement.dataset.laExtV=e.data.v;if(first)extState()}});
+/* Автосбор CarMax (расширение, по пятницам утром): что собрано для аукционов понедельника и вторника. */
+const AUTO_WHY={empty:'машин пока нет',short:'загрузилось не всё',login:'войдите на CarMax в Chrome',error:'ошибка'};
+function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML='';return}
+ const st=a.state,days=Object.keys(st).filter(k=>/^\d{4}-\d\d-\d\d$/.test(k)).sort().slice(-2);
+ const parts=days.map(k=>{const d=st[k],pl=a.places[d.which]||[],got=pl.filter(p=>d.places[p]&&d.places[p].status==='ok');
+  const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>d.places[p]&&d.places[p].status!=='ok').map(p=>`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}`);
+  return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
+ e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'ещё не собирал')+` <button type="button" class="tab" onclick="autoRun()" title="Собрать все площадки ближайших понедельника и вторника прямо сейчас (окно Chrome откроется и закроется само, 5–10 минут). Нужен вход на carmaxauctions.com">Собрать сейчас</button>`}
+function autoRun(){window.postMessage({source:'lot-analyzer',type:'auto-run'},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
+window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='auto-status')drawAuto(e.data.answer)});
+setInterval(()=>{if(hasExt())window.postMessage({source:'lot-analyzer',type:'auto-status'},'*')},20000);setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),2500);
 function pingExt(){window.postMessage({source:'lot-analyzer',type:'ping'},'*');if(extPong&&Date.now()-extPong>4000){extPong=0;extState()}}
 pingExt();setInterval(pingExt,1500);
 const hasExt=()=>extPong>0&&Date.now()-extPong<4000;

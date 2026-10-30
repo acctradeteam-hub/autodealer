@@ -106,7 +106,11 @@ def main() -> None:
         "  if (/[#&]la=/.test(location.hash) || /^la(-run)?=/.test(window.name || '')) { run(); return; }\n"
         "  try { chrome.runtime.sendMessage({ type: 'la-cars' }, function (reply) { void chrome.runtime.lastError; if (reply && reply.cars) { window.name = 'la=' + reply.cars; } run(); }); } catch (e) { run(); }\n"
         "})(function () {\n" + source + "});\n", encoding="utf-8")
-    print(f"bookmarklet.txt: {len(url)} символов\ninstall.html готов\nkbb_extension/content.js готов")
+    # Автосбор CarMax (пятница утром): тот же код, расширение само запускает его на вкладке поиска площадки.
+    (extension / "save_page.js").write_text(
+        "/* Собрано из tools/bookmarklet/save_auction_page.js (python3 tools/bookmarklet/build.py) — не править вручную.\n"
+        "   Запускает фон расширения на вкладке поиска CarMax (автосбор), файл отдаёт через window.laAutoSave. */\n" + source, encoding="utf-8")
+    print(f"bookmarklet.txt: {len(url)} символов\ninstall.html готов\nkbb_extension/content.js и save_page.js готовы")
 
 
 if __name__ == "__main__":

@@ -65,6 +65,8 @@
   var kind = (document.title.split('|')[0] || 'page').trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'page';
   var name = lot ? lot.name : auction + '_' + kind + (parts ? '_all' + parts.length : '') + '_' + stamp + '.html';
   var html = '<!DOCTYPE html>\n<!-- saved-by: lot_analyzer bookmarklet; version: ' + LA_VERSION + '; saved-at: ' + now.toISOString() + (saveDiag ? '; diag: ' + saveDiag.replace(/--/g, '-').replace(/>/g, ')') : '') + (lot ? '; lot-vin: ' + lot.vin : '') + '; url: ' + location.href.replace(/--/g, '-') + ' -->\n' + copy.outerHTML;
+  /* Автосбор расширения (пятница утром): файл отдаём расширению — оно кладёт его в «Загрузки» само. */
+  if (typeof window.laAutoSave === 'function') { window.laAutoSave(name, html, saveDiag, total || 0); return; }
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   var link = document.createElement('a');
   link.href = URL.createObjectURL(blob);

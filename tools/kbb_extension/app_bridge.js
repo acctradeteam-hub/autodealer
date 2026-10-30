@@ -18,6 +18,16 @@
       window.postMessage({ source: 'lot-analyzer-ext', type: 'pong', v: chrome.runtime.getManifest().version }, '*');
       return;
     }
+    /* Автосбор CarMax: состояние для окна и кнопка «Собрать сейчас». */
+    if (e.data.type === 'auto-status' || e.data.type === 'auto-run') {
+      try {
+        chrome.runtime.sendMessage({ type: e.data.type }, function (a) {
+          void chrome.runtime.lastError;
+          window.postMessage({ source: 'lot-analyzer-ext', type: e.data.type, answer: a || null }, '*');
+        });
+      } catch (err) { /* связь умерла */ }
+      return;
+    }
     if (e.data.type !== 'open-bg') { return; }
     /* Две живые связи в одной вкладке не должны открыть две вкладки: первая отмечает запрос как выполненный. */
     var id = String(e.data.id || '');
