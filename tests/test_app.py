@@ -917,3 +917,29 @@ class FavoritesTest(unittest.TestCase):
         on = BeautifulSoup('<div id="70139392"><button data-click-event="FavoriteRemove" data-vehicle-id="70139392"></button></div>', "lxml").div
         off = BeautifulSoup('<div id="70139393"><button data-click-event="FavoriteAdd" data-vehicle-id="70139393"></button></div>', "lxml").div
         self.assertEqual((_carmax_star(on), _carmax_star(off), _carmax_star(BeautifulSoup("<div></div>", "lxml").div)), ("1", "0", ""))
+
+
+class TidyDownloadsTest(unittest.TestCase):
+    def test_moves_program_files_into_own_folder(self):
+        import os
+        import tempfile
+        from lot_analyzer import app
+        with tempfile.TemporaryDirectory() as tmp:
+            downloads = Path(tmp)
+            archive = downloads / app.ARCHIVE_NAME
+            (downloads / "KBB_2014_honda_civic_19XFB2F90EE245529.html").write_text("<html>kbb</html>")
+            (downloads / "CarMax_Search_2026-10-30_0702.html").write_text("<html>cm</html>")
+            os.utime(downloads / "CarMax_Search_2026-10-30_0702.html", (1700000000, 1700000000))
+            (downloads / "Kelley Blue Book Civic.html").write_text("<html>kbb</html>")
+            (downloads / "Kelley Blue Book Civic_files").mkdir()
+            (downloads / "Kelley Blue Book Civic_files" / "a.js").write_text("x")
+            (downloads / "carmax-results-Multi-10272026.csv").write_text("Sale\n")      # итоги — ваш файл, остаётся
+            (downloads / "letter.pdf").write_text("x")
+            archive.mkdir()
+            (archive / "KBB_2014_honda_civic_19XFB2F90EE245529.html").write_text("<html>old</html>")
+            self.assertEqual(app.tidy_downloads(downloads, archive), 3)
+            self.assertEqual(sorted(p.name for p in downloads.iterdir()), ["Lot Analyzer", "carmax-results-Multi-10272026.csv", "letter.pdf"])
+            self.assertTrue((archive / "KBB_2014_honda_civic_19XFB2F90EE245529 (1).html").exists())
+            self.assertEqual(int((archive / "CarMax_Search_2026-10-30_0702.html").stat().st_mtime), 1700000000)
+            self.assertTrue((archive / "Kelley Blue Book Civic_files" / "a.js").exists())
+            self.assertEqual(app.tidy_downloads(downloads, archive), 0)

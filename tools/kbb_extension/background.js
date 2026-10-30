@@ -103,3 +103,11 @@ chrome.runtime.onInstalled.addListener(function () {
     });
   });
 });
+
+/* Файлы закладки и расширения (страницы KBB, аукционов, отчёты KBB) — не в сами «Загрузки», а в их папку «Lot Analyzer»:
+   «Загрузки» не засоряются, программа читает эту папку. Остальные скачивания не трогаем. */
+var LA_FILE = /^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$/i;
+chrome.downloads.onDeterminingFilename.addListener(function (item, suggest) {
+  var name = String(item.filename || '').split(/[\\/]/).pop();
+  if (LA_FILE.test(name)) { suggest({ filename: 'Lot Analyzer/' + name, conflictAction: 'uniquify' }); } else { suggest(); }
+});

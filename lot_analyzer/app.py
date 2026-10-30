@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.6"
-PROGRAM_VERSION = "2026-10-30.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.7"
+PROGRAM_VERSION = "2026-10-30.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -188,8 +188,52 @@ UPCOMING_DAYS = 7
 MODEL_BUTTONS = {"civic": ("honda", r"^civic\b"), "corolla": ("toyota", r"^corolla\b(?!\s*cross)")}
 
 
+# Своя папка в «Загрузках»: файлы закладки и расширения (KBB, страницы аукционов) — туда, «Загрузки» не засоряются.
+# Расширение сохраняет туда сразу; что всё же легло в сами «Загрузки» (закладка без расширения, старые файлы) — переносит программа.
+ARCHIVE_NAME = "Lot Analyzer"
+TIDY: tuple[Path, Path] | None = None          # («Загрузки», своя папка) — задаёт main(); в тестах выключено
+
+
+def _free_name(folder: Path, name: str) -> Path:
+    target = folder / name
+    stem, suffix, n = target.stem, target.suffix, 1
+    while target.exists():
+        target = folder / f"{stem} ({n}){suffix}"
+        n += 1
+    return target
+
+
+def tidy_downloads(downloads: Path, archive: Path) -> int:
+    """Переносит из «Загрузок» в свою папку файлы закладки / расширения и сохранённые через Cmd+S страницы KBB
+    (вместе с их папкой «…_files»). Время файла сохраняется. Возвращает, сколько перенесено."""
+    import shutil
+    moved = 0
+    try:
+        items = list(downloads.iterdir())
+    except OSError:
+        return 0
+    for path in items:
+        if not path.is_file() or not (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name)):
+            continue
+        if path.suffix.lower() in (".html", ".htm") and is_own_window(path):
+            continue
+        try:
+            archive.mkdir(parents=True, exist_ok=True)
+            target = _free_name(archive, path.name)
+            shutil.move(str(path), str(target))
+            files = path.with_name(path.stem + "_files")
+            if files.is_dir():
+                shutil.move(str(files), str(_free_name(archive, target.stem + "_files")))
+            moved += 1
+        except OSError:
+            continue                     # файл ещё пишется / занят — в следующий раз
+    return moved
+
+
 def find_pages(folders: list[Path], hours: float) -> list[Path]:
     """Страницы, сохранённые закладкой (имя «CarMax_…», «ACV_…» и т.п.) за последние `hours` часов."""
+    if TIDY:
+        tidy_downloads(*TIDY)
     cutoff = time.time() - hours * 3600
     found = []
     for folder in folders:
@@ -1286,7 +1330,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--costs", default=str(DEFAULT_COSTS_PATH))
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
-    folders = [Path(p).expanduser() for p in args.watch] or [Path.home() / "Downloads", Path("samples")]
+    folders = [Path(p).expanduser() for p in args.watch]
+    if not folders:
+        global TIDY
+        downloads = Path.home() / "Downloads"
+        TIDY = (downloads, downloads / ARCHIVE_NAME)
+        folders = [downloads / ARCHIVE_NAME, downloads, Path("samples")]
     # Данные — в постоянной папке (~/LotAnalyzer/data); прежние из старых папок программы копируются сюда один раз.
     from . import paths
     for line in paths.migrate():

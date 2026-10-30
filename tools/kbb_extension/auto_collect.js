@@ -1,5 +1,5 @@
 /* Автосбор CarMax: в пятницу утром расширение само открывает поиск каждой площадки (ваши «Favorite auctions»
-   с Member Dashboard), ждёт, пока загрузятся все машины, и сохраняет страницу в «Загрузки» — как закладка
+   с Member Dashboard), ждёт, пока загрузятся все машины, и сохраняет страницу в «Загрузки/Lot Analyzer» — как закладка
    «💾 Сохранить для анализа». Программа берёт файлы из «Загрузок» как обычно.
    — Аукционы понедельника и вторника собираются в пятницу с 7:00; компьютер или Chrome был выключен —
      соберёт при первом включении, пока торги не начались (понедельник / вторник до 6:00).
@@ -44,7 +44,7 @@ function autoDownload(name, html) {
   var bytes = new TextEncoder().encode(html), bin = '';
   for (var i = 0; i < bytes.length; i += 0x8000) { bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); }
   return new Promise(function (resolve) {
-    chrome.downloads.download({ url: 'data:text/html;charset=utf-8;base64,' + btoa(bin), filename: name, conflictAction: 'uniquify', saveAs: false },
+    chrome.downloads.download({ url: 'data:text/html;charset=utf-8;base64,' + btoa(bin), filename: 'Lot Analyzer/' + name, conflictAction: 'uniquify', saveAs: false },
       function (id) { resolve(!chrome.runtime.lastError && !!id); });
   });
 }
