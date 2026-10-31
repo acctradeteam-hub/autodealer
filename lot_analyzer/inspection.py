@@ -74,6 +74,15 @@ def wanted(row: dict[str, str]) -> bool:
     return bool(row.get("inspect")) and not row.get("calc_verdict", "").startswith(SKIP_VERDICTS)
 
 
+# Порядок площадок в один день — как вы их объезжаете: сначала Oceanside, потом Murrieta; остальные — после, по алфавиту.
+PLACE_ORDER = ("Oceanside", "Murrieta")
+
+
+def _place_rank(place: str) -> tuple:
+    low = place.lower()
+    return next((i for i, name in enumerate(PLACE_ORDER) if name.lower() in low), len(PLACE_ORDER)), place
+
+
 def inspection_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     picked = [r for r in rows if wanted(r)]
     groups = _groups(picked)
@@ -82,7 +91,7 @@ def inspection_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         match = re.match(r"^([A-Z])\s*/\s*(\d+)", row.get("lot_number", ""))
         return (match.group(1), int(match.group(2))) if match else ("~", 0)
 
-    return sorted(picked, key=lambda r: (groups[id(r)][1] or "99", groups[id(r)][0], lane_run(r)))
+    return sorted(picked, key=lambda r: (groups[id(r)][1] or "99", _place_rank(groups[id(r)][0]), lane_run(r)))
 
 
 def _notes_html(row: dict[str, str]) -> str:

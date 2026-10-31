@@ -150,7 +150,7 @@ class TestOneWindow(unittest.TestCase):
                 dict(base, vin="V3", lot_number="A/3", location="Oceanside, CA", sale_date=""),
                 dict(base, vin="V4", lot_number="B/1", location="Murrieta, CA", sale_date="Oct 19, 9:00am PT")]
         heads = re.findall(r"<h2>(.*?)</h2>", render_html(rows))
-        self.assertEqual(heads, ["CarMax Murrieta · Oct 19, 9:00am PT", "CarMax Oceanside · Oct 19, 9:00am PT"])
+        self.assertEqual(heads, ["CarMax Oceanside · Oct 19, 9:00am PT", "CarMax Murrieta · Oct 19, 9:00am PT"])   # сначала едете в Oceanside
 
     def test_http_api(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
