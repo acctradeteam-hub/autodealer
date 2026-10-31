@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.8"
-PROGRAM_VERSION = "2026-10-31.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-31.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 

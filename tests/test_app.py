@@ -129,7 +129,9 @@ class TestOneWindow(unittest.TestCase):
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "")
         picked = inspection_rows(rows)
         self.assertTrue(picked)
-        self.assertTrue(all(r["inspect"] and not r["calc_verdict"].startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО")) for r in picked))
+        # просчитанные (настоящий KBB / ставка) — всегда; остальные — с пометкой осмотра и не «ПРОПУСТИТЬ» / «НЕВЫГОДНО»
+        self.assertTrue(all((r.get("kbb_private_party_usd") and not r.get("kbb_from_window_field")) or r.get("my_proxy_usd")
+                            or (r["inspect"] and not r["calc_verdict"].startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО"))) for r in picked))
         page = render_html(rows)
         self.assertIn("Моя оценка", page)
         self.assertNotIn("Почему в списке", page)
@@ -984,6 +986,22 @@ class RejectAndNotesTest(unittest.TestCase):
         costs = {}
         self.assertEqual([c["vin"] for c in app.auto_kbb_cars([car, {**car, "vin": "V2", "kbb_private_party_usd": "9000"},
                                                                {**car, "vin": "V3", "rejected": "1"}, {**car, "vin": "V4", "no_photos": ""}], costs)], ["V1"])
+
+
+class InspectionRuleTest(unittest.TestCase):
+    def test_who_goes_to_the_print_list(self):
+        from lot_analyzer.inspection import wanted
+        base = {"auction": "CarMax", "favorite_known": "1", "calc_verdict": "МОЖНО: до $5,000"}
+        self.assertFalse(wanted({**base, "no_photos": "да"}))                                     # без фото, не популярная
+        self.assertTrue(wanted({**base, "no_photos": "да", "popular": "да"}))
+        self.assertFalse(wanted({**base, "no_photos": "да", "popular": "да", "calc_verdict": "НЕВЫГОДНО"}))
+        self.assertTrue(wanted({**base, "kbb_private_party_usd": "9000"}))                         # просчитана — в списке
+        self.assertFalse(wanted({**base, "kbb_private_party_usd": "9000", "kbb_from_window_field": "1"}))
+        self.assertTrue(wanted({**base, "my_proxy_usd": "5000"}))                                  # ставка — в списке
+        self.assertFalse(wanted({**base, "kbb_private_party_usd": "9000", "rejected": "2026-10-31"}))
+        self.assertFalse(wanted({**base, "kbb_private_party_usd": "9000", "favorite_removed": "1"}))
+        self.assertTrue(wanted({**base, "favorite": "1"}))
+        self.assertFalse(wanted(base))
 
 
 class GoalBidTest(unittest.TestCase):

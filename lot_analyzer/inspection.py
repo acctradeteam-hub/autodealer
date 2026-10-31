@@ -63,8 +63,10 @@ def wanted(row: dict[str, str]) -> bool:
         return False                                   # сняли звёздочку — сами решили не смотреть
     if row.get("rejected"):
         return False                                   # «🚫 Отбой» в окне — посмотрели лот, не покупать
-    if row.get("no_photos") == "да" and (row.get("favorite") or not row.get("calc_verdict", "").startswith("ПРОПУСТИТЬ")):
-        return True                                    # NO PICTURES — осматривать обязательно (кроме «ПРОПУСТИТЬ»: титул, salvage …)
+    if (row.get("kbb_private_party_usd") and not row.get("kbb_from_window_field")) or row.get("my_proxy_usd"):
+        return True                                    # просчитали (настоящий KBB) или поставили ставку — и не «Отбой»: смотрим
+    if row.get("no_photos") == "да" and row.get("popular") and not row.get("calc_verdict", "").startswith(SKIP_VERDICTS):
+        return True                                    # NO PICTURES у популярной с прибылью — смотреть только на месте
     if row.get("auction") == "CarMax" and row.get("favorite_known"):
         return bool(row.get("favorite"))               # CarMax: ваше избранное — ваш финальный список
     return bool(row.get("inspect")) and not row.get("calc_verdict", "").startswith(SKIP_VERDICTS)
