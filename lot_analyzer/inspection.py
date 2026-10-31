@@ -152,6 +152,7 @@ td.edited{{background:rgba(230,180,40,.14)}}td.del{{width:28px;text-align:center
 CarMax — машины из вашего избранного на сайте: сняли звёздочку — машина уходит из этого списка.</div>
 <p class="noprint"><button onclick="print()">Печать</button>
 <button id="restore" onclick="restoreAll()" hidden>Вернуть всё</button>
+<button id="phone" onclick="toPhone()" title="На телефон — ровно этот список: без убранных ✕ машин и с тем, что вы написали в графе «Заметки»">📱 На телефон</button> <span id="phonestate" class="muted"></span>
 <span class="muted">Ячейки можно исправить — щёлкните и пишите; ✕ убирает машину из списка. Правки запоминаются в этом браузере.</span></p>"""]
     if not items:
         parts.append('<p class="muted">Нет лотов, требующих личного осмотра.</p>')
@@ -211,6 +212,16 @@ const h1=document.querySelector('h1');
 if(state.title)h1.textContent=state.title;
 h1.addEventListener('input',()=>{state.title=h1.textContent;save();refresh()});
 document.addEventListener('click',e=>{const a=e.target.closest('td[contenteditable] a');if(a&&!(e.metaKey||e.ctrlKey)){e.preventDefault();window.open(a.href,'_blank')}});
+/* «📱 На телефон»: что видно на странице (без убранных ✕) и ваш текст из графы «Заметки» — в приложение для осмотра. */
+async function toPhone(){
+  const st=document.getElementById('phonestate'),kept=rows().filter(tr=>!tr.hidden),notes={};
+  kept.forEach(tr=>{const td=tr.querySelector('td.notes');const t=td?td.innerText.trim():'';if(t)notes[tr.dataset.id]=t});
+  st.textContent='Отправляю…';
+  try{const r=await fetch('/api/voice_push',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({params:location.search.slice(1),keep:kept.map(tr=>tr.dataset.id),notes})});
+      const d=await r.json();
+      st.textContent=d.ok?`На телефоне: ${d.cars} машин. В приложении нажмите «Обновить».`:('Не отправлено: '+(d.error||'ошибка'))}
+  catch(e){st.textContent='Не отправлено: окно программы не запущено'}}
 function restoreAll(){if(!confirm('Вернуть убранные машины и отменить все правки?'))return;try{localStorage.removeItem(KEY)}catch(e){}location.reload()}
 refresh();
 """

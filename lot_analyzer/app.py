@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.8"
-PROGRAM_VERSION = "2026-10-31.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-31.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1299,6 +1299,13 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 q = {k: v[0] for k, v in parse_qs(str(data.get("params") or "")).items()}
                 removed = {str(v).upper() for v in data.get("removed") or []}      # убраны кнопкой ✕ в списке на печать
                 rows = [r for r in inspection_source(q) if str(r.get("vin", "")).upper() not in removed]
+                if data.get("keep") is not None:     # из самого списка на осмотр: ровно эти машины и ваш текст графы «Заметки»
+                    keep = [str(v).upper() for v in data.get("keep") or []]
+                    notes_in = {str(k).upper(): str(v)[:500] for k, v in (data.get("notes") or {}).items()}
+                    rows = [dict(r) for r in rows if str(r.get("vin", "")).upper() in keep]     # копии: строки — из кэша окна
+                    for r in rows:
+                        if notes_in.get(str(r.get("vin", "")).upper()):
+                            r["print_note"] = notes_in[str(r["vin"]).upper()]
                 self._send(json.dumps(voice.push_list(rows), ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/owners_scope":    # окно: «👤 Владельцы» для машин этого списка

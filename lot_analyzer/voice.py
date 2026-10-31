@@ -44,6 +44,8 @@ def car_of(row: dict) -> dict:
 
     notes = [x for x in lot_note(row).split("\n") if x.strip() and not x.startswith("Голос: ")]
     own = [x.strip() for x in str(row.get("site_notes") or "").split("\n") if x.strip()]
+    if row.get("print_note"):                        # написано в графе «Заметки» списка на осмотр
+        own.append("Список: " + str(row["print_note"]).replace("\n", " "))
     return {"vin": row.get("vin", ""), "lot": row.get("lot_number", ""), "place": row.get("place", ""), "sale": row.get("sale_date", ""),
             "car": " ".join(str(row.get(k, "")) for k in ("year", "make", "model", "trim")).strip(), "miles": row.get("odometer_miles", ""),
             "kbb": row.get("kbb_private_party_usd") or "", "kbb_est": row.get("kbb_estimate_usd") or "",

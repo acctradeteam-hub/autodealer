@@ -152,6 +152,35 @@ class TestOneWindow(unittest.TestCase):
         heads = re.findall(r"<h2>(.*?)</h2>", render_html(rows))
         self.assertEqual(heads, ["CarMax Oceanside · Oct 19, 9:00am PT", "CarMax Murrieta · Oct 19, 9:00am PT"])   # сначала едете в Oceanside
 
+    def test_phone_from_print_list(self) -> None:
+        """«📱 На телефон» в самом списке на осмотр: только оставленные машины и текст графы «Заметки»."""
+        import base64
+        from unittest import mock
+        from lot_analyzer import inbox, voice
+        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "")
+        from lot_analyzer.inspection import inspection_rows
+        vins = [r["vin"] for r in inspection_rows([r for r in rows if not r.get("passed")]) if r.get("vin")]
+        self.assertTrue(vins)
+        sent = {}
+
+        def fake(method, url, token, body=None):
+            if method == "PUT":
+                sent.update(json.loads(base64.b64decode(body["content"]).decode("utf-8")))
+            return (201, {}) if method == "PUT" else (404, {})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with mock.patch.object(voice, "_repo", return_value=("me/inbox", "t")), mock.patch.object(inbox, "_request", side_effect=fake):
+                req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/api/voice_push", method="POST",
+                                             data=json.dumps({"params": "hours=24", "keep": vins[:1], "notes": {vins[0]: "смотреть подвеску"}}).encode(),
+                                             headers={"Content-Type": "application/json"})
+                answer = json.loads(urllib.request.urlopen(req).read())
+        finally:
+            server.shutdown()
+        self.assertEqual(answer, {"ok": True, "cars": 1})
+        self.assertEqual([c["vin"] for c in sent["cars"]], vins[:1])
+        self.assertIn("Список: смотреть подвеску", sent["cars"][0]["own"])
+
     def test_http_api(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
         threading.Thread(target=server.serve_forever, daemon=True).start()
