@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.8"
-PROGRAM_VERSION = "2026-10-31.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-10-31.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1062,6 +1062,21 @@ COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim",
 
 
 def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
+    def inspection_source(q: dict) -> list[dict]:
+        """Машины для списка на осмотр и для телефона — с фильтрами окна (машина, годы, пробег, потолок, площадки)."""
+        def num(key: str) -> int | None:
+            value = str(q.get(key, "")).replace(",", "").strip()
+            return int(float(value)) if value.replace(".", "", 1).isdigit() else None
+        rows = search_rows(find_pages(folders, float(q.get("hours") or 24)), cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"),
+                           num("miles"), float(q["kbb"]) if str(q.get("kbb", "")).replace(".", "").isdigit() else None, max_bid=num("maxbid"))
+        rows = [r for r in rows if not r.get("passed")]
+        rows, _ = by_place(rows, q)
+        # Машины с вашей ставкой — всегда, даже если фильтры окна (годы, пробег, площадка …) их не берут.
+        have = {r.get("vin") for r in rows}
+        rows += [r for r in search_rows(find_pages(folders, float(q.get("hours") or 24)), cache, load_costs(costs_path), "")
+                 if r.get("my_proxy_usd") and not r.get("passed") and r.get("vin") not in have]
+        return rows
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args) -> None:  # тихо
             pass
@@ -1211,11 +1226,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                              for k, v in results.stats(results.load_history()).items()}}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/inspection":
-                pages = find_pages(folders, float(q.get("hours") or 24))
-                rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
-                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None, max_bid=num("maxbid"))
-                rows = [r for r in rows if not r.get("passed")]
-                rows, _ = by_place(rows, q)
+                rows = inspection_source(q)
                 title = ("На осмотр" + (f" — {', '.join(sorted(place_choice(q)))}" if q.get("place") else "") + (" — отобранные" if q.get("picked") == "1" else "")
                          + (f" — {q['q']}" if q.get("q") else "" if q.get("place") or q.get("picked") == "1" else " — все машины из файлов"))
                 self._send(render_html(rows, title).encode("utf-8"), "text/html; charset=utf-8")
@@ -1282,8 +1293,12 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 answer = add_favorites(list(data.get("cars") or [])[:50], load_costs(costs_path))
                 self._send(json.dumps(answer, ensure_ascii=False).encode("utf-8"))
                 return
-            if urlparse(self.path).path == "/api/voice_push":     # окно: «📱 На телефон» — список на осмотр в репозиторий
-                rows = search_rows(find_pages(folders, 168), cache, load_costs(costs_path), "")
+            if urlparse(self.path).path == "/api/voice_push":     # окно: «📱 На телефон» — тот же список, что на печать
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                q = {k: v[0] for k, v in parse_qs(str(data.get("params") or "")).items()}
+                removed = {str(v).upper() for v in data.get("removed") or []}      # убраны кнопкой ✕ в списке на печать
+                rows = [r for r in inspection_source(q) if str(r.get("vin", "")).upper() not in removed]
                 self._send(json.dumps(voice.push_list(rows), ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/owners_scope":    # окно: «👤 Владельцы» для машин этого списка
@@ -1820,7 +1835,9 @@ async function bidsCeiling(){
   keepOrder=shown.map(x=>x.vin);await refresh();$('stat').textContent=`Ставка MP = потолок вписана ${d.saved} машинам (вниз до шага: $50 / $100 / $250). Расширение запишет «MP …» в Notes на CarMax; на самом сайте ставку ставите вы.`}
  catch(e){$('stat').textContent='Не сохранилось: окно программы не отвечает'}}
 async function voicePush(){$('stat').textContent='Отправляю список на осмотр на телефон…';
- try{const r=await fetch('/api/voice_push',{method:'POST'});const d=await r.json();
+ /* Тот же список, что на печать: фильтры окна и машины, убранные кнопкой ✕ в списке на осмотр. */
+ const removed=new Set();try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('la-inspection2:')){const st=JSON.parse(localStorage.getItem(k)||'{}');(st.removed||[]).forEach(v=>removed.add(v))}}}catch(e){}
+ try{const r=await fetch('/api/voice_push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({params:params().toString(),removed:[...removed]})});const d=await r.json();
   $('stat').textContent=d.ok?`На телефоне: ${d.cars} машин из списка на осмотр. Откройте приложение «Голосовые заметки» и нажмите «Обновить список». Надиктованное появится здесь у машин («🎤 …») через 1–2 минуты.`:('Не отправлено: '+(d.error||'ошибка'))}catch(e){$('stat').textContent='Не отправлено: окно программы не отвечает'}}
 /* Владельцы — для машин CarMax, что сейчас в списке окна (с вашими фильтрами: «Мои ставки», площадки, модели …),
    у которых владельцев ещё не знаем. Без фильтров — лучшие машины, как раньше. */

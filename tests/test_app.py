@@ -998,6 +998,7 @@ class InspectionRuleTest(unittest.TestCase):
         self.assertTrue(wanted({**base, "kbb_private_party_usd": "9000"}))                         # просчитана — в списке
         self.assertFalse(wanted({**base, "kbb_private_party_usd": "9000", "kbb_from_window_field": "1"}))
         self.assertTrue(wanted({**base, "my_proxy_usd": "5000"}))                                  # ставка — в списке
+        self.assertTrue(wanted({**base, "my_proxy_usd": "5000", "rejected": "1", "favorite_removed": "1", "calc_verdict": "ПРОПУСТИТЬ"}))
         self.assertFalse(wanted({**base, "kbb_private_party_usd": "9000", "rejected": "2026-10-31"}))
         self.assertFalse(wanted({**base, "kbb_private_party_usd": "9000", "favorite_removed": "1"}))
         self.assertTrue(wanted({**base, "favorite": "1"}))
