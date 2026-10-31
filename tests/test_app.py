@@ -995,3 +995,15 @@ class GoalBidTest(unittest.TestCase):
         self.assertEqual(rows[0]["calc_bid_goal_usd"], "5500")          # 6000 − 5% × 10000, шаг $250
         self.assertEqual(rows[0]["calc_goal_pct"], "15%")
         self.assertNotIn("calc_bid_goal_usd", rows[1])
+
+
+class SiteNotesTest(unittest.TestCase):
+    def test_live_carmax_notes_saved(self):
+        import tempfile
+        from unittest import mock
+        from lot_analyzer import app
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(app, "SITE_NOTES_PATH", Path(tmp) / "s.json"):
+            vin = "1HGCM82633A004352"
+            self.assertEqual(app.save_site_notes([{"vin": vin.lower(), "text": "сколы на капоте\nKBB 9,000$ 10/30/26"}, {"vin": "bad", "text": "x"}]), 1)
+            self.assertEqual(app.save_site_notes([{"vin": vin, "text": "сколы на капоте\nKBB 9,000$ 10/30/26"}]), 0)
+            self.assertIn("сколы", app.load_site_notes()[vin]["text"])

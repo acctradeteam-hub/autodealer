@@ -83,6 +83,30 @@
     lastReport = key;
     try { chrome.runtime.sendMessage({ type: 'notes-report', report: data }, function () { void chrome.runtime.lastError; }); } catch (e) { /* расширение обновили — см. ниже */ }
   };
+  /* Ваш текст в Notes (что не устроило на осмотре лота) — сразу в программу: видно в окне без пересохранения страницы.
+     Уходит при выходе из поля и раз в 20 секунд, только изменившееся. На карточке лота (/vehicledetail/) VIN — со страницы. */
+  var sentNotes = {};
+  var pageVin = function () {
+    var all = (document.body.innerText || '').match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) || [];
+    var uniq = all.filter(function (v, i) { return all.indexOf(v) === i; });
+    return /\/vehicledetail\//.test(location.pathname) && uniq.length === 1 ? uniq[0] : '';
+  };
+  var areaVin = function (t) { var c = cardOf(t); return (c && vinOf(c)) || pageVin(); };
+  var sendOwnNotes = function (list) {
+    var cars = [];
+    list.forEach(function (t) {
+      var vin = areaVin(t);
+      if (!vin || sentNotes[vin] === t.value) { return; }
+      sentNotes[vin] = t.value;
+      cars.push({ vin: vin, text: t.value });
+    });
+    if (!cars.length) { return; }
+    try { chrome.runtime.sendMessage({ type: 'site-notes', cars: cars }, function () { void chrome.runtime.lastError; }); } catch (e) { /* расширение обновили */ }
+  };
+  document.addEventListener('focusout', function (e) {
+    var t = e.target;
+    if (t && t.tagName === 'TEXTAREA' && /note/i.test(t.getAttribute('placeholder') || '')) { setTimeout(function () { sendOwnNotes([t]); }, 300); }
+  }, true);
   var stale = false;
   var run = async function () {
     if (busy || stale || document.visibilityState !== 'visible') { return; }
@@ -92,6 +116,7 @@
       if (hasCars) { report({ fields: 0, note: 'на странице нет полей Notes — переключите вид списка на «Detailed»' }); }
       return;
     }
+    sendOwnNotes(areas.filter(function (t) { return document.activeElement !== t; }));
     busy = true;
     try {
       var answer;
@@ -118,7 +143,7 @@
       for (var i = 0; i < areas.length; i++) {
         var t = areas[i];
         var card = cardOf(t);
-        var vin = card ? vinOf(card) : '';
+        var vin = (card && vinOf(card)) || pageVin();
         if (vin) { withVin += 1; }
         var note = vin && answer.notes[vin];
         if (!note) { continue; }
@@ -130,7 +155,7 @@
         tries[vin] = (tries[vin] || 0) + 1;
         say('Lot Analyzer: пишу KBB, ставку и замечания аукциона в Notes — ' + vin + '…');
         await write(t, text);
-        if (t.value === text) { done += 1; } else { failed += 1; }
+        if (t.value === text) { done += 1; sentNotes[vin] = text; } else { failed += 1; }
         if ((done + failed) % 5 === 0) { progress(true); }
       }
       if (done) { say('Lot Analyzer: KBB, ставка и замечания аукциона записаны в Notes у ' + done + ' машин.', 6000); }
