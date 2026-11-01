@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.9"
-PROGRAM_VERSION = "2026-11-01.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.10"
+PROGRAM_VERSION = "2026-11-01.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -573,6 +573,27 @@ def save_owners(cars: list[dict]) -> int:
 
 
 OWNERS_SCOPE: dict = {"vins": [], "at": 0.0}       # машины из списка окна, для которых нажали «👤 Владельцы»
+
+
+PHOTOS_PER_RUN = 100
+PHOTOS_RECHECK_HOURS = 2
+
+
+def photos_needed(rows: list[dict]) -> list[dict]:
+    """Машины CarMax «без фото» с торгами впереди — чьи карточки лотов посмотреть: сначала ставки, избранное,
+    популярные; карточки, проверенные последние 2 часа, — не снова."""
+    seen = load_photos()
+    fresh = time.time() - PHOTOS_RECHECK_HOURS * 3600
+    out = []
+    for r in sorted(rows, key=lambda r: (not r.get("my_proxy_usd"), not r.get("favorite"), not r.get("popular"), -expected_gain(r))):
+        stock = (re.search(r"/vehicledetail/(\d+)", r.get("lot_url", "")) or [None, ""])[1]
+        if (r.get("auction") != "CarMax" or r.get("no_photos") != "да" or r.get("passed") or r.get("rejected") or not stock
+                or float((seen.get(stock) or {}).get("at") or 0) > fresh):
+            continue
+        out.append({"stock": stock, "vin": r.get("vin", "")})
+        if len(out) >= PHOTOS_PER_RUN:
+            break
+    return out
 
 
 def owners_needed(rows: list[dict]) -> list[str]:
@@ -1289,6 +1310,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 costs_now = load_costs(costs_path)
                 rows = search_rows(find_pages(folders, 168), cache, costs_now, "")
                 self._send(json.dumps({"cars": auto_kbb_cars(rows, costs_now)}).encode("utf-8"))
+            elif url.path == "/api/photos_needed":      # расширение: у каких машин «без фото» посмотреть карточку лота
+                rows = search_rows(find_pages(folders, 168), cache, load_costs(costs_path), "")
+                self._send(json.dumps({"cars": photos_needed(rows)}).encode("utf-8"))
             elif url.path == "/api/owners_needed":      # расширение: для каких машин открыть AutoCheck
                 rows = search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")
                 self._send(json.dumps({"vins": owners_needed(rows)}).encode("utf-8"))
@@ -1605,7 +1629,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label title="Раскрыть у всех машин, из каких сумм сложилась прибыль при покупке по средней цене">Расчёт прибыли<input id="showcalc" type="checkbox" style="min-width:auto;width:20px;height:20px" onchange="try{localStorage.setItem('showcalc',this.checked?'1':'')}catch(e){};refresh()"></label>
 <label title="Страницы аукционов за 7 дней остаются, пока торги их машин впереди: машина уходит вечером дня своих торгов. Это число — для итогов без даты и страниц KBB">Файлы, ч<input id="hours" class="w-y" inputmode="numeric" value="24"></label>
 <button>Показать</button><span class="brk"></span>
-<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" onclick="ownersRun()" title="Владельцы из AutoCheck для машин CarMax, что сейчас в списке (с вашими фильтрами — например «Мои ставки»), у которых их ещё не знаем; без фильтров — для лучших машин. Расширение открывает отчёты на фоновой вкладке CarMax, вкладка закроется сама">👤 Владельцы (AutoCheck)</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
+<button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" onclick="photosRun()" title="У машин CarMax «без фото» расширение посмотрит карточки лотов (список CarMax пишет «Check back for images» дольше, чем на карточке уже есть фото): фото появились — отметка «нет фото» снимается. Само — после «Собрать аукцион…». Около 5 секунд на машину, вкладка CarMax закроется сама">📷 Проверить фото</button> <button type="button" onclick="ownersRun()" title="Владельцы из AutoCheck для машин CarMax, что сейчас в списке (с вашими фильтрами — например «Мои ставки»), у которых их ещё не знаем; без фильтров — для лучших машин. Расширение открывает отчёты на фоновой вкладке CarMax, вкладка закроется сама">👤 Владельцы (AutoCheck)</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
 <button type="button" onclick="bidsCeiling()" title="Вписать ставку MP = потолок программы («МОЖНО до …», у Major defect — потолок «с дефектом»), вниз до шага ставки, всем машинам этого списка (с вашими фильтрами) — кроме «ПРОПУСТИТЬ» и прошедших торгов. Прежние ставки этих машин заменятся">MP = потолок</button><button type="button" onclick="voicePush()" title="Машины «Списка на осмотр» — на телефон, в приложение «Голосовые заметки» (через ваш закрытый репозиторий). Надиктованное вернётся сюда само">📱 На телефон</button><button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
 <div id="notesstate" class="muted" style="margin-top:6px"></div>
@@ -1902,6 +1926,9 @@ async function voicePush(){$('stat').textContent='Отправляю списо�
   $('stat').textContent=d.ok?`На телефоне: ${d.cars} машин из списка на осмотр. Откройте приложение «Голосовые заметки» и нажмите «Обновить список». Надиктованное появится здесь у машин («🎤 …») через 1–2 минуты.`:('Не отправлено: '+(d.error||'ошибка'))}catch(e){$('stat').textContent='Не отправлено: окно программы не отвечает'}}
 /* Владельцы — для машин CarMax, что сейчас в списке окна (с вашими фильтрами: «Мои ставки», площадки, модели …),
    у которых владельцев ещё не знаем. Без фильтров — лучшие машины, как раньше. */
+function photosRun(){
+ if(!openBg('https://www.carmaxauctions.com/#la-photos','')){alert('Нужно расширение «Lot Analyzer KBB» версии 2.10 или новее: оно смотрит карточки лотов на CarMax с вашим входом. Обновите его на chrome://extensions и обновите это окно.');return}
+ $('stat').textContent='📷 Проверяю фото у машин «без фото»: на фоновой вкладке CarMax по очереди открываются карточки лотов (около 5 секунд на машину). Где фото появились — отметка «нет фото» снимется сама.'}
 async function ownersRun(){
  const f=activeFilters();
  const rows=((lastData&&lastData.rows)||[]).filter(x=>x.auction==='CarMax'&&x.vin);

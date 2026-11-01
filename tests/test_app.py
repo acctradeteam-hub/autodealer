@@ -1074,3 +1074,15 @@ class LotPhotosTest(unittest.TestCase):
         newer = {"vin": "JTNKARJEXGJ521246", "lot_url": "https://www.carmaxauctions.com/vehicledetail/70330000", "no_photos": "да", "_saved": time.time() + 60}
         app.apply_lot_photos(newer, photos)                       # страница поиска свежее карточки — решает она
         self.assertEqual(newer["no_photos"], "да")
+
+    def test_photos_needed(self):
+        import tempfile
+        from unittest import mock
+        from lot_analyzer import app
+        base = {"auction": "CarMax", "no_photos": "да", "lot_url": "https://www.carmaxauctions.com/vehicledetail/1"}
+        rows = [dict(base, vin="A"), dict(base, vin="B", lot_url=".../vehicledetail/2", my_proxy_usd="5000"),
+                dict(base, vin="C", lot_url=".../vehicledetail/3", no_photos=""), dict(base, vin="D", lot_url=".../vehicledetail/4", passed="торги прошли"),
+                dict(base, vin="E", lot_url=".../vehicledetail/5")]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(app, "PHOTOS_PATH", Path(tmp) / "p.json"):
+            app.save_photos([{"stock": "5", "count": 0}])                   # проверена только что — не снова
+            self.assertEqual([c["stock"] for c in app.photos_needed(rows)], ["2", "1"])     # сначала со ставкой

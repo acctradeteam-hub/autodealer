@@ -118,7 +118,7 @@ function autoRun(force, only) {
   return new Promise(function (resolve) {
     autoState(async function (state) {
       for (var day in state) { if (!/^\d{4}-\d\d-\d\d$/.test(day) || day < autoIso(new Date(now.getTime() - 14 * 864e5))) { delete state[day]; } }
-      var noLogin = false;
+      var noLogin = false, collected = false;
       for (var which of ['mon', 'tue']) {
         var sale = targets[which];
         if (!sale || noLogin) { continue; }
@@ -130,6 +130,7 @@ function autoRun(force, only) {
           var res = await autoOne(place, tries >= 1);                 // вторая попытка — окно на переднем плане
           res.at = Date.now(); res.tries = tries + 1;
           state[sale].places[place] = res;
+          if (res.status === 'ok') { collected = true; }
           state.last = { at: Date.now(), place: place, sale: sale };
           autoSave(state);
           if (res.status === 'login') { noLogin = true; break; }
@@ -138,8 +139,18 @@ function autoRun(force, only) {
       autoSave(state);
       autoBusy = false;
       clearInterval(awake);
+      if (collected) { autoPhotos(); }
       resolve(true);
     });
+  });
+}
+
+/* После сбора: у машин «без фото» смотрим карточки лотов — список CarMax пишет «Check back for images» дольше,
+   чем у самой карточки уже есть фото (carmax_photos.js на вкладке #la-photos; вкладка закроется сама). */
+function autoPhotos() {
+  chrome.tabs.create({ url: 'https://www.carmaxauctions.com/#la-photos', active: false }, function (tab) {
+    if (chrome.runtime.lastError || !tab) { return; }
+    var mark = {}; mark['photos-' + tab.id] = 1; chrome.storage.session.set(mark);
   });
 }
 
