@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.11"
-PROGRAM_VERSION = "2026-11-01.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-01.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -736,6 +736,45 @@ _ROWS_LOCKS: dict = {}
 _ROWS_GUARD = threading.Lock()
 
 
+_VIN_MEMO: dict = {}
+VIN_MEMO_SECONDS = 600
+
+
+def vin_rows(vin_q: str, folders: list[Path], cache: "PageCache", costs: dict) -> list[dict[str, str]]:
+    """Поиск по VIN (или его концу): сначала машины за неделю — посчитаны один раз на 10 минут, ответ мгновенный;
+    не нашлось — архив за 30 дней. Раньше каждый поиск заново считал все страницы за месяц — минуту и дольше,
+    и окно в это время ничего не показывало."""
+    for hours in (168, 24 * 30):
+        found = [dict(r) for r in _vin_memo(hours, folders, cache, costs) if vin_q in str(r.get("vin", "")).upper()]
+        if found:
+            return found
+    return []
+
+
+def _vin_memo(hours: int, folders: list[Path], cache: "PageCache", costs: dict) -> list[dict[str, str]]:
+    pages = find_pages(folders, hours)
+    key = (hours, tuple((str(p), p.stat().st_mtime if p.exists() else 0) for p in pages),
+           tuple(p.stat().st_mtime if p.exists() else 0 for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH,
+                 FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH)))
+    memo = _VIN_MEMO.get(hours)
+    if not memo or memo[0] != key or time.time() - memo[1] > VIN_MEMO_SECONDS:
+        memo = _VIN_MEMO[hours] = (key, time.time(), search_rows(pages, cache, costs, ""))
+    return memo[2]
+
+
+def warm_vin_search(folders: list[Path], cache: "PageCache", costs_path: Path, every: int = 90) -> None:
+    """В фоне: машины за неделю для поиска по VIN — посчитаны заранее, и первый поиск отвечает сразу."""
+    def loop():
+        time.sleep(15)                   # сначала — само окно
+        while True:
+            try:
+                _vin_memo(168, folders, cache, load_costs(costs_path))
+            except Exception:  # файл пишется / занят — в следующий раз
+                pass
+            time.sleep(every)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwargs) -> list[dict[str, str]]:
     """Тот же расчёт для тех же файлов — один раз. Окно, расширение (заметки) и «KBB для проданных» спрашивают
     почти одновременно; пока идёт KBB-автопилот, новые файлы приходят каждые 2–3 секунды — без этого запросы
@@ -1170,15 +1209,15 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 # любая площадка и вкладка, прошедшие торги, убранные из избранного, страницы за неделю.
                 vin_q = re.sub(r"[^A-Z0-9]", "", q.get("vin", "").upper())
                 if len(vin_q) >= 6:
-                    q = {"hours": str(max(float(q.get("hours") or 24), 24 * 30)), "passed": "1", "removed_any": "1"}
+                    q = {"hours": "168", "passed": "1", "removed_any": "1"}
+                    pages = find_pages(folders, 168)
+                    rows = vin_rows(vin_q, folders, cache, load_costs(costs_path))
                 else:
                     vin_q = ""
-                pages = find_pages(folders, float(q.get("hours") or 24))
-                rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
-                                   float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
-                                   only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
-                if vin_q:
-                    rows = [r for r in rows if vin_q in str(r.get("vin", "")).upper()]
+                    pages = find_pages(folders, float(q.get("hours") or 24))
+                    rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
+                                       float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
+                                       only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
                 # Фильтр «Major-дефекты»: только CarMax, по замечаниям аукциона (двигатель / коробка / оба / любой из двух / без них).
                 defect = q.get("defect", "")
                 if defect in ("engine", "trans", "both", "any", "none"):
@@ -1571,9 +1610,11 @@ def main(argv: list[str] | None = None) -> int:
     from . import paths
     for line in paths.migrate():
         print("перенесено в", paths.DATA_DIR, ":", line)
-    server = _take_port(args.port, make_handler(folders, Path(args.costs), PageCache()), not args.no_browser)
+    page_cache = PageCache()
+    server = _take_port(args.port, make_handler(folders, Path(args.costs), page_cache), not args.no_browser)
     if server is None:
         return 0
+    warm_vin_search(folders, page_cache, Path(args.costs))     # поиск по VIN — без ожидания
     # Отправка Claude (если включена в окне): новые файлы из «Загрузок» — в ваш закрытый репозиторий GitHub.
     inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")])
     address = f"http://127.0.0.1:{args.port}"
@@ -1957,7 +1998,10 @@ async function watchFiles(){try{const r=await fetch('/api/files?hours='+encodeUR
 try{$('showcalc').checked=localStorage.getItem('showcalc')==='1'}catch(e){}
 drawModels();loadLinks();watchFiles();setInterval(watchFiles,4000);
 /* Поиск по VIN: вставили — сразу показываем (от 6 символов); стёрли — обратно к списку. */
-let vinTimer=null;$('vin').addEventListener('input',()=>{const v=$('vin').value.replace(/[^A-Za-z0-9]/g,'');clearTimeout(vinTimer);if(v.length>=6||!v.length)vinTimer=setTimeout(refresh,250)});
+let vinTimer=null;$('vin').addEventListener('input',()=>{const v=$('vin').value.replace(/[^A-Za-z0-9]/g,'');clearTimeout(vinTimer);
+ if(v.length>=6)$('stat').innerHTML=`<b>🔎 Ищу VIN ${esc(v.toUpperCase())}…</b> по всем сохранённым страницам (первый раз — до минуты)`;
+ else if(v.length)$('stat').textContent='VIN: введите хотя бы 6 последних знаков';
+ if(v.length>=6||!v.length)vinTimer=setTimeout(refresh,250)});
 </script></body></html>"""
 
 
