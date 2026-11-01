@@ -107,6 +107,24 @@
     var t = e.target;
     if (t && t.tagName === 'TEXTAREA' && /note/i.test(t.getAttribute('placeholder') || '')) { setTimeout(function () { sendOwnNotes([t]); }, 300); }
   }, true);
+  /* Карточка лота (/vehicledetail/<номер>): есть ли фото — в программу. Список поиска CarMax обновляется позже самой
+     карточки: на карточке фото уже есть, а в списке ещё «Check back for images». Открыли лот — программа знает. */
+  var photoStock = (/\/vehicledetail\/(\d+)/.exec(location.pathname) || [])[1];
+  if (photoStock) {
+    var lastPhotos = -1;
+    var checkPhotos = function () {
+      var urls = Array.prototype.map.call(document.querySelectorAll('img'), function (i) { return i.currentSrc || i.src || ''; })
+        .filter(function (u) { return u.indexOf('/assets/' + photoStock + '/image/') >= 0; });
+      var names = urls.map(function (u) { return u.split('/image/')[1].split('?')[0]; }).filter(function (n, i, all) { return all.indexOf(n) === i; });
+      var none = /check back for images|no images available|images coming soon/i.test(document.body.innerText || '');
+      var count = names.length ? names.length : (none ? 0 : -1);
+      if (count < 0 || count === lastPhotos) { return; }
+      lastPhotos = count;
+      try { chrome.runtime.sendMessage({ type: 'photos', cars: [{ stock: photoStock, vin: pageVin(), count: count, photo: urls[0] || '' }] }, function () { void chrome.runtime.lastError; }); } catch (e) { /* расширение обновили */ }
+    };
+    setTimeout(checkPhotos, 4000);
+    setTimeout(checkPhotos, 12000);
+  }
   var stale = false;
   var run = async function () {
     if (busy || stale || document.visibilityState !== 'visible') { return; }

@@ -1055,3 +1055,22 @@ class SiteNotesTest(unittest.TestCase):
             self.assertEqual(app.save_site_notes([{"vin": vin.lower(), "text": "сколы на капоте\nKBB 9,000$ 10/30/26"}, {"vin": "bad", "text": "x"}]), 1)
             self.assertEqual(app.save_site_notes([{"vin": vin, "text": "сколы на капоте\nKBB 9,000$ 10/30/26"}]), 0)
             self.assertIn("сколы", app.load_site_notes()[vin]["text"])
+
+
+class LotPhotosTest(unittest.TestCase):
+    def test_lot_page_photos_beat_older_search_page(self):
+        import tempfile
+        from unittest import mock
+        from lot_analyzer import app
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(app, "PHOTOS_PATH", Path(tmp) / "p.json"):
+            self.assertEqual(app.save_photos([{"stock": "70330000", "vin": "jtnkarjexgj521246", "count": 24, "photo": "https://img2.carmax.com/assets/70330000/image/1.jpg"},
+                                              {"stock": "x", "count": 3}]), 1)
+            photos = app.load_photos()
+        row = {"vin": "JTNKARJEXGJ521246", "lot_url": "https://www.carmaxauctions.com/vehicledetail/70330000", "no_photos": "да",
+               "photo_main_url": "", "_saved": time.time() - 3600}
+        app.apply_lot_photos(row, photos)
+        self.assertEqual((row["no_photos"], row["photo_count"]), ("", "24"))
+        self.assertIn("70330000", row["photo_main_url"])
+        newer = {"vin": "JTNKARJEXGJ521246", "lot_url": "https://www.carmaxauctions.com/vehicledetail/70330000", "no_photos": "да", "_saved": time.time() + 60}
+        app.apply_lot_photos(newer, photos)                       # страница поиска свежее карточки — решает она
+        self.assertEqual(newer["no_photos"], "да")

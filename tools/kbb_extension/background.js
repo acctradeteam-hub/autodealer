@@ -84,6 +84,12 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
       .catch(function () { reply({ ok: false }); });
     return true;
   }
+  /* Фото на карточке лота CarMax — в программу: машина больше не «без фото», если CarMax их добавил. */
+  if (msg && msg.type === 'photos' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
+    fetch('http://127.0.0.1:8765/api/photos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cars: msg.cars || [] }) })
+      .catch(function () {});
+    return false;
+  }
   /* Ваш текст в Notes на CarMax — в программу (окно показывает его сразу). */
   if (msg && msg.type === 'site-notes' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
     fetch('http://127.0.0.1:8765/api/site_notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cars: msg.cars || [] }) })

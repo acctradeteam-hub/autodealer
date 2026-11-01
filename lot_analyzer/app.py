@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.8"
-PROGRAM_VERSION = "2026-10-31.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.9"
+PROGRAM_VERSION = "2026-11-01.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -442,6 +442,53 @@ REJECTED_PATH = DATA_DIR / "rejected.json"             # «🚫 Отбой — �
 SITE_NOTES_PATH = DATA_DIR / "site_notes.json"         # ваш текст в Notes на CarMax, присланный расширением: VIN → {text, at}
 
 
+PHOTOS_PATH = DATA_DIR / "photo_seen.json"           # фото на карточке лота CarMax (расширение): номер машины → {vin, count, photo, at}
+
+
+def load_photos() -> dict[str, dict]:
+    try:
+        return json.loads(PHOTOS_PATH.read_text(encoding="utf-8")) if PHOTOS_PATH.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_photos(cars: list[dict]) -> int:
+    """Расширение посмотрело карточку лота: сколько на ней фото (0 — «Check back for images»)."""
+    data, changed = load_photos(), 0
+    for car in cars:
+        stock = str(car.get("stock") or "").strip()
+        if not stock.isdigit():
+            continue
+        try:
+            count = int(car.get("count"))
+        except (TypeError, ValueError):
+            continue
+        rec = {"vin": str(car.get("vin") or "").upper(), "count": count, "photo": str(car.get("photo") or "")[:300], "at": time.time()}
+        if (data.get(stock) or {}).get("count") != count or (data.get(stock) or {}).get("vin") != rec["vin"]:
+            data[stock] = rec
+            changed += 1
+    if changed:
+        PHOTOS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PHOTOS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+    return changed
+
+
+def apply_lot_photos(row: dict, photos: dict) -> None:
+    """Карточка лота свежее страницы поиска — её знание о фото главнее (список CarMax обновляет фото позже карточки)."""
+    stock = (re.search(r"/vehicledetail/(\d+)", row.get("lot_url", "")) or [None, ""])[1]
+    rec = photos.get(stock) if stock else None
+    if not rec or float(rec.get("at") or 0) <= float(row.get("_saved") or 0):
+        return
+    if rec.get("vin") and row.get("vin") and rec["vin"] != str(row["vin"]).upper():
+        return
+    if rec.get("count", 0) > 0:
+        row["no_photos"], row["photo_count"] = "", str(rec["count"])
+        if rec.get("photo") and not row.get("photo_main_url"):
+            row["photo_main_url"] = rec["photo"]
+    elif rec.get("count") == 0:
+        row["no_photos"], row["photo_count"] = "да", "0"
+
+
 def load_site_notes() -> dict[str, dict]:
     try:
         return json.loads(SITE_NOTES_PATH.read_text(encoding="utf-8")) if SITE_NOTES_PATH.exists() else {}
@@ -678,7 +725,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwarg
         except OSError:
             return 0.0
     key = (tuple((str(p), stamp(p)) for p in pages), json.dumps(costs, sort_keys=True, default=str), args, tuple(sorted(kwargs.items())),
-           tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH)),
+           tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH)),
            int(time.time() // 60))                    # раз в минуту — заново: «торги прошли» зависит от времени
     with _ROWS_GUARD:
         lock = _ROWS_LOCKS.setdefault(key, threading.Lock())
@@ -691,7 +738,7 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwarg
                 _ROWS_MEMO.clear()
                 _ROWS_LOCKS.clear()
             # Ключ — с временем файлов базы после расчёта: сам расчёт мог дописать итоги / журнал KBB.
-            after = key[:4] + (tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH)), key[5])
+            after = key[:4] + (tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH)), key[5])
             _ROWS_MEMO[after] = rows
         return [dict(r) for r in rows]
 
@@ -714,6 +761,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
                  for p, r in ((p, cache.kbb(p)) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
     # Новые файлы первыми: дубликаты берутся из свежего. В конце — машины со звёздочкой на CarMax, которых нет в списках.
     favorites = load_favorites()
+    lot_photos = load_photos()
     sources = [(saved_time(path), cache.rows(path)) for path in pages] + [(time.time(), favorite_rows(set()))]
     # День торгов машины — с самой свежей страницы, где он указан: в части видов CarMax (watch list) даты нет,
     # и машина со свежей страницы без даты на следующий день пряталась как «без даты торгов» (A/2 Murrieta 23.10).
@@ -734,6 +782,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
             if key in seen:
                 continue
             seen.add(key)
+            apply_lot_photos(row, lot_photos)  # фото на карточке лота появились раньше, чем в списке поиска
             latest.append(row)                 # самая свежая строка машины — для «Wait Pictures», даже если фильтр её не берёт
             if not matches(row, query, year_from, year_to, max_miles):
                 continue
@@ -1233,7 +1282,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/files":         # дёшево: только список файлов — окно пересчитывает таблицу, если он изменился
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 # + избранное CarMax: сняли звёздочку — окно пересчитывается сразу, не дожидаясь нового файла.
-                extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH) if path.exists()]
+                extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH) if path.exists()]
                 voice.pull_soon()                     # заметки с телефона — раз в пару минут, в фоне
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages] + extra).encode("utf-8"))
             elif url.path == "/api/auto_kbb":           # окно: популярные без фото — KBB сразу, без кнопки
@@ -1319,6 +1368,11 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
                 self._send(json.dumps({"saved": save_owners(list(data.get("cars") or [])[:50])}).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/photos":         # расширение: фото на карточке лота CarMax
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                self._send(json.dumps({"saved": save_photos(list(data.get("cars") or [])[:100])}).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/site_notes":     # расширение: ваш текст в Notes на CarMax
                 length = int(self.headers.get("Content-Length") or 0)
