@@ -1086,3 +1086,33 @@ class LotPhotosTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(app, "PHOTOS_PATH", Path(tmp) / "p.json"):
             app.save_photos([{"stock": "5", "count": 0}])                   # проверена только что — не снова
             self.assertEqual([c["stock"] for c in app.photos_needed(rows)], ["2", "1"])     # сначала со ставкой
+
+
+class CarfaxTest(unittest.TestCase):
+    REPORT = ("CARFAX Vehicle History Report 2014 HONDA ACCORD LX VIN: 1HGCR2F31EA090990\n"
+              "2 Previous owners. Accident reported. 14 Service history records. Last reported odometer reading: 159,841\n"
+              "Owner 1 Purchased: 2014 Type: Personal Vehicle Owned in: Ohio\nOwner 2 Owned in: California Lease vehicle\n"
+              "Accident reported: Damage Severity: Moderate Point of Impact: Front Airbags deployed\n"
+              "No indication of an odometer rollback. No title problems reported. " + "x" * 600)
+
+    def test_parse_and_attach(self):
+        import tempfile
+        from unittest import mock
+        from lot_analyzer import carfax, notes
+        s = carfax.parse(self.REPORT)
+        self.assertEqual((s["owners"], s["accidents"], s["severity"], s["impact"]), (2, 1, ["среднее"], ["спереди"]))
+        self.assertEqual(s["salt"], ["Ohio"])
+        self.assertFalse(s["rollback"])
+        self.assertEqual(s["title"], [])
+        self.assertIn("сильное ДТП", carfax.flags(s))                            # подушки сработали
+        clean = carfax.parse("CARFAX 1-Owner. No accidents or damage reported to CARFAX. Owned in: California. Personal vehicle." + "x" * 600)
+        self.assertEqual(carfax.line(clean), "1 влад. · без ДТП · штаты: California")
+        self.assertEqual(carfax.flags(clean), [])
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(carfax, "PATH", Path(tmp) / "c.json"):
+            self.assertIsNone(carfax.save("bad", "u", self.REPORT))
+            carfax.save("1hgcr2f31ea090990", "https://www.vin-reports-pro.com/share/abc", self.REPORT)
+            rows = [{"vin": "1HGCR2F31EA090990", "auction": "CarMax"}]
+            carfax.attach(rows)
+        self.assertTrue(rows[0]["carfax"].startswith("2 влад."))
+        self.assertEqual(rows[0]["carfax_url"], "https://www.vin-reports-pro.com/share/abc")
+        self.assertIn("Carfax: 2 влад.", notes.lot_note(rows[0]))

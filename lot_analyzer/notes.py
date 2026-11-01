@@ -20,7 +20,7 @@ import datetime as dt
 import re
 
 # Строки, которые пишет программа (и прежний формат «LA …»): при пересчёте заменяются, при чтении пропускаются.
-OWN_PREFIXES = ("LA ", "CarMax: ", "Manheim: ", "ACV: ", "ADESA: ", "Был: ", "Голос: ")
+OWN_PREFIXES = ("LA ", "CarMax: ", "Manheim: ", "ACV: ", "ADESA: ", "Был: ", "Голос: ", "Carfax: ")
 
 
 def _date(iso: str = "") -> str:
@@ -53,7 +53,8 @@ def lot_note(row: dict) -> str:
     has_bid = bid.replace(".", "", 1).isdigit() and float(bid) > 0
     history = past_sales(row)
     voice = str(row.get("voice_notes") or "").strip()        # надиктовано на аукционе (приложение «Голосовые заметки»)
-    if not has_kbb and not has_bid and not history and not voice:
+    fax = str(row.get("carfax") or "").strip()               # Carfax коротко (vin-reports-pro.com)
+    if not has_kbb and not has_bid and not history and not voice and not fax:
         return ""
     lines = [f"KBB {float(kbb):,.0f}$ {_date(row.get('kbb_date', ''))}"] if has_kbb else []
     if has_bid:
@@ -64,6 +65,8 @@ def lot_note(row: dict) -> str:
         remarks = ""
     if remarks:
         lines.append(f"{row.get('auction') or 'Auction'}: {remarks}")
+    if fax:
+        lines.append(f"Carfax: {fax}")
     if voice:
         lines.append(f"Голос: {voice}")
     return "\n".join(lines)
