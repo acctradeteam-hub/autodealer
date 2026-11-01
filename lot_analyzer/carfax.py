@@ -45,43 +45,72 @@ def _count(word_re: str, text: str) -> int:
     return len(re.findall(word_re, text, re.I))
 
 
+def _section(t: str, head: str, stop: str) -> str:
+    """Кусок отчёта от заголовка до следующего (без учёта регистра); нет заголовка — пусто."""
+    m = re.search(head, t, re.I | re.M)
+    if not m:
+        return ""
+    rest = t[m.end():]
+    n = re.search(stop, rest, re.I | re.M)
+    return rest[:n.start()] if n else rest[:3000]
+
+
 def parse(text: str) -> dict:
-    """Главное из текста отчёта Carfax."""
-    t = re.sub(r"[ \t ]+", " ", text or "")
+    """Главное из текста отчёта Carfax (как его показывает vin-reports-pro.com / carfax.com)."""
+    t = re.sub(r"[ \t\u00a0]+", " ", text or "")
+    cut = re.search(r"\bfull glossary\b", t, re.I)           # в конце — справочник со списками штатов и терминов
+    t = t[:cut.start()] if cut else t
     low = t.lower()
     out: dict = {}
-    m = re.search(r"carfax\s+(\d+)-owner", t, re.I) or re.search(r"\b(\d{1,2})\s+previous owners?\b", t, re.I) \
-        or re.search(r"owners?\s*[:\-]?\s*(\d{1,2})\b", t, re.I)
+    m = re.search(r"carfax\s+(\d+)-owner", t, re.I) or re.search(r"\b(\d{1,2})\s+previous owners?\b", t, re.I)
     owners = [int(n) for n in re.findall(r"\bowner\s+(\d{1,2})\b", t, re.I)]
     out["owners"] = int(m.group(1)) if m else (max(owners) if owners else None)
-    if re.search(r"no accidents? or damage reported|no accident or damage", low):
+    # ДТП: «No accidents or damage reported» — нет; иначе — число из сводки или события «Accident reported» / «Damage reported».
+    if re.search(r"no accidents? or damage reported", low):
         out["accidents"] = 0
     else:
         m = re.search(r"(\d{1,2})\s+(?:accidents?|damage reports?|accident\s*/\s*damage reports?)\s+reported", t, re.I)
-        events = _count(r"(?:damage\s+)?severity\s*[:\-]?\s*(?:minor|moderate|severe|functional|disabling)", t)
-        out["accidents"] = int(m.group(1)) if m else (events or (1 if re.search(r"\b(?:accident|damage) reported\b", low) else None))
-    out["severity"] = sorted({SEVERITY[s.lower()] for s in re.findall(r"(?:damage\s+)?severity\s*[:\-]?\s*(minor|moderate|severe|functional|disabling)", t, re.I)},
+        events = len(re.findall(r"^\s*(?:accident|damage) reported\b", t, re.I | re.M))
+        sev = len(re.findall(r"severity\s*[:\-]?\s*(?:minor|moderate|severe|functional|disabling)", t, re.I))
+        out["accidents"] = int(m.group(1)) if m else (max(events, sev) or (1 if re.search(r"\b(?:accident|damage) reported\b", low) else None))
+    out["severity"] = sorted({SEVERITY[s.lower()] for s in re.findall(r"severity\s*[:\-]?\s*(minor|moderate|severe|functional|disabling)", t, re.I)},
                              key=["лёгкое", "среднее", "сильное"].index)
-    out["impact"] = sorted({IMPACT[s.lower()] for s in re.findall(r"(?:point|area) of impact\s*[:\-]?\s*(front|rear|left|right|side|undercarriage|roof|rollover)", t, re.I)})
-    out["airbags"] = bool(re.search(r"air ?bags? (?:were |was )?deployed", low)) and not re.search(r"no air ?bags? deploy", low)
-    out["structural"] = bool(re.search(r"structural damage|frame damage", low)) and not re.search(r"no structural damage|no frame damage", low)
+    out["impact"] = sorted({IMPACT[s.lower()] for s in re.findall(
+        r"(?:(?:point|area) of impact\s*[:\-]?\s*|damage to (?:the )?)(front|rear|left|right|side|undercarriage|roof|rollover)", t, re.I)})
+    # Блоки «Additional History»: «No … reported» — нет; заголовок есть, а «No …» нет — есть.
+    def flagged(head: str, clean: str) -> bool:
+        part = _section(t, r"^\s*" + head + r"\s*$", r"^\s*(?:total loss|structural damage|airbag deployment|odometer check|accident / damage|manufacturer recall|basic warranty|title history)\s*$")
+        return bool(part) and not re.search(clean, part, re.I)
+    out["total_loss"] = flagged("total loss", r"no total loss")
+    out["structural"] = flagged("structural damage", r"no structural damage")
+    out["airbags"] = flagged("airbag deployment", r"no airbag") or (bool(re.search(r"\bair ?bags? (?:were |was )?deployed", low))
+                                                                    and not re.search(r"no air ?bag", low))
+    out["rollback"] = flagged("odometer check", r"no indication|no issues")
+    # Титул: «Damage Brands … No Problem», «Odometer Brands … No Problem»; иначе — что за титул, по событиям истории.
+    title = _section(t, r"^\s*title history\s*$", r"^\s*ownership history\s*$")
+    out["title"] = []
+    for group, nxt in (("damage brands", r"odometer brands"), ("odometer brands", r"guaranteed\s*-|none of these")):
+        part = _section(title, group, nxt)
+        if part and not re.search(r"no problem", part, re.I):
+            found = sorted({w.lower() for w in re.findall(r"\b(salvage|junk|rebuilt|reconstructed|fire|flood|hail|lemon|not actual mileage|exceeds mechanical limits)\b[^\n|]{0,25}(?:title|brand|issued|reported)", t, re.I)})
+            out["title"] += found or [("проблема с титулом" if group == "damage brands" else "пробег — бренд в титуле") + " (см. отчёт)"]
+    if out["total_loss"]:
+        out["title"].append("total loss")
+    # Штаты: «Owned in the following states/provinces», «Last Owned in …», «Owned in: …».
     states = []
-    for found in re.findall(r"(?:owned in|registered in|last owned in|location)\s*[:\-]?\s*(" + "|".join(STATES) + r")\b", t):
-        if found not in states:
-            states.append(found)
-    if not states:
-        states = [s for s in STATES if re.search(r"\b" + s + r"\b", t)][:6]
-    out["states"] = states
-    out["salt"] = [s for s in states if s in SALT]
-    out["flood_state"] = bool(re.search(r"hurricane|flood", low)) and not re.search(r"no (?:flood|hurricane)", low)
-    clean = re.sub(r"\bno (?:indication of (?:an? )?)?[a-z ]{0,40}?(?:problem|rollback|issues?|brand)s?\b[^.\n]*", " ", low)   # «No indication of an odometer rollback»
-    out["title"] = sorted({m.lower() for m in TITLE_BAD.findall(clean)} - {"flood"} | ({"flood"} if re.search(r"flood (?:title|damage)", clean) else set()))
-    out["usage"] = [name for name, rx in USAGE if re.search(rx + r"\s+(?:vehicle|use)", t, re.I)]
+    for part in re.findall(r"owned in the following states(?:/provinces)?\s*(.*?)\s*(?:estimated|last reported|$)", t, re.I | re.S):
+        states += [s for s in STATES if re.search(r"\b" + s + r"\b", part)]
+    states += re.findall(r"(?:last owned in|owned in:?)\s+(" + "|".join(STATES) + r")\b", t, re.I)
+    out["states"] = list(dict.fromkeys(s.title() if s.islower() else s for s in states))
+    out["salt"] = [s for s in out["states"] if s in SALT]
+    out["usage"] = [name for name, rx in USAGE if re.search(rx + r"\s+(?:vehicle|use)\b", t, re.I)
+                    or re.search(r"type of owner\s*" + rx, t, re.I)]
     m = re.search(r"(\d{1,3})\s+service (?:history )?records?", t, re.I)
     out["service"] = int(m.group(1)) if m else None
-    miles = [int(x.replace(",", "")) for x in re.findall(r"(?:last reported odometer|odometer reading)\s*[:\-]?\s*([\d,]{3,9})", t, re.I)]
+    miles = [int(x.replace(",", "")) for x in re.findall(r"(?:last reported odometer reading|odometer reading)\s*[:\-]?\s*([\d,]{3,9})", t, re.I)]
     out["last_miles"] = max(miles) if miles else None
-    out["rollback"] = bool(re.search(r"odometer (?:rollback|problem|inconsistenc)|not actual mileage", clean))
+    m = re.search(r"carfax (?:retail )?value\s*\$([\d,]+)", t, re.I)
+    out["value"] = int(m.group(1).replace(",", "")) if m else None
     return out
 
 
@@ -107,6 +136,8 @@ def line(s: dict) -> str:
         parts.append("титул: " + ", ".join(s["title"]))
     if s.get("rollback"):
         parts.append("пробег под вопросом")
+    if s.get("value"):
+        parts.append(f"Carfax ${s['value']:,}")
     if s.get("service") is not None:
         parts.append(f"сервис {s['service']}")
     return " · ".join(parts)
@@ -117,7 +148,7 @@ def flags(s: dict) -> list[str]:
     out = []
     if s.get("title"):
         out.append("титул: " + ", ".join(s["title"]))
-    if "сильное" in (s.get("severity") or []) or s.get("airbags") or s.get("structural"):
+    if "сильное" in (s.get("severity") or []) or s.get("airbags") or s.get("structural") or s.get("total_loss"):
         out.append("сильное ДТП")
     if s.get("salt"):
         out.append("соль на дорогах: " + ", ".join(s["salt"]))

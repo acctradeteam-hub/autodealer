@@ -1095,6 +1095,27 @@ class CarfaxTest(unittest.TestCase):
               "Accident reported: Damage Severity: Moderate Point of Impact: Front Airbags deployed\n"
               "No indication of an odometer rollback. No title problems reported. " + "x" * 600)
 
+    # Как в настоящем отчёте Carfax (vin-reports-pro.com): перечни титулов с «No Problem», справочник со штатами в конце.
+    CLEAN = ("CARFAX Vehicle History Report for this 2013 HONDA CR-V EX-L: 5J6RM3H77DL016886\nNo Accidents or Damage Reported to CARFAX\n"
+             "carfax value\n$11,480\n32\n Service History Records\nCARFAX 1-Owner Vehicle\nPersonal Vehicle\nLast Owned in California\n"
+             "Total Loss\nNo total loss reported to CARFAX.\nStructural Damage\nNo structural damage reported to CARFAX.\n"
+             "Airbag Deployment\nNo airbag deployment reported to CARFAX.\nOdometer Check\nNo indication of an odometer rollback.\n"
+             "Accident / Damage\nNo accidents or damage reported to CARFAX.\nTitle History\nDamage Brands\n"
+             "Salvage | Junk | Rebuilt | Fire | Flood | Hail | Lemon\nGuaranteed\nNo Problem\nOdometer Brands\n"
+             "Not Actual Mileage | Exceeds Mechanical Limits\nGuaranteed\nNo Problem\nGuaranteed\n - \nNone of these title problems\n"
+             "Ownership History\nOwner 1\nOwned in the following states/provinces\nCalifornia\nEstimated miles driven per year\n"
+             "Last reported odometer reading\n151,503\n" + "x" * 600 + "\nFull Glossary\nrequired in the following states: Maine, Massachusetts, Ohio")
+
+    def test_real_report_layout(self):
+        from lot_analyzer import carfax
+        s = carfax.parse(self.CLEAN)
+        self.assertEqual(carfax.line(s), "1 влад. · без ДТП · штаты: California · Carfax $11,480 · сервис 32")
+        self.assertEqual(carfax.flags(s), [])
+        self.assertEqual(s["last_miles"], 151503)
+        bad = carfax.parse(self.CLEAN.replace("Lemon\nGuaranteed\nNo Problem", "Lemon\nGuaranteed\nProblem Reported")
+                           .replace("Personal Vehicle", "Personal Vehicle\n05/01/2020 Salvage title issued"))
+        self.assertEqual(bad["title"], ["salvage"])
+
     def test_parse_and_attach(self):
         import tempfile
         from unittest import mock
