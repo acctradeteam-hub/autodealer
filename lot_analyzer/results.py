@@ -490,6 +490,8 @@ def read_carmax_sale_results(path: Path) -> list[dict]:
 
 
 # Запись аукциона навыком «velocicast-auction-logger» (Claude, вкладка carmax.velocicast.io): кнопки виджета
+# «Итоги для NotebookLM» — auction_summary_<дата торгов>_ЧЧММ.csv: те же строки «ИТОГ» без ставок; читается по колонкам,
+# а в «Lot Analyzer» не переносится (LOGGER_NAME его не берёт): лежит в «Загрузках», чтобы сразу загрузить в NotebookLM.
 # «Скачать итоги (CSV)» — auction_all_2026-11-03_1752.csv (на машину строка «ИТОГ», под ней её ставки) и
 # «Скачать итоги (Excel)» — auction_results_2026-11-02_1323.xlsx (лист «Итоги»). Оба падают в «Загрузки».
 LOGGER_NAME = re.compile(r"^auction_(all|results)_(\d{4})-(\d\d)-(\d\d)_(\d{4})( \(\d+\))?\.(csv|xlsx)$", re.I)

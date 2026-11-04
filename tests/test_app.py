@@ -1205,6 +1205,23 @@ class AuctionLoggerTest(unittest.TestCase):
             rec = results.read_file(p)[0]
             self.assertEqual((rec["date"], rec["miles"]), ("2026-11-03", "98000"))
 
+    def test_summary_for_notebooklm(self):
+        """«Итоги для NotebookLM»: строка на машину, без «Строка» и ставок; программа читает, а из «Загрузок» не уносит."""
+        import csv
+        import tempfile
+        from lot_analyzer import results
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "auction_summary_2026-11-03_0933.csv"
+            with p.open("w", encoding="utf-8-sig", newline="") as handle:
+                w = csv.writer(handle)
+                w.writerow(["Дата торгов"] + [h for h in self.HEAD if h != "Строка"])
+                for row in self.ROWS:
+                    if row[9] == "ИТОГ":
+                        w.writerow(["2026-11-03"] + [v for h, v in zip(self.HEAD, row) if h != "Строка"])
+            self.assertTrue(results.is_results_file(p))
+            self.check(results.read_file(p))
+            self.assertIsNone(results.LOGGER_NAME.match(p.name))          # остаётся в «Загрузках» — оттуда в NotebookLM
+
 
 class CarfaxPdfTest(unittest.TestCase):
     """Carfax в PDF (кнопка «Open PDF» на vin-reports-pro): сумма Retail перед подписью, события «Event 1»."""
