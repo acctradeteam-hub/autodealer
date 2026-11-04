@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.11"
-PROGRAM_VERSION = "2026-11-01.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-04.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1730,12 +1730,17 @@ function toggleModel(m){models=models.includes(m)?models.filter(x=>x!==m):models
 let saleDay='';try{saleDay=localStorage.getItem('la-day')||''}catch(e){}
 function setDay(v){saleDay=v;try{localStorage.setItem('la-day',v)}catch(e){}refresh()}
 const MON=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
-function dayLabel(k){const [m,d]=k.split('-').map(Number);const t=new Date();const dt=new Date(t.getFullYear(),m-1,d);const diff=Math.round((dt-new Date(t.getFullYear(),t.getMonth(),t.getDate()))/864e5);
- const wd=dt.getDay(),name=wd===1?'Аукцион понедельника ':wd===2?'Аукцион вторника ':['вс ','','','ср ','чт ','пт ','сб '][wd];
- return `${name}${d} ${MON[m-1]}`+(diff===0?' · сегодня':diff===1?' · завтра':diff===-1?' · вчера':'')}
+/* «Аукцион понедельника» / «Аукцион вторника» — без даты (неделя к неделе подпись та же; дата — в подсказке и в dayDate);
+   withDate — дописать дату (два понедельника в списке сразу: прошлый и следующий). Остальные дни — с датой. */
+function dayDate(k){const [m,d]=k.split('-').map(Number);return `${d} ${MON[m-1]}`}
+function dayLabel(k,withDate){const [m,d]=k.split('-').map(Number);const t=new Date();const dt=new Date(t.getFullYear(),m-1,d);const diff=Math.round((dt-new Date(t.getFullYear(),t.getMonth(),t.getDate()))/864e5);
+ const wd=dt.getDay(),rel=diff===0?' · сегодня':diff===1?' · завтра':diff===-1?' · вчера':'';
+ if(wd===1||wd===2)return (wd===1?'Аукцион понедельника':'Аукцион вторника')+(withDate?' '+dayDate(k):'')+rel;
+ return `${['вс','','','ср','чт','пт','сб'][wd]} ${dayDate(k)}`+rel}
 function drawDays(d){const e=$('days');if(!e)return;const list=d.days||[];
  if(saleDay&&!list.some(([k])=>k===saleDay)){saleDay='';try{localStorage.setItem('la-day','')}catch(x){}}
- e.innerHTML=list.length>1||saleDay?`<span class="muted">День торгов:</span> <button type="button" class="tab${saleDay?'':' on'}" onclick="setDay('')">Все дни</button>`+list.map(([k,n])=>`<button type="button" class="tab${k===saleDay?' on':''}" onclick="setDay('${k}')" title="Только машины торгов этого дня — вместе с уже прошедшими лотами (для разбора)">${dayLabel(k)} <span class="cnt">${n}</span></button>`).join(''):''}
+ e.innerHTML=list.length>1||saleDay?`<span class="muted">День торгов:</span> <button type="button" class="tab${saleDay?'':' on'}" onclick="setDay('')">Все дни</button>`+list.map(([k,n])=>{const twice=list.filter(([j])=>dayLabel(j)===dayLabel(k)).length>1;
+  return `<button type="button" class="tab${k===saleDay?' on':''}" onclick="setDay('${k}')" title="${dayDate(k)}: только машины торгов этого дня — вместе с уже прошедшими лотами (для разбора)">${dayLabel(k,twice)} <span class="cnt">${n}</span></button>`}).join(''):''}
 let showRejected=false;try{showRejected=localStorage.getItem('la-rejected')==='1'}catch(e){}
 function setNoPhoto(on){if($('nophoto'))$('nophoto').checked=on;refresh()}
 function setRejected(on){showRejected=on;try{localStorage.setItem('la-rejected',on?'1':'')}catch(e){}refresh()}
@@ -1929,7 +1934,7 @@ function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML
  const st=a.state,days=Object.keys(st).filter(k=>/^\d{4}-\d\d-\d\d$/.test(k)).sort().slice(-2);
  const parts=days.map(k=>{const d=st[k],pl=a.places[d.which]||[],got=pl.filter(p=>d.places[p]&&d.places[p].status==='ok');
   const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>d.places[p]&&d.places[p].status!=='ok').map(p=>`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}`);
-  return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
+  return `<b title="${dayDate(k.slice(5))}">${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
  e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'ещё не собирал')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
 function autoRun(w){window.postMessage({source:'lot-analyzer',type:'auto-run',which:w||''},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='auto-status')drawAuto(e.data.answer)});
