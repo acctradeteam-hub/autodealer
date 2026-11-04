@@ -1204,3 +1204,19 @@ class AuctionLoggerTest(unittest.TestCase):
                 w.writerow(self.ROWS[0] + ["2026-11-03"])
             rec = results.read_file(p)[0]
             self.assertEqual((rec["date"], rec["miles"]), ("2026-11-03", "98000"))
+
+
+class CarfaxPdfTest(unittest.TestCase):
+    """Carfax в PDF (кнопка «Open PDF» на vin-reports-pro): сумма Retail перед подписью, события «Event 1»."""
+    PDF = ("2018 Honda Accord LX\n171,655 mi | VIN: 1HGCV1F14JA234675\nCARFAX 1-Owner Vehicle\nPersonal Vehicle\nLast Owned in California\n"
+           "18 Service History Records\nAccident / Damage History\n   Event 1\n 03/02/2023\n Damage reported: minor damage     Damage Severity Scale\n"
+           " Minor   Moderate   Severe\n$12,180      History events affecting this vehicle's value\n  CARFAX Retail Value\n  $5,860   1-Owner Vehicle\n"
+           "  CARFAX Wholesale Value\nAdditional History\nTotal Loss\n     No Issues Reported\nNo total loss reported to CARFAX.\nStructural Damage\n"
+           "     No Issues Reported\nCARFAX recommends that you have this vehicle inspected by a collision repair specialist.\nAirbag Deployment\n"
+           "No airbag deployment reported to CARFAX.\nOdometer Check\nNo indication of an odometer rollback.\n" + "x" * 600)
+
+    def test_pdf_layout(self):
+        from lot_analyzer import carfax
+        s = carfax.parse(self.PDF)
+        self.assertEqual(carfax.line(s), "1 влад. · 1 ДТП (лёгкое) · штаты: California · Carfax $12,180 · сервис 18")
+        self.assertEqual(carfax.flags(s), [])

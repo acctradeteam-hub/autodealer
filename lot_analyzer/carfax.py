@@ -70,10 +70,14 @@ def parse(text: str) -> dict:
         out["accidents"] = 0
     else:
         m = re.search(r"(\d{1,2})\s+(?:accidents?|damage reports?|accident\s*/\s*damage reports?)\s+reported", t, re.I)
-        events = len(re.findall(r"^\s*(?:accident|damage) reported\b", t, re.I | re.M))
+        # PDF Carfax: события пронумерованы «Event 1», «Event 2» — это и есть число ДТП / повреждений
+        numbered = [int(n) for n in re.findall(r"\bevent\s+(\d{1,2})\b", t, re.I)]
+        events = len(re.findall(r"^\s*(?:accident|damage) reported:", t, re.I | re.M))
         sev = len(re.findall(r"severity\s*[:\-]?\s*(?:minor|moderate|severe|functional|disabling)", t, re.I))
-        out["accidents"] = int(m.group(1)) if m else (max(events, sev) or (1 if re.search(r"\b(?:accident|damage) reported\b", low) else None))
-    out["severity"] = sorted({SEVERITY[s.lower()] for s in re.findall(r"severity\s*[:\-]?\s*(minor|moderate|severe|functional|disabling)", t, re.I)},
+        out["accidents"] = (int(m.group(1)) if m else max(numbered) if numbered else
+                            (max(events, sev) or (1 if re.search(r"\b(?:accident|damage) reported\b", low) else None)))
+    out["severity"] = sorted({SEVERITY[s.lower()] for s in re.findall(r"severity\s*[:\-]?\s*(minor|moderate|severe|functional|disabling)", t, re.I)
+                              + re.findall(r"(?:accident|damage) reported:\s*(minor|moderate|severe)", t, re.I)},
                              key=["лёгкое", "среднее", "сильное"].index)
     out["impact"] = sorted({IMPACT[s.lower()] for s in re.findall(
         r"(?:(?:point|area) of impact\s*[:\-]?\s*|damage to (?:the )?)(front|rear|left|right|side|undercarriage|roof|rollover)", t, re.I)})
@@ -81,9 +85,9 @@ def parse(text: str) -> dict:
     def flagged(head: str, clean: str) -> bool:
         part = _section(t, r"^\s*" + head + r"\s*$", r"^\s*(?:total loss|structural damage|airbag deployment|odometer check|accident / damage|manufacturer recall|basic warranty|title history)\s*$")
         return bool(part) and not re.search(clean, part, re.I)
-    out["total_loss"] = flagged("total loss", r"no total loss")
-    out["structural"] = flagged("structural damage", r"no structural damage")
-    out["airbags"] = flagged("airbag deployment", r"no airbag") or (bool(re.search(r"\bair ?bags? (?:were |was )?deployed", low))
+    out["total_loss"] = flagged("total loss", r"no total loss|no issues")
+    out["structural"] = flagged("structural damage", r"no structural damage|no issues")
+    out["airbags"] = flagged("airbag deployment", r"no airbag|no issues") or (bool(re.search(r"\bair ?bags? (?:were |was )?deployed", low))
                                                                     and not re.search(r"no air ?bag", low))
     out["rollback"] = flagged("odometer check", r"no indication|no issues")
     # Титул: «Damage Brands … No Problem», «Odometer Brands … No Problem»; иначе — что за титул, по событиям истории.
@@ -109,7 +113,8 @@ def parse(text: str) -> dict:
     out["service"] = int(m.group(1)) if m else None
     miles = [int(x.replace(",", "")) for x in re.findall(r"(?:last reported odometer reading|odometer reading)\s*[:\-]?\s*([\d,]{3,9})", t, re.I)]
     out["last_miles"] = max(miles) if miles else None
-    m = re.search(r"carfax (?:retail )?value\s*\$([\d,]+)", t, re.I)
+    # Retail: «CARFAX Retail Value $12,180» или в PDF — сумма перед подписью («$12,180 … CARFAX Retail Value»)
+    m = re.search(r"\$([\d,]+)[^$]{0,120}?carfax retail value", t, re.I) or re.search(r"carfax (?:retail )?value\s*\$([\d,]+)", t, re.I)
     out["value"] = int(m.group(1).replace(",", "")) if m else None
     return out
 
