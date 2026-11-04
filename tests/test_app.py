@@ -1137,3 +1137,52 @@ class CarfaxTest(unittest.TestCase):
         self.assertTrue(rows[0]["carfax"].startswith("2 влад."))
         self.assertEqual(rows[0]["carfax_url"], "https://www.vin-reports-pro.com/share/abc")
         self.assertIn("Carfax: 2 влад.", notes.lot_note(rows[0]))
+
+
+class AuctionLoggerTest(unittest.TestCase):
+    """Итоги записи аукциона (навык velocicast-auction-logger): CSV «auction_all_…» и Excel «auction_results_…»."""
+
+    HEAD = ["Аукцион", "Штат", "Лейн", "Лот #", "Год", "Марка / модель", "VIN", "Цвет", "Пробег, mi", "Строка", "Результат", "Цена продажи",
+            "Бейдж покупателя", "Покупатель", "Примечание", "2-й участник (андербиддер)", "Ставка андербиддера", "Макс. ставка дилера", "Кол-во дилеров"]
+    ROWS = [["CarMax Chino Auction Center", "CA", "A", "12", "2016", "Mazda CX-5 Touring", "JM3KE2CY0G0000001", "Blue", "98000", "ИТОГ", "Продано", "8250",
+             "138", "ROMCAR", "", "AUTOANTS LLC", "8000", "8250", "4"],
+            ["CarMax Chino Auction Center", "CA", "A", "12", "2016", "Mazda CX-5 Touring", "JM3KE2CY0G0000001", "Blue", "98000", "ставка", "Продано", "8250",
+             "", "", "", "", "", "", ""],
+            ["CarMax Oxnard", "CA", "B", "3", "2014", "Mercedes-Benz GLK 350 (no trim)", "WDCGG5HB2FG000002", "Gray", "120000", "ИТОГ", "Не продано", "",
+             "", "", "", "", "", "6100", "2"]]
+
+    def check(self, recs):
+        self.assertEqual(len(recs), 2)
+        a, b = recs
+        self.assertEqual((a["date"], a["auction"], a["lot"], a["make"], a["outcome"], a["price"], a["buyer"]),
+                         ("2026-11-03", "CarMax Chino", "A/12", "Mazda", "Sold", "8250", "ROMCAR"))
+        self.assertIn("2-й: AUTOANTS LLC $8,000", a["remarks"])
+        self.assertEqual((b["make"], b["outcome"], b["price"]), ("Mercedes-Benz", "No Sale", ""))
+        self.assertIn("высшая ставка $6,100", b["remarks"])
+
+    def test_csv_and_xlsx(self):
+        import csv
+        import tempfile
+        import openpyxl
+        from lot_analyzer import results
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "auction_all_2026-11-03_1752.csv"
+            with p.open("w", encoding="utf-8-sig", newline="") as handle:
+                w = csv.writer(handle)
+                w.writerow(self.HEAD)
+                w.writerows(self.ROWS)
+            self.assertTrue(results.is_results_file(p))
+            self.check(results.read_file(p))
+            x = Path(tmp) / "auction_results_2026-11-03_1752.xlsx"
+            book = openpyxl.Workbook()
+            sheet = book.active
+            sheet.title = "Итоги"
+            head = [h for h in self.HEAD if h != "Строка"]
+            sheet.append(head)
+            for row in self.ROWS:
+                if row[9] == "ИТОГ":
+                    sheet.append([v for h, v in zip(self.HEAD, row) if h != "Строка"])
+            book.save(x)
+            self.assertTrue(results.is_results_file(x))
+            self.check(results.read_file(x))
+            self.assertFalse(results.is_results_file(Path(tmp) / "report.xlsx"))

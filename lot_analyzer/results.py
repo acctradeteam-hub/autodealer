@@ -22,7 +22,7 @@ from .paths import DATA_DIR
 
 HISTORY_PATH = DATA_DIR / "auction_results.csv"
 # remarks — замечания самого аукциона (Major engine defect, Prior rental …), kbb — KBB Private Party, известный до торгов.
-FIELDS = ("key", "date", "auction", "code", "lot", "vin", "year", "make", "model", "miles", "cr", "mmr", "outcome", "price", "source", "remarks", "kbb")
+FIELDS = ("key", "date", "auction", "code", "lot", "vin", "year", "make", "model", "miles", "cr", "mmr", "outcome", "price", "source", "remarks", "kbb", "buyer")
 # Коды площадок Manheim → название, как оно стоит в списках («CA - Manheim California»).
 CODES = {"CADE": "Manheim California", "SCAA": "Manheim Southern California", "RAA": "Manheim Riverside",
          "SDAA": "Manheim San Diego", "SFAA": "Manheim San Francisco Bay", "NVAA": "Manheim Nevada",
@@ -181,7 +181,7 @@ def is_runlist_pdf(path: Path) -> bool:
 
 
 def is_results_file(path: Path) -> bool:
-    return (is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path) or is_carmax_ru_table(path) or is_carmax_sale_results(path)
+    return (is_auction_logger(path) or is_lane_csv(path) or is_manheim_lanes_csv(path) or is_carmax_site_csv(path) or is_velocicast_page(path) or is_velocicast_export(path) or is_carmax_ru_table(path) or is_carmax_sale_results(path)
             or is_postsale_pdf(path) or is_carmax_results(path))
 
 
@@ -489,6 +489,75 @@ def read_carmax_sale_results(path: Path) -> list[dict]:
     return out
 
 
+# Запись аукциона навыком «velocicast-auction-logger» (Claude, вкладка carmax.velocicast.io): кнопки виджета
+# «Скачать итоги (CSV)» — auction_all_2026-11-03_1752.csv (на машину строка «ИТОГ», под ней её ставки) и
+# «Скачать итоги (Excel)» — auction_results_2026-11-02_1323.xlsx (лист «Итоги»). Оба падают в «Загрузки».
+LOGGER_NAME = re.compile(r"^auction_(all|results)_(\d{4})-(\d\d)-(\d\d)_\d{4}( \(\d+\))?\.(csv|xlsx)$", re.I)
+LOGGER_COLUMNS = {"Аукцион", "Лейн", "Лот #", "Марка / модель", "VIN", "Результат", "Цена продажи"}
+MAKES_TWO_WORDS = ("Mercedes-Benz", "Land Rover", "Alfa Romeo", "Aston Martin", "Rolls-Royce")
+
+
+def is_auction_logger(path: Path) -> bool:
+    if path.suffix.lower() == ".xlsx":
+        return bool(LOGGER_NAME.match(path.name))          # имя — проверка без распаковки книги
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            return LOGGER_COLUMNS <= _header(handle.read(3000))
+    except OSError:
+        return False
+
+
+def _logger_rows(path: Path) -> list[dict]:
+    if path.suffix.lower() == ".xlsx":
+        import openpyxl
+        book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheet = book["Итоги"] if "Итоги" in book.sheetnames else book.worksheets[0]
+            rows = sheet.iter_rows(values_only=True)
+            head = [str(c or "").strip() for c in next(rows, [])]
+            return [{h: ("" if v is None else str(v)) for h, v in zip(head, row)} for row in rows]
+        finally:
+            book.close()
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        return [r for r in csv.DictReader(handle) if (r.get("Строка") or "ИТОГ") == "ИТОГ"]    # строки «ставка» — не машины
+
+
+def read_auction_logger(path: Path) -> list[dict]:
+    from .normalize import split_model
+
+    named = LOGGER_NAME.match(path.name)
+    date = f"{named.group(2)}-{named.group(3)}-{named.group(4)}" if named else _date_from_name(path)
+    out = []
+    for r in _logger_rows(path):
+        result = (r.get("Результат") or "").strip().lower()
+        outcome = "Sold" if result.startswith("продано") else "No Sale" if result.startswith("не продано") else "нет итога"
+        full = (r.get("Марка / модель") or "").replace("(no trim)", "").strip()
+        make = next((m for m in MAKES_TWO_WORDS if full.startswith(m + " ")), full.split(" ")[0] if full else "")
+        model, trim = split_model(full[len(make):].strip())
+        price = _num(r.get("Цена продажи"))
+        remarks = []
+        if r.get("2-й участник (андербиддер)"):
+            under = _num(r.get("Ставка андербиддера"))
+            remarks.append(f"2-й: {r['2-й участник (андербиддер)']}" + (f" ${int(under):,}" if under else ""))
+        if _num(r.get("Кол-во дилеров")):
+            remarks.append(f"дилеров {int(_num(r.get('Кол-во дилеров')))}")
+        if outcome != "Sold" and _num(r.get("Макс. ставка дилера")):
+            remarks.append(f"высшая ставка ${int(_num(r.get('Макс. ставка дилера'))):,}")
+        lot = str(r.get("Лот #") or "").strip()
+        lot = lot[:-2] if lot.endswith(".0") else lot
+        rec = {"date": date, "auction": (r.get("Аукцион") or "").replace(" Auction Center", "").strip(), "code": "",
+               "lot": f"{(r.get('Лейн') or '').strip()}/{lot}".strip("/"), "vin": (r.get("VIN") or "").strip().upper(),
+               "year": str(r.get("Год") or "").strip().removesuffix(".0"), "make": make, "model": f"{model} {trim}".strip(),
+               "miles": re.sub(r"\D", "", str(r.get("Пробег, mi") or "").removesuffix(".0")), "cr": "", "mmr": "",
+               "outcome": outcome, "price": str(int(price)) if price and outcome == "Sold" else "", "source": path.name,
+               "remarks": ", ".join(remarks), "kbb": "", "buyer": (r.get("Покупатель") or "").strip()}
+        rec["key"] = _key(rec)
+        out.append(rec)
+    return out
+
+
 def is_carmax_site_csv(path: Path) -> bool:
     if path.suffix.lower() != ".csv":
         return False
@@ -500,6 +569,8 @@ def is_carmax_site_csv(path: Path) -> bool:
 
 
 def read_file(path: Path) -> list[dict]:
+    if is_auction_logger(path):
+        return read_auction_logger(path)
     if is_velocicast_export(path):
         return read_velocicast_export(path)
     if is_carmax_ru_table(path):
@@ -550,7 +621,7 @@ def merge(history: dict[str, dict], new: list[dict]) -> bool:
             history[rec["key"]] = rec
             changed = True
         else:
-            for field in ("mmr", "kbb", "remarks"):
+            for field in ("mmr", "kbb", "remarks", "buyer"):
                 if rec.get(field) and not old.get(field):
                     old[field] = rec[field]
                     changed = True

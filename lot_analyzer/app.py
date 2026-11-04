@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.11"
-PROGRAM_VERSION = "2026-11-04.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.12"
+PROGRAM_VERSION = "2026-11-04.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -204,8 +204,9 @@ def _free_name(folder: Path, name: str) -> Path:
 
 
 def tidy_downloads(downloads: Path, archive: Path) -> int:
-    """Переносит из «Загрузок» в свою папку файлы закладки / расширения и сохранённые через Cmd+S страницы KBB
-    (вместе с их папкой «…_files»). Время файла сохраняется. Возвращает, сколько перенесено."""
+    """Переносит из «Загрузок» в свою папку файлы закладки / расширения, сохранённые через Cmd+S страницы KBB
+    (вместе с их папкой «…_files») и итоги записи аукциона (auction_all_… .csv / auction_results_… .xlsx).
+    Время файла сохраняется. Возвращает, сколько перенесено."""
     import shutil
     moved = 0
     try:
@@ -213,7 +214,7 @@ def tidy_downloads(downloads: Path, archive: Path) -> int:
     except OSError:
         return 0
     for path in items:
-        if not path.is_file() or not (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name)):
+        if not path.is_file() or not (SAVED_BY_BOOKMARKLET.match(path.name) or SAVED_KBB.search(path.name) or results.LOGGER_NAME.match(path.name)):
             continue
         if path.suffix.lower() in (".html", ".htm") and is_own_window(path):
             continue
