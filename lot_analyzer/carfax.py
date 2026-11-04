@@ -82,24 +82,31 @@ def parse(text: str) -> dict:
     out["impact"] = sorted({IMPACT[s.lower()] for s in re.findall(
         r"(?:(?:point|area) of impact\s*[:\-]?\s*|damage to (?:the )?)(front|rear|left|right|side|undercarriage|roof|rollover)", t, re.I)})
     # Блоки «Additional History»: «No … reported» — нет; заголовок есть, а «No …» нет — есть.
-    def flagged(head: str, clean: str) -> bool:
+    # В PDF без колонок статус («No Issues Reported») уезжает в таблицу ниже, а в блоке остаётся общая фраза —
+    # тогда «есть» только по прямым словам об этом событии.
+    generic = r"carfax recommends that you have this vehicle inspected by a collision repair specialist\.?"
+    def flagged(head: str, clean: str, bad: str = r"(?!x)x") -> bool:
         part = _section(t, r"^\s*" + head + r"\s*$", r"^\s*(?:total loss|structural damage|airbag deployment|odometer check|accident / damage|manufacturer recall|basic warranty|title history)\s*$")
-        return bool(part) and not re.search(clean, part, re.I)
+        if not part or re.search(clean, part, re.I):
+            return False
+        return bool(re.sub(generic, "", part, flags=re.I).strip()) or bool(re.search(bad, t, re.I))
     out["total_loss"] = flagged("total loss", r"no total loss|no issues")
-    out["structural"] = flagged("structural damage", r"no structural damage|no issues")
+    out["structural"] = flagged("structural damage", r"no structural damage|no issues", r"(?<!no )structural damage reported|frame damage|problem reported")
     out["airbags"] = flagged("airbag deployment", r"no airbag|no issues") or (bool(re.search(r"\bair ?bags? (?:were |was )?deployed", low))
                                                                     and not re.search(r"no air ?bag", low))
     out["rollback"] = flagged("odometer check", r"no indication|no issues")
     # Титул: «Damage Brands … No Problem», «Odometer Brands … No Problem»; иначе — что за титул, по событиям истории.
     title = _section(t, r"^\s*title history\s*$", r"^\s*ownership history\s*$")
     out["title"] = []
+    found = sorted({w.lower() for w in re.findall(r"\b(salvage|junk|rebuilt|reconstructed|fire|flood|hail|lemon|not actual mileage|exceeds mechanical limits)\b[^\n|]{0,25}(?:title|brand|issued|reported)", t, re.I)})
     for group, nxt in (("damage brands", r"odometer brands"), ("odometer brands", r"guaranteed\s*-|none of these")):
         part = _section(title, group, nxt)
-        if part and not re.search(r"no problem", part, re.I):
-            found = sorted({w.lower() for w in re.findall(r"\b(salvage|junk|rebuilt|reconstructed|fire|flood|hail|lemon|not actual mileage|exceeds mechanical limits)\b[^\n|]{0,25}(?:title|brand|issued|reported)", t, re.I)})
+        # в тексте PDF без колонок «Guaranteed / No Problem» стоят до подписей групп — тогда смотрим на весь блок титула
+        if part and not re.search(r"no problem", part, re.I) and (found or not re.search(r"no problem", title, re.I)):
             out["title"] += found or [("проблема с титулом" if group == "damage brands" else "пробег — бренд в титуле") + " (см. отчёт)"]
     if out["total_loss"]:
         out["title"].append("total loss")
+    out["title"] = list(dict.fromkeys(out["title"]))
     # Штаты: «Owned in the following states/provinces», «Last Owned in …», «Owned in: …».
     states = []
     for part in re.findall(r"owned in the following states(?:/provinces)?\s*(.*?)\s*(?:estimated|last reported|$)", t, re.I | re.S):
@@ -111,11 +118,17 @@ def parse(text: str) -> dict:
                     or re.search(r"type of owner\s*" + rx, t, re.I)]
     m = re.search(r"(\d{1,3})\s+service (?:history )?records?", t, re.I)
     out["service"] = int(m.group(1)) if m else None
-    miles = [int(x.replace(",", "")) for x in re.findall(r"(?:last reported odometer reading|odometer reading)\s*[:\-]?\s*([\d,]{3,9})", t, re.I)]
+    miles = [int(x.replace(",", "")) for x in re.findall(r"(?:last reported odometer reading|odometer reading)\s*[:\-]?\s*(\d[\d,]{2,8})", t, re.I)]
+    for run in re.findall(r"last reported odometer reading((?:\s+\d[\d,]{2,8}\b)+)", t, re.I):   # по владельцам: «94,438  152,023  160,563»
+        miles += [int(x.replace(",", "")) for x in re.findall(r"\d[\d,]{2,8}", run)]
+    miles += [int(x.replace(",", "")) for x in re.findall(r"(\d[\d,]{2,8}) mi\s*\|\s*vin", t, re.I)]   # шапка: «160,563 mi | VIN: …»
     out["last_miles"] = max(miles) if miles else None
     # Retail: «CARFAX Retail Value $12,180» или в PDF — сумма перед подписью («$12,180 … CARFAX Retail Value»)
+    # или обе суммы выше, а подписи подряд («$13,750 … $6,960 … CARFAX Retail Value CARFAX Wholesale Value») — розница больше опта
+    label = re.search(r"carfax retail value(?=\s*carfax wholesale value)", t, re.I)
+    pair = [int(x.replace(",", "")) for x in re.findall(r"\$(\d[\d,]*)", t[max(0, label.start() - 300):label.start()])][-2:] if label else []
     m = re.search(r"\$([\d,]+)[^$]{0,120}?carfax retail value", t, re.I) or re.search(r"carfax (?:retail )?value\s*\$([\d,]+)", t, re.I)
-    out["value"] = int(m.group(1).replace(",", "")) if m else None
+    out["value"] = max(pair) if len(pair) == 2 else int(m.group(1).replace(",", "")) if m else None
     return out
 
 

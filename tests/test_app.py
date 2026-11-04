@@ -1220,3 +1220,24 @@ class CarfaxPdfTest(unittest.TestCase):
         s = carfax.parse(self.PDF)
         self.assertEqual(carfax.line(s), "1 влад. · 1 ДТП (лёгкое) · штаты: California · Carfax $12,180 · сервис 18")
         self.assertEqual(carfax.flags(s), [])
+
+    def test_pdf_text_without_columns(self):
+        """PDF, прочитанный без колонок: «No Problem» до подписей групп титула, обе суммы подряд, пробег по владельцам столбиком."""
+        from lot_analyzer import carfax
+        text = ("2015 Lexus IS 250\n160,563 mi | VIN: X\n14 Service History Records\n4 Previous Owners\nLast Owned in Arizona\n"
+                "History-Based Value\n\n$13,750\n\nHistory events affecting this vehicle's value\n\n$6,960\n\nNo Accidents Reported\n\n"
+                "CARFAX Retail Value\n\nCARFAX Wholesale Value\n\nService History\n"
+                "Title History\nOwners 1-2\n\nOwner 3\n\nOwner 4\n" + "Guaranteed\nNo Problem\n\n" * 6 +
+                "Damage Brands\nSalvage | Junk | Rebuilt | Fire | Flood | Hail | Lemon\nOdometer Brands\n"
+                "Not Actual Mileage | Exceeds Mechanical Limits\n\nGUARANTEED - None of these title problems were reported by a U.S. state DMV.\n"
+                "Ownership History\nLast reported odometer reading\n\n94,438\n\n152,023\n\n160,563\n" + "x" * 600)
+        s = carfax.parse(text)
+        self.assertEqual((s["title"], s["value"], s["last_miles"]), ([], 13750, 160563))
+        self.assertEqual(carfax.flags(s), ["4 владельцев"])
+        # блок «Structural Damage» только с общей рекомендацией, статусы — ниже в таблице: рамы нет
+        s = carfax.parse(text.replace("Title History", "Additional History\nStructural Damage\nCARFAX recommends that you have this vehicle inspected "
+                                      "by a collision repair specialist.\nAirbag Deployment\nNo airbag deployment reported to CARFAX.\nTitle History"))
+        self.assertFalse(s["structural"])
+        s = carfax.parse(text.replace("Title History", "Structural Damage\nCARFAX recommends that you have this vehicle inspected by a collision "
+                                      "repair specialist.\nAirbag Deployment\nTitle History\nStructural damage reported\n"))
+        self.assertTrue(s["structural"])
