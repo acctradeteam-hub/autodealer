@@ -1186,3 +1186,21 @@ class AuctionLoggerTest(unittest.TestCase):
             self.assertTrue(results.is_results_file(x))
             self.check(results.read_file(x))
             self.assertFalse(results.is_results_file(Path(tmp) / "report.xlsx"))
+
+    def test_auction_date_and_old_columns(self):
+        import csv
+        import tempfile
+        from lot_analyzer import results
+        self.assertEqual(results._logger_date(Path("auction_all_2026-11-04_0855.csv")), "2026-11-03")   # среда утром — вторник
+        self.assertEqual(results._logger_date(Path("auction_all_2026-11-03_0700.csv")), "2026-11-02")   # вторник до торгов — понедельник
+        self.assertEqual(results._logger_date(Path("auction_all_2026-11-02_1332.csv")), "2026-11-02")
+        self.assertEqual(results._logger_date(Path("auction_all_2026-11-08_1000.csv")), "2026-11-03")   # воскресенье — вторник
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "auction_all_2026-11-04_0855.csv"
+            head = [h.replace("Пробег, mi", "Пробег (mi)") for h in self.HEAD] + ["Дата торгов"]
+            with p.open("w", encoding="utf-8-sig", newline="") as handle:
+                w = csv.writer(handle)
+                w.writerow(head)
+                w.writerow(self.ROWS[0] + ["2026-11-03"])
+            rec = results.read_file(p)[0]
+            self.assertEqual((rec["date"], rec["miles"]), ("2026-11-03", "98000"))

@@ -492,7 +492,7 @@ def read_carmax_sale_results(path: Path) -> list[dict]:
 # Запись аукциона навыком «velocicast-auction-logger» (Claude, вкладка carmax.velocicast.io): кнопки виджета
 # «Скачать итоги (CSV)» — auction_all_2026-11-03_1752.csv (на машину строка «ИТОГ», под ней её ставки) и
 # «Скачать итоги (Excel)» — auction_results_2026-11-02_1323.xlsx (лист «Итоги»). Оба падают в «Загрузки».
-LOGGER_NAME = re.compile(r"^auction_(all|results)_(\d{4})-(\d\d)-(\d\d)_\d{4}( \(\d+\))?\.(csv|xlsx)$", re.I)
+LOGGER_NAME = re.compile(r"^auction_(all|results)_(\d{4})-(\d\d)-(\d\d)_(\d{4})( \(\d+\))?\.(csv|xlsx)$", re.I)
 LOGGER_COLUMNS = {"Аукцион", "Лейн", "Лот #", "Марка / модель", "VIN", "Результат", "Цена продажи"}
 MAKES_TWO_WORDS = ("Mercedes-Benz", "Land Rover", "Alfa Romeo", "Aston Martin", "Rolls-Royce")
 
@@ -524,11 +524,26 @@ def _logger_rows(path: Path) -> list[dict]:
         return [r for r in csv.DictReader(handle) if (r.get("Строка") or "ИТОГ") == "ИТОГ"]    # строки «ставка» — не машины
 
 
+def _logger_date(path: Path) -> str:
+    """Дата торгов по имени файла. В имени — когда файл скачали, не когда шли торги: «auction_all_2026-11-04_0855»
+    скачан в среду утром — это вторник 03.11. Торги CarMax — в понедельник и вторник с 8:00, поэтому день без торгов
+    или время до 8:00 — это ближайший прошлый понедельник / вторник."""
+    named = LOGGER_NAME.match(path.name)
+    if not named:
+        return _date_from_name(path)
+    day = dt.date(int(named.group(2)), int(named.group(3)), int(named.group(4)))
+    if day.weekday() in (0, 1) and named.group(5) >= "0800":
+        return day.isoformat()
+    day -= dt.timedelta(days=1)
+    while day.weekday() not in (0, 1):
+        day -= dt.timedelta(days=1)
+    return day.isoformat()
+
+
 def read_auction_logger(path: Path) -> list[dict]:
     from .normalize import split_model
 
-    named = LOGGER_NAME.match(path.name)
-    date = f"{named.group(2)}-{named.group(3)}-{named.group(4)}" if named else _date_from_name(path)
+    date = _logger_date(path)
     out = []
     for r in _logger_rows(path):
         result = (r.get("Результат") or "").strip().lower()
@@ -547,10 +562,11 @@ def read_auction_logger(path: Path) -> list[dict]:
             remarks.append(f"высшая ставка ${int(_num(r.get('Макс. ставка дилера'))):,}")
         lot = str(r.get("Лот #") or "").strip()
         lot = lot[:-2] if lot.endswith(".0") else lot
-        rec = {"date": date, "auction": (r.get("Аукцион") or "").replace(" Auction Center", "").strip(), "code": "",
+        own = re.fullmatch(r"(20\d\d)-(\d\d)-(\d\d)", str(r.get("Дата торгов") or "").strip()[:10])   # своя колонка — главнее имени
+        rec = {"date": own.group(0) if own else date, "auction": (r.get("Аукцион") or "").replace(" Auction Center", "").strip(), "code": "",
                "lot": f"{(r.get('Лейн') or '').strip()}/{lot}".strip("/"), "vin": (r.get("VIN") or "").strip().upper(),
                "year": str(r.get("Год") or "").strip().removesuffix(".0"), "make": make, "model": f"{model} {trim}".strip(),
-               "miles": re.sub(r"\D", "", str(r.get("Пробег, mi") or "").removesuffix(".0")), "cr": "", "mmr": "",
+               "miles": re.sub(r"\D", "", str(r.get("Пробег, mi") or r.get("Пробег (mi)") or "").removesuffix(".0")), "cr": "", "mmr": "",
                "outcome": outcome, "price": str(int(price)) if price and outcome == "Sold" else "", "source": path.name,
                "remarks": ", ".join(remarks), "kbb": "", "buyer": (r.get("Покупатель") or "").strip()}
         rec["key"] = _key(rec)
