@@ -835,7 +835,8 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
             row["profit_at_my_bid_items"] = " − ".join([base, f"ставка {_usd(proxy)}"] + ([f"сбор {auction} {_usd(fee)}"] if fee else [])
                                                       + [f"{k} {_usd(v)}" for k, v in result.fixed_parts.items()]
                                                       + ([f"история {_usd(result.discount)}"] if result.discount else []))
-            row["profit_at_my_bid_items"] += f" = {_usd(result.sale_price - result.discount - proxy - fee - result.fixed_total)}"
+            total = result.sale_price - result.discount - proxy - fee - result.fixed_total
+            row["profit_at_my_bid_items"] += f" = {'−' if total < 0 else ''}{_usd(abs(total))}"
         real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
         if costs.get("require_kbb") and not real_kbb and result.max_bid:
             # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.
