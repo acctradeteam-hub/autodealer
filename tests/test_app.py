@@ -136,7 +136,7 @@ class TestOneWindow(unittest.TestCase):
         page = render_html(rows)
         self.assertNotIn("Моя оценка", page)                         # графу убрали
         heads = re.findall(r"<th(?:\s[^>]*)?>(.*?)</th>", page.split("</thead>")[0])
-        self.assertEqual(heads, ["Лот", "Машина", "Добавлено", "Замечания и история", "KBB", "Средняя цена покупки на аукционе",
+        self.assertEqual(heads, ["Лот", "Машина", "Замечания и история", "KBB", "Средняя цена покупки на аукционе",
                                  "Заметки", "Моя ставка", "Результат торгов", ""])
         self.assertNotIn("Почему в списке", page)
         self.assertIn("A/70", page)                                  # Civic с «Major transmission defect»
@@ -1347,8 +1347,9 @@ class ManualInspectTest(unittest.TestCase):
         self.assertEqual(inspection.why(dict(car, inspect_manual="2026-11-06", rejected="2026-11-07")), "")   # отбой позже — нет
         self.assertEqual(inspection.why(dict(car, my_proxy_usd="5000")), "ставка")
         page = inspection.render_html([dict(car, inspect_manual="2026-11-06", sale_date="Nov 9, 9:00am PT", location="Murrieta, CA")])
-        self.assertIn("<th>Добавлено</th>", page)
-        self.assertIn("<td class='added manual'>вручную из программы</td>", page)
+        self.assertNotIn("<th>Добавлено</th>", page)
+        self.assertIn("<div class='manual'>✋ Добавлено вручную — смотреть внимательно</div>", page)
+        self.assertNotIn("избранное CarMax", page)
 
 
 class CarfaxPdfImportTest(unittest.TestCase):
@@ -1385,3 +1386,34 @@ class CarfaxPdfImportTest(unittest.TestCase):
             carfax.attach([row])
         self.assertEqual(row["carfax_pdf"], "/carfax/1HGCV1F14JA234675.pdf")
         self.assertEqual(row["carfax_autocheck"], "Carfax: 1 owners; 1 accidents minor")
+
+
+class VrpLoginTest(unittest.TestCase):
+    """«🔑 Вход Carfax»: логин и пароль vin-reports-pro — только на этом компьютере; окну пароль не отдаётся."""
+
+    def test_vrp_login(self) -> None:
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        with mock.patch.object(app, "VRP_PATH", tmp / "vrp.json"):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+
+            def post(path: str, body: dict, headers: dict) -> tuple[int, dict]:
+                req = urllib.request.Request(base + path, method="POST", data=json.dumps(body).encode(), headers=headers)
+                try:
+                    with urllib.request.urlopen(req) as resp:
+                        return resp.status, json.loads(resp.read())
+                except urllib.error.HTTPError as err:
+                    return err.code, {}
+            try:
+                self.assertEqual(post("/api/vrp", {"email": "a@b.c", "password": "x"}, {"Content-Type": "text/plain"})[0], 415)
+                self.assertEqual(post("/api/vrp", {"email": "a@b.c", "password": "secret1"}, {"Content-Type": "application/json"})[1], {"email": "a@b.c", "saved": True})
+                post("/api/vrp", {"email": "new@b.c", "password": ""}, {"Content-Type": "application/json"})        # пусто — пароль прежний
+                shown = json.loads(urllib.request.urlopen(base + "/api/vrp").read())
+                self.assertEqual(shown, {"email": "new@b.c", "saved": True})                                       # без пароля
+                self.assertEqual(post("/api/vrp_login", {}, {"Content-Type": "application/json"})[0], 403)          # не от расширения
+                self.assertEqual(post("/api/vrp_login", {}, {"Content-Type": "application/json", "X-LA": "1"})[1], {"email": "new@b.c", "password": "secret1"})
+            finally:
+                server.shutdown()
+            self.assertEqual(oct((tmp / "vrp.json").stat().st_mode & 0o777), "0o600")

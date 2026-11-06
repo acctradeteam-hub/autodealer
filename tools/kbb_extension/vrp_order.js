@@ -1,7 +1,8 @@
 /* Lot Analyzer: Carfax с vin-reports-pro.com (VinTrace) — сам.
    1) Кнопка «📄 Carfax» в окне программы открывает https://www.vin-reports-pro.com/pro#la-carfax=<VIN>: здесь VIN
-      вписывается в поле, выбирается Carfax и нажимается заказ. Нужен вход — просим войти, после входа заказ продолжается
-      (VIN помним в этой вкладке).
+      вписывается в поле, выбирается Carfax и нажимается заказ. Сайт просит войти — входим сами логином и паролем из
+      программы («🔑 Вход Carfax»; один раз за заказ), после входа заказ продолжается (VIN помним в этой вкладке).
+      Нет сохранённого входа или нужен код 2FA — просим вас. Поле VIN не нашлось — снимок страницы уходит в программу.
    2) Страница готового отчёта (/pro/report/<id>) — открытая и после заказа, и вручную: берём его PDF (ссылка «Open PDF»)
       и отдаём программе: она хранит PDF и разбирает (владельцы, ДТП и их сила, штаты, титул) — в окно и в расчёт.
    Вкладку, открытую программой, после этого закрываем; открытую вами — оставляем. */
@@ -91,6 +92,7 @@
 
   var manual = function () {
     status('manual');
+    send({ type: 'vrp-page', html: document.documentElement.outerHTML.slice(0, 4000000) });   // чтобы настроить заказ точно
     var el = banner('Не нашёл на странице, куда вписать VIN. Вставьте его сами и закажите Carfax — готовый отчёт придёт в программу сам.<br>' +
       '<span style="font:600 15px ui-monospace,monospace">' + esc(job.vin) + '</span> <button type="button" id="la-cf-copy" style="margin-left:6px">Скопировать VIN</button>', true);
     var copy = el.querySelector('#la-cf-copy');
@@ -99,12 +101,44 @@
     job.step = 'wait'; job.clickedAt = Date.now(); save();
   };
 
+  /* Вход: логин и пароль из программы — один раз за заказ; не вышло (нет входа в программе, неверный пароль, код 2FA) — просим вас. */
+  var askLogin = function (why) {
+    banner((why ? esc(why) + '<br>' : '') + 'Войдите в VinTrace — после входа Carfax для <b>' + esc(job.vin) + '</b> закажется сам.', true);
+    status('login', why || '');
+    send({ type: 'carfax-show' });
+  };
+  var login = function () {
+    if (job.loginTried && Date.now() - job.loginTried < 10 * 60 * 1000) { askLogin(''); return; }
+    send({ type: 'vrp-login' }, function (cred) {
+      if (!cred || !cred.email || !cred.password) { askLogin('Логин и пароль не сохранены в программе (кнопка «🔑 Вход Carfax»).'); return; }
+      var started = Date.now();
+      var fill = function () {
+        var email = document.querySelector('#email, input[type=email]');
+        var pass = document.querySelector('#password, input[type=password]');
+        if (!email || !pass) { if (Date.now() - started < 15000) { setTimeout(fill, 500); } else { askLogin(''); } return; }
+        setValue(email, cred.email);
+        setValue(pass, cred.password);
+        job.loginTried = Date.now(); save();
+        banner('Вхожу в VinTrace…');
+        setTimeout(function () {
+          var btn = (pass.form && pass.form.querySelector('button[type=submit], button:not([type])')) || orderButton(pass);
+          if (btn) { btn.click(); } else if (pass.form) { pass.form.requestSubmit ? pass.form.requestSubmit() : pass.form.submit(); }
+          setTimeout(function () {                         // через 8 с всё ещё на входе: код 2FA или неверный пароль
+            if (!/\/pro\/login/.test(location.pathname)) { return; }
+            var code = document.querySelector('#code');
+            var err = document.querySelector('.pro-error');
+            askLogin(code && visible(code) ? 'Сайт просит код из приложения-аутентификатора — введите его.' : err ? 'Сайт ответил: ' + err.textContent.trim() : '');
+          }, 8000);
+        }, 400);
+      };
+      fill();
+    });
+  };
+
   var order = function () {
     if (!job || job.step !== 'order') { return; }
     if (/\/pro\/(login|forgot-password)/.test(location.pathname)) {
-      banner('Войдите в VinTrace — после входа Carfax для <b>' + esc(job.vin) + '</b> закажется сам.', true);
-      status('login');
-      send({ type: 'carfax-show' });
+      login();
       return;                                                // после входа сайт откроет /pro — заказ продолжится
     }
     if (/\/pro\/report\//.test(location.pathname)) { return; }
@@ -124,6 +158,15 @@
           confirmIfAsked(10);
           status('ordered');
           banner('Carfax для <b>' + esc(job.vin) + '</b> заказан — жду отчёт…');
+          setTimeout(function () {                         // сайт отказал (нет кредитов, неверный VIN …) — сказать сразу
+            var err = [].slice.call(document.querySelectorAll('.pro-error, [role=alert]')).filter(visible)[0];
+            if (err && job && !/\/pro\/report\//.test(location.pathname)) {
+              banner('Сайт ответил: ' + esc(err.textContent.trim()), true);
+              status('error', 'сайт ответил: ' + err.textContent.trim().slice(0, 200));
+              send({ type: 'carfax-show' });
+              job = null; save();
+            }
+          }, 6000);
         }, 500);
         return;
       }

@@ -148,6 +148,18 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
     laCarfaxStatus(vin, 'opened');
     return;
   }
+  /* Сайт просит войти: логин и пароль — из программы (хранятся только на этом компьютере). */
+  if (msg.type === 'vrp-login') {
+    fetch('http://127.0.0.1:8765/api/vrp_login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' }, body: '{}' })
+      .then(function (r) { return r.json(); }).then(reply, function () { reply({}); });
+    return true;
+  }
+  /* Поле VIN не нашлось: снимок страницы заказа — в программу (data/carfax), чтобы настроить заказ точно под неё. */
+  if (msg.type === 'vrp-page') {
+    fetch('http://127.0.0.1:8765/api/vrp_page', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' }, body: JSON.stringify({ html: msg.html || '' }) })
+      .then(function (r) { return r.json(); }).then(reply, function () { reply({}); });
+    return true;
+  }
   if (msg.type === 'carfax-status' && msg.vin) { laCarfaxStatus(String(msg.vin).toUpperCase(), String(msg.status || ''), String(msg.note || '')); return; }
   if (msg.type === 'carfax-show' && sender.tab) { chrome.tabs.update(sender.tab.id, { active: true }, function () { void chrome.runtime.lastError; }); return; }
   if (msg.type === 'carfax-close' && sender.tab) { chrome.tabs.remove(sender.tab.id, function () { void chrome.runtime.lastError; }); return; }

@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.14"
-PROGRAM_VERSION = "2026-11-06.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.15"
+PROGRAM_VERSION = "2026-11-06.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
@@ -443,6 +443,27 @@ OWNERS_WARN = 3                                          # от стольких
 REJECTED_PATH = DATA_DIR / "rejected.json"             # «🚫 Отбой — не покупать»: VIN → {date, car, at}
 SITE_NOTES_PATH = DATA_DIR / "site_notes.json"         # ваш текст в Notes на CarMax, присланный расширением: VIN → {text, at}
 MANUAL_PATH = DATA_DIR / "inspect_manual.json"         # «➕ В список на осмотр» из окна: VIN → {date, car, at}
+VRP_PATH = DATA_DIR / "vrp.json"                       # вход на vin-reports-pro.com (VinTrace): {email, password} — только на этом компьютере
+
+
+def load_vrp() -> dict:
+    try:
+        return json.loads(VRP_PATH.read_text(encoding="utf-8")) if VRP_PATH.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_vrp(email: str, password: str | None) -> dict:
+    """password=None — оставить прежний (в окне пароль не показывается). Файл — только для вашей учётной записи (600)."""
+    old = load_vrp()
+    data = {"email": str(email or "").strip(), "password": old.get("password", "") if password is None else str(password)}
+    VRP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    VRP_PATH.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    try:
+        VRP_PATH.chmod(0o600)
+    except OSError:
+        pass
+    return data
 
 
 PHOTOS_PATH = DATA_DIR / "photo_seen.json"           # фото на карточке лота CarMax (расширение): номер машины → {vin, count, photo, at}
@@ -1400,6 +1421,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(path.read_bytes(), "application/pdf")
                 else:
                     self._send(b"not found", "text/plain; charset=utf-8", status=404)
+            elif url.path == "/api/vrp":               # окно: вход на vin-reports-pro сохранён? (пароль не показывается)
+                v = load_vrp()
+                self._send(json.dumps({"email": v.get("email", ""), "saved": bool(v.get("email") and v.get("password"))}, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/carfax_status":     # окно: что сейчас с заказами Carfax (расширение сообщает по ходу)
                 self._send(json.dumps(CARFAX_STATUS, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/version":
@@ -1503,6 +1527,37 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
                 self._send(json.dumps({"saved": save_owners(list(data.get("cars") or [])[:50])}).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/vrp":            # окно: сохранить вход на vin-reports-pro
+                if not str(self.headers.get("Content-Type", "")).startswith("application/json"):   # чужая страница так не пошлёт
+                    self._send(b"{}", status=415)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(min(length, 5000)) or b"{}")
+                v = save_vrp(data.get("email", ""), data.get("password") or None)
+                self._send(json.dumps({"email": v["email"], "saved": bool(v["email"] and v["password"])}, ensure_ascii=False).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/vrp_login":      # расширение: сайт просит войти — логин и пароль (только с X-LA)
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                v = load_vrp()
+                self._send(json.dumps({"email": v.get("email", ""), "password": v.get("password", "")}, ensure_ascii=False).encode("utf-8"))
+                return
+            if urlparse(self.path).path == "/api/vrp_page":       # расширение: страница заказа, где не нашлось поле VIN, — в data/carfax
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(min(length, 8 * 1024 * 1024)) or b"{}")
+                html_text = str(data.get("html") or "")
+                if len(html_text) > 200:
+                    carfax.PDF_DIR.mkdir(parents=True, exist_ok=True)
+                    path = carfax.PDF_DIR / f"vrp_order_page_{time.strftime('%Y-%m-%d_%H%M')}.html"
+                    path.write_text(html_text, encoding="utf-8")
+                    self._send(json.dumps({"ok": True, "path": str(path)}, ensure_ascii=False).encode("utf-8"))
+                else:
+                    self._send(b'{"ok":false}')
                 return
             if urlparse(self.path).path == "/api/carfax_status":  # расширение: заказ Carfax идёт / нужен вход / не вышло / готово
                 if self.headers.get("X-LA") != "1":
@@ -1725,7 +1780,8 @@ def main(argv: list[str] | None = None) -> int:
     warm_vin_search(folders, page_cache, Path(args.costs))     # поиск по VIN — без ожидания
     # Отправка Claude (если включена в окне): новые файлы из «Загрузок» — в ваш закрытый репозиторий GitHub.
     inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")]      # + PDF Carfax за 3 дня
-                + [p for p in (carfax.PDF_DIR.glob("*.pdf") if carfax.PDF_DIR.is_dir() else []) if p.stat().st_mtime > time.time() - 72 * 3600])
+                + [p for p in (sorted(carfax.PDF_DIR.glob("*.pdf")) + sorted(carfax.PDF_DIR.glob("vrp_order_page_*.html")) if carfax.PDF_DIR.is_dir() else [])
+                   if p.stat().st_mtime > time.time() - 72 * 3600])
     address = f"http://127.0.0.1:{args.port}"
     print(f"Одно окно: {address}   (папки: {', '.join(map(str, folders))}; остановить — Ctrl+C)")
     if not args.no_browser:
@@ -1767,12 +1823,17 @@ img.thumb{width:112px;height:84px;object-fit:cover;border-radius:6px;display:blo
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
 details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
 </style></head><body><main>
-<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <button type="button" class="btn sec jump" id="vrpbtn" onclick="$('vrpbox').hidden=!$('vrpbox').hidden" title="Логин и пароль vin-reports-pro.com для кнопки «📄 Carfax»: сайт просит войти — расширение входит само">🔑 Вход Carfax</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
 <label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
 <label>Включено<input id="inon" type="checkbox" style="min-width:auto;width:20px;height:20px"></label><button>Сохранить</button></form>
 <div id="instate" class="muted" style="margin-top:6px">—</div></div>
+<div id="vrpbox" class="card" hidden><b>Вход на vin-reports-pro.com (VinTrace)</b> — для кнопки «📄 Carfax»: если сайт попросит войти, расширение само впишет логин и пароль и продолжит заказ.
+<div class="muted">Хранится только на этом компьютере (~/LotAnalyzer/data/vrp.json): в чат, в GitHub и в «Отправку Claude» не уходит. Включена проверка кодом из приложения (2FA) — код при входе введёте сами, вход потом держится неделями.</div>
+<form onsubmit="event.preventDefault();saveVrp()" style="margin-top:8px"><label>Email<input id="vrpemail" type="email" autocomplete="off" placeholder="email для входа на vin-reports-pro"></label>
+<label>Пароль<input id="vrppass" type="password" autocomplete="new-password" placeholder="пусто — оставить прежний"></label><button>Сохранить</button></form>
+<div id="vrpstate" class="muted" style="margin-top:6px">—</div></div>
 <div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
 <div class="card"><form id="f" class="top" onsubmit="event.preventDefault();refresh();loadLinks()">
 <label>Машина<input id="q" class="w-q" placeholder="Honda Civic" autofocus></label>
@@ -2086,6 +2147,12 @@ async function loadNotesReport(){try{const all=await (await fetch('/api/notes_re
  e.innerHTML=lines.length?lines.map(esc).join('<br>'):'Заметки на аукционах: KBB с датой пишется сам в Notes на открытой странице CarMax (вид «Detailed») и в «Add Note» машин в результатах поиска Manheim';
  e.className='muted'+(['CarMax','Manheim'].some(s=>all[s]&&(all[s].failed||all[s].note))?' bad':'')}catch(e){}}
 async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json())}catch(e){}}
+function showVrp(d){$('vrpemail').value=$('vrpemail').value||d.email||'';$('vrpstate').textContent=d.saved?`Сохранено: ${d.email} · пароль сохранён`:'Не сохранено — при входе на сайт кнопка «📄 Carfax» попросит войти вас';
+ $('vrpbtn').textContent=d.saved?'🔑 Вход Carfax ✓':'🔑 Вход Carfax'}
+async function loadVrp(){try{showVrp(await (await fetch('/api/vrp')).json())}catch(e){}}
+async function saveVrp(){const r=await fetch('/api/vrp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('vrpemail').value,password:$('vrppass').value})});
+ $('vrppass').value='';showVrp(await r.json())}
+loadVrp();
 async function saveInbox(){const r=await fetch('/api/inbox',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:$('inrepo').value,token:$('intoken').value,enabled:$('inon').checked})});
  const d=await r.json();if(d.error){alert(d.error);return}$('intoken').value='';showInbox(d)}
 loadInbox();setInterval(loadInbox,15000);loadNotesReport();setInterval(loadNotesReport,10000);loadSold();setInterval(loadSold,120000);
