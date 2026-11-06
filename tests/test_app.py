@@ -1118,7 +1118,7 @@ class CarfaxTest(unittest.TestCase):
     def test_real_report_layout(self):
         from lot_analyzer import carfax
         s = carfax.parse(self.CLEAN)
-        self.assertEqual(carfax.line(s), "1 влад. · без ДТП · штаты: California · Carfax $11,480 · сервис 32")
+        self.assertEqual(carfax.line(s), "1 влад. · без ДТП · штаты: California · сервис 32")
         self.assertEqual(carfax.flags(s), [])
         self.assertEqual(s["last_miles"], 151503)
         bad = carfax.parse(self.CLEAN.replace("Lemon\nGuaranteed\nNo Problem", "Lemon\nGuaranteed\nProblem Reported")
@@ -1244,7 +1244,7 @@ class CarfaxPdfTest(unittest.TestCase):
     def test_pdf_layout(self):
         from lot_analyzer import carfax
         s = carfax.parse(self.PDF)
-        self.assertEqual(carfax.line(s), "1 влад. · 1 ДТП (лёгкое) · штаты: California · Carfax $12,180 · сервис 18")
+        self.assertEqual(carfax.line(s), "1 влад. · 1 ДТП (лёгкое) · штаты: California · сервис 18")
         self.assertEqual(carfax.flags(s), [])
 
     def test_pdf_text_without_columns(self):

@@ -224,7 +224,9 @@
   var grab = function (id, tries) {
     if (done[id] === 'ok') { return; }
     var link = [].slice.call(document.querySelectorAll('a[href*="/pdf"]')).filter(function (a) { return /\/api\/.*requests\//.test(a.getAttribute('href') || ''); })[0];
-    var url = link ? link.href : location.origin + '/api/requests/' + id + '/pdf';
+    var url = new URL(link ? link.href : location.origin + '/api/requests/' + id + '/pdf');
+    url.searchParams.set('prices', 'none');                  // PDF без цен Carfax (Retail / Wholesale): они не нужны
+    url = url.href;
     var vin = vinOnPage();
     done[id] = 'busy';
     fetch(url, { credentials: 'include' }).then(function (r) {

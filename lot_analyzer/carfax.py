@@ -162,8 +162,7 @@ def line(s: dict) -> str:
         parts.append("титул: " + ", ".join(s["title"]))
     if s.get("rollback"):
         parts.append("пробег под вопросом")
-    if s.get("value"):
-        parts.append(f"Carfax ${s['value']:,}")
+    # Цену Carfax (Retail / Wholesale) не показываем: на неё не ориентируемся — только сбивает (разбор её помнит в summary).
     if s.get("service") is not None:
         parts.append(f"сервис {s['service']}")
     return " · ".join(parts)
@@ -265,7 +264,7 @@ def attach(rows: list[dict]) -> None:
         vin = str(row.get("vin", "")).upper()
         rec = data.get(vin)
         if rec:
-            row["carfax"] = rec.get("line") or "отчёт прочитан"
+            row["carfax"] = (line(rec["summary"]) if rec.get("summary") else rec.get("line")) or "отчёт прочитан"   # строка — заново: без цены и у старых
             row["carfax_url"] = rec.get("url", "")
             row["carfax_flags"] = "; ".join(rec.get("flags") or [])
             row["carfax_pdf"] = f"/carfax/{vin}.pdf" if rec.get("pdf") and Path(rec["pdf"]).exists() else ""
