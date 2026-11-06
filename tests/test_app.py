@@ -1332,7 +1332,7 @@ class SavePageTest(unittest.TestCase):
 
 
 class ManualInspectTest(unittest.TestCase):
-    """«➕ В список на осмотр» в окне: машина в списке на осмотр всегда, с пометкой «вручную из программы»."""
+    """«На осмотр» в окне: машина в списке на осмотр всегда, с пометкой «вручную из программы»."""
 
     def test_manual(self) -> None:
         from unittest import mock

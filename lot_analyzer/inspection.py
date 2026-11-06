@@ -67,7 +67,7 @@ def why(row: dict[str, str]) -> str:
     if row.get("my_proxy_usd"):
         return "ставка"                                # ставка поставлена — в списке и на телефоне всегда, что бы ни было
     if row.get("inspect_manual") and not row.get("rejected"):
-        return "вручную из программы"                  # «➕ В список на осмотр» в окне — сами решили осмотреть
+        return "вручную из программы"                  # «На осмотр» в окне — сами решили осмотреть
     return _why_auto(row)
 
 
@@ -208,7 +208,7 @@ CarMax — машины из вашего избранного на сайте: 
             except (TypeError, ValueError):
                 miles = str(r.get("odometer_miles") or "")
             result = esc((r.get("auction_result") or "").split(" · ")[0])
-            # «➕ В список на осмотр» в окне — вы сами выбрали машину: смотреть в первую очередь и внимательнее.
+            # «На осмотр» в окне — вы сами выбрали машину: смотреть в первую очередь и внимательнее.
             manual = "<div class='manual'>✋ Добавлено вручную — смотреть внимательно</div>" if why(r) == "вручную из программы" else ""
             parts.append(
                 f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td class='lot'>{lot}<div class='place'>{esc(place)}</div></td>"

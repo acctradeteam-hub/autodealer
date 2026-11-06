@@ -50,10 +50,26 @@
   };
   var vinInput = function () {
     var list = [].slice.call(document.querySelectorAll('input, textarea')).filter(function (el) {
-      return !/^(hidden|password|email|checkbox|radio|submit|button|file|search)$/i.test(el.type || '') && visible(el) && !el.disabled && !el.readOnly;
+      return !/^(hidden|password|email|checkbox|radio|submit|button|file)$/i.test(el.type || '') && visible(el) && !el.disabled && !el.readOnly;
     });
-    return list.filter(function (el) { return /\bvins?\b|vin\s*(number|#|code)|vehicle identification/i.test(labelOf(el)); })[0] ||
-      list.filter(function (el) { return Number(el.maxLength) === 17; })[0] || (list.length === 1 ? list[0] : null);
+    var vinLike = function (el) { return /\bvins?\b|vin\s*(number|#|code)|vehicle identification/i.test(labelOf(el)); };
+    return list.filter(vinLike)[0] || list.filter(function (el) { return Number(el.maxLength) === 17; })[0] ||
+      (list.filter(function (el) { return el.type !== 'search'; }).length === 1 ? list.filter(function (el) { return el.type !== 'search'; })[0] : null);
+  };
+  /* Камера / сканер VIN — не трогаем: с компьютера сканировать нечем. VIN вписываем текстом. */
+  var SCAN = /scan|camera|photo|barcode|\bqr\b|📷|📸|сканир|камер|фото/i;
+  var isScan = function (b) {
+    var img = b.querySelector && b.querySelector('img[alt], svg[aria-label], [data-icon]');
+    return SCAN.test(textOf(b) + ' ' + (b.getAttribute('title') || '') + ' ' + (b.className && b.className.baseVal === undefined ? b.className : '') + ' ' +
+      (img ? (img.getAttribute('alt') || img.getAttribute('aria-label') || img.getAttribute('data-icon') || '') : ''));
+  };
+  /* Сайт сначала показывает камеру — переключиться на ввод VIN вручную («Enter VIN manually», «Type VIN» …). */
+  var manualToggle = function () {
+    return [].slice.call(document.querySelectorAll('button, a, [role=tab], [role=button], label, summary')).filter(function (b) {
+      var t = textOf(b);
+      return visible(b) && t && /(enter|type|input|manual|keyboard|key\s*in|write)[^.]{0,20}\bvin\b|\bvin\b[^.]{0,20}(manual|by hand|text)|enter manually|manual(ly)? (entry|input)|type it|ввести|вручную|набрать/i.test(t) &&
+        !/scan|camera|сканир|камер/i.test(t) && !BAD.test(t);
+    })[0] || null;
   };
   var setValue = function (el, v) {                         // React / Next: значение — через «родной» сеттер и событие input
     var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
@@ -72,14 +88,25 @@
       if (!r.checked && /carfax/i.test(labelOf(r) + ' ' + r.value)) { r.click(); }
     });
   };
+  var ORDER = /\b(get|run|order|pull|request|search|submit|check|look\s*up|go|generate|create)\b/i;
   var orderButton = function (input) {
     var btns = [].slice.call(document.querySelectorAll('button, input[type=submit], [role=button]')).filter(function (b) {
-      return visible(b) && !b.disabled && !BAD.test(textOf(b));
+      return visible(b) && !b.disabled && !BAD.test(textOf(b)) && !isScan(b);
     });
     var form = input && input.form;
     return btns.filter(function (b) { return /carfax/i.test(textOf(b)); })[0] ||
-      (form ? btns.filter(function (b) { return b.form === form && (b.type === 'submit' || b.tagName === 'BUTTON'); })[0] : null) ||
-      btns.filter(function (b) { return /\b(get|run|order|pull|request|search|submit|check|look\s*up|go|generate|create)\b/i.test(textOf(b)); })[0] || null;
+      (form ? btns.filter(function (b) { return b.form === form && b.type === 'submit' && textOf(b); })[0] : null) ||
+      btns.filter(function (b) { return ORDER.test(textOf(b)); })[0] || null;
+  };
+  /* Заказ: кнопка Carfax / «Run report» …; кнопки без подписи (значки) не жмём — отправляем саму форму, иначе Enter в поле. */
+  var submitOrder = function (input) {
+    var btn = orderButton(input);
+    if (btn) { btn.click(); return true; }
+    if (input.form && input.form.requestSubmit) { input.form.requestSubmit(); return true; }
+    ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+      input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    });
+    return true;
   };
   var confirmIfAsked = function (tries) {                     // «This will use 1 credit — Continue?» — подтвердить один раз
     var dialog = [].slice.call(document.querySelectorAll('[role=dialog], [role=alertdialog], .modal, dialog[open]')).filter(visible)[0];
@@ -144,17 +171,22 @@
     if (/\/pro\/report\//.test(location.pathname)) { return; }
     banner('Заказываю Carfax для <b>' + esc(job.vin) + '</b>…');
     var started = Date.now();
+    var toggled = false;
     var tick = function () {
       if (!job || job.step !== 'order') { return; }
       var input = vinInput();
+      if (!input && !toggled) {                         // сначала камера — переключиться на ввод текстом
+        var t = manualToggle();
+        if (t) { toggled = true; t.click(); setTimeout(tick, 900); return; }
+      }
       if (input) {
         setValue(input, job.vin);
         chooseCarfax();
         setTimeout(function () {
-          var btn = orderButton(input);
-          if (!btn) { manual(); return; }
+          // снимок страницы заказа (с вписанным VIN) — в программу (data/carfax): по нему заказ настраивается точно
+          if (!job.snap) { job.snap = 1; send({ type: 'vrp-page', html: document.documentElement.outerHTML.slice(0, 4000000) }); }
           job.step = 'wait'; job.clickedAt = Date.now(); save();
-          btn.click();
+          submitOrder(input);
           confirmIfAsked(10);
           status('ordered');
           banner('Carfax для <b>' + esc(job.vin) + '</b> заказан — жду отчёт…');
