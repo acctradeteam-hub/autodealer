@@ -1258,3 +1258,33 @@ class CarfaxPdfTest(unittest.TestCase):
         s = carfax.parse(text.replace("Title History", "Structural Damage\nCARFAX recommends that you have this vehicle inspected by a collision "
                                       "repair specialist.\nAirbag Deployment\nTitle History\nStructural damage reported\n"))
         self.assertTrue(s["structural"])
+
+
+class SaleDayButtonsTest(unittest.TestCase):
+    """Кнопки дней торгов: прошедших дней нет; пустой список из-за фильтров — окно говорит, сколько машин скрыто."""
+
+    def test_days_and_hidden(self) -> None:
+        import datetime as dt
+        from unittest import mock
+        day = lambda n: (dt.date.today() + dt.timedelta(days=n))
+        label = lambda d: f"{d.strftime('%b')} {d.day}, 9:00am PT"
+        base = {"auction": "CarMax", "place": "CarMax Murrieta", "group": "popular", "year": "2016", "make": "Honda", "model": "Civic"}
+        rows = [dict(base, vin="OLD1", sale_date=label(day(-4)), passed="торги прошли"),
+                dict(base, vin="NEW1", sale_date=label(day(3))),
+                dict(base, vin="NEW2", sale_date=label(day(4)))]
+        tmp = tempfile.mkdtemp()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([Path(tmp)], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        get = lambda q: json.loads(urllib.request.urlopen(base_url + "/api/rows?" + q).read())
+        try:
+            with mock.patch.object(app, "search_rows", side_effect=lambda *a, **k: [dict(r) for r in rows]):
+                d = get("hours=24")
+                self.assertEqual([k for k, _ in d["days"]], [day(3).strftime("%m-%d"), day(4).strftime("%m-%d")])   # прошедшего дня нет
+                self.assertEqual(d["version"], app.PROGRAM_VERSION)
+                stale = get("hours=24&day=" + day(-4).strftime("%m-%d"))          # день с прошлой недели в памяти окна — не сужает список
+                self.assertEqual(sorted(r["vin"] for r in stale["rows"]), ["NEW1", "NEW2"])
+                hidden = get("hours=24&bids=1")                                   # «Мои ставки» с прошлых торгов — новых машин не видно
+                self.assertEqual((len(hidden["rows"]), hidden["hidden_total"]), (0, 2))
+        finally:
+            server.shutdown()

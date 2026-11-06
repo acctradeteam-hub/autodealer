@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.12"
-PROGRAM_VERSION = "2026-11-04.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-06.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1262,22 +1262,28 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 returned_total = sum(1 for r in rows if r.get("returned") and (q.get("passed") == "1" or not r.get("passed")))
                 if q.get("returned") == "1":     # «↩ Вернулись после продажи»: уже продавались и снова на торгах
                     rows = [r for r in rows if r.get("returned")]
-                # День торгов: «сегодня», «завтра» … — выбранный день показывается целиком, и прошедшие лоты тоже (разбор).
+                # День торгов: кнопки — только торги сегодня и впереди («Аукцион понедельника», «Аукцион вторника»).
+                # Прошедшие дни кнопками не показываются: их машины — галочкой «показать прошедшие». Сегодняшние
+                # торги — до конца дня, вместе с уже прошедшими лотами (разбор вечером).
                 from .inspection import _day
                 day_counts: dict[str, int] = {}
-                recent = (dt.date.today() - dt.timedelta(days=2)).strftime("%m-%d")      # вчера и позавчера — для разбора
+                today_key = dt.date.today().strftime("%m-%d")
                 for r in rows:
                     key = _day(r.get("sale_date", ""))
-                    if key and (not r.get("passed") or q.get("day") == key or key >= recent):
+                    if key and (not r.get("passed") or key == today_key) and key >= today_key:
                         day_counts[key] = day_counts.get(key, 0) + 1
-                if q.get("day"):
+                if q.get("day") in day_counts:
                     rows = [r for r in rows if _day(r.get("sale_date", "")) == q["day"]]
                 passed_total = sum(1 for r in rows if r.get("passed"))
-                if q.get("passed") != "1" and not q.get("day"):       # прошедшие торги — скрыты (галочка «показать прошедшие»)
+                if q.get("passed") != "1" and q.get("day") not in day_counts:       # прошедшие торги — скрыты (галочка «показать прошедшие»)
                     rows = [r for r in rows if not r.get("passed")]
                 rows, places = by_place(rows, q)
                 total = len(rows)
                 all_rows = rows
+                hidden_total = 0          # список пуст, а машины на торгах есть — значит, всё спрятали фильтры окна
+                if not total and not vin_q:
+                    hidden_total = sum(1 for r in search_rows(pages, cache, load_costs(costs_path), "", max_bid=15000)
+                                       if not r.get("passed") and not r.get("rejected") and not r.get("favorite_removed"))
                 # Сортировка из окна: по средней цене покупки на аукционе (↑ / ↓); машины без неё — в конце.
                 # …или по прибыли при покупке по средней цене (сверху — самая большая), одним списком, без деления по вердиктам.
                 sorts = {"market": ("market_estimate_usd", 1), "market_desc": ("market_estimate_usd", -1),
@@ -1332,7 +1338,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                     for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "nophoto_total": nophoto_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
-                           "folders": [str(f) for f in folders],
+                           "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION,
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
                                              for k, v in results.stats(results.load_history()).items()}}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
@@ -1731,17 +1737,18 @@ function toggleModel(m){models=models.includes(m)?models.filter(x=>x!==m):models
 let saleDay='';try{saleDay=localStorage.getItem('la-day')||''}catch(e){}
 function setDay(v){saleDay=v;try{localStorage.setItem('la-day',v)}catch(e){}refresh()}
 const MON=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
-/* «Аукцион понедельника» / «Аукцион вторника» — без даты (неделя к неделе подпись та же; дата — в подсказке и в dayDate);
-   withDate — дописать дату (два понедельника в списке сразу: прошлый и следующий). Остальные дни — с датой. */
+/* Дни торгов — без дат: «Аукцион понедельника», «Аукцион вторника» (другой день — «Аукцион среды» …), плюс «сегодня» / «завтра».
+   Прошедших дней в окне нет. later — второй такой же день недели в списке (списки на две недели вперёд): «через неделю». */
+const WD_OF=['воскресенья','понедельника','вторника','среды','четверга','пятницы','субботы'];
 function dayDate(k){const [m,d]=k.split('-').map(Number);return `${d} ${MON[m-1]}`}
-function dayLabel(k,withDate){const [m,d]=k.split('-').map(Number);const t=new Date();const dt=new Date(t.getFullYear(),m-1,d);const diff=Math.round((dt-new Date(t.getFullYear(),t.getMonth(),t.getDate()))/864e5);
- const wd=dt.getDay(),rel=diff===0?' · сегодня':diff===1?' · завтра':diff===-1?' · вчера':'';
- if(wd===1||wd===2)return (wd===1?'Аукцион понедельника':'Аукцион вторника')+(withDate?' '+dayDate(k):'')+rel;
- return `${['вс','','','ср','чт','пт','сб'][wd]} ${dayDate(k)}`+rel}
+function dayWd(k){const [m,d]=k.split('-').map(Number);const t=new Date();let y=t.getFullYear();if(m<t.getMonth()+1-6)y++;return new Date(y,m-1,d)}
+function dayLabel(k,later){const dt=dayWd(k),t=new Date();const diff=Math.round((dt-new Date(t.getFullYear(),t.getMonth(),t.getDate()))/864e5);
+ const rel=diff===0?' · сегодня':diff===1?' · завтра':'';
+ return 'Аукцион '+WD_OF[dt.getDay()]+(later?' · через неделю':'')+rel}
 function drawDays(d){const e=$('days');if(!e)return;const list=d.days||[];
  if(saleDay&&!list.some(([k])=>k===saleDay)){saleDay='';try{localStorage.setItem('la-day','')}catch(x){}}
- e.innerHTML=list.length>1||saleDay?`<span class="muted">День торгов:</span> <button type="button" class="tab${saleDay?'':' on'}" onclick="setDay('')">Все дни</button>`+list.map(([k,n])=>{const twice=list.filter(([j])=>dayLabel(j)===dayLabel(k)).length>1;
-  return `<button type="button" class="tab${k===saleDay?' on':''}" onclick="setDay('${k}')" title="${dayDate(k)}: только машины торгов этого дня — вместе с уже прошедшими лотами (для разбора)">${dayLabel(k,twice)} <span class="cnt">${n}</span></button>`}).join(''):''}
+ e.innerHTML=list.length>1||saleDay?`<span class="muted">День торгов:</span> <button type="button" class="tab${saleDay?'':' on'}" onclick="setDay('')">Все дни</button>`+list.map(([k,n])=>{const later=list.some(([j])=>j<k&&dayWd(j).getDay()===dayWd(k).getDay());
+  return `<button type="button" class="tab${k===saleDay?' on':''}" onclick="setDay('${k}')" title="Только машины этих торгов">${dayLabel(k,later)} <span class="cnt">${n}</span></button>`}).join(''):''}
 let showRejected=false;try{showRejected=localStorage.getItem('la-rejected')==='1'}catch(e){}
 function setNoPhoto(on){if($('nophoto'))$('nophoto').checked=on;refresh()}
 function setRejected(on){showRejected=on;try{localStorage.setItem('la-rejected',on?'1':'')}catch(e){}refresh()}
@@ -1807,7 +1814,7 @@ let refreshBusy=false,refreshAgain=false;
 async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=true;const my=++refreshNo;
  try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
  finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
-function render(d){shown=d.rows;drawDays(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
+function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}shown=d.rows;drawDays(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
 {const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'));return}}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${placeList().includes(p)?' on':''}" onclick="togglePlace(this.dataset.p)" title="Нажмите ещё площадки — они добавятся в список; нажмите снова — уберётся" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
@@ -1835,7 +1842,7 @@ ${!x.kbb_private_party_usd&&x.kbb_estimate_usd?`<div class="muted" title="${esc(
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Потолок — предел: выше не ставить, прибыль при нём ≈ 10% от цены продажи (KBB). Ниже — ставка на 15% прибыли: с неё начинать"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}${x.calc_bid_goal_usd?`<div class="goal" title="Ставка, при которой прибыль ≈ ${esc(x.calc_goal_pct)} от цены продажи (KBB)">${esc(x.calc_goal_pct)}: ${money(x.calc_bid_goal_usd)}</div>`:''}</td>
 <td>${x.passed?`<span class="pill v-bad" title="Аукцион этой машины уже прошёл">⏱ ${esc(x.passed)}</span> ${passedPrice(x)}`:''}${x.today_done?`<span class="pill v-mid" title="Торги сегодня — машина в списке до конца дня, для разбора">⏱ торги сегодня прошли</span> ${passedPrice(x)}`:''}<span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
-<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.vin_search?`По VIN «${esc(d.vin_search)}» машины нет в сохранённых страницах за 30 дней — сохраните страницу аукциона с этой машиной закладкой.`:d.rows.length?'В этой вкладке машин нет.':'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;keepOrder=null;setTimeout(afterRender,0);
+<details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.vin_search?`По VIN «${esc(d.vin_search)}» машины нет в сохранённых страницах за 30 дней — сохраните страницу аукциона с этой машиной закладкой.`:d.rows.length?'В этой вкладке машин нет.':d.hidden_total?`Машин на торгах ${d.hidden_total}, но все скрыты фильтрами${activeFilters().length?': '+esc(activeFilters().join(' · ')):''}. <button type="button" class="tab on" onclick="resetFilters()">Показать все машины</button>`:'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;keepOrder=null;setTimeout(afterRender,0);
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;
 const inTab=d.rows.filter(x=>x.group===tab).length;
 $('stat').textContent=`Всего машин: ${n} · в этой вкладке: ${gt[tab]||0}`+((gt[tab]||0)>inTab?` (показаны первые ${inTab})`:'')+` · «МОЖНО» во всех: ${ok} · ${{market:'по средней цене покупки, от низкой к высокой',market_desc:'по средней цене покупки, от высокой к низкой',profit:'по прибыли, от большой к маленькой',profit_asc:'по прибыли, от маленькой к большой'}[sortBy]||'сверху — больше прибыль при покупке по средней цене'} · обновлено ${new Date().toLocaleTimeString()}`;
@@ -1932,11 +1939,15 @@ window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.sourc
 const AUTO_WHY={empty:'машин пока нет',short:'загрузилось не всё',login:'войдите на CarMax в Chrome',error:'ошибка'};
 function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML='';return}
  if(a.busy)setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),5000);
- const st=a.state,days=Object.keys(st).filter(k=>/^\d{4}-\d\d-\d\d$/.test(k)).sort().slice(-2);
+ const t0=new Date(),today=`${t0.getFullYear()}-${String(t0.getMonth()+1).padStart(2,'0')}-${String(t0.getDate()).padStart(2,'0')}`;
+ const st=a.state,days=Object.keys(st).filter(k=>/^\d{4}-\d\d-\d\d$/.test(k)&&k>=today).sort().slice(0,2);   // прошедшие торги — не показываем
+ const inWin=k=>((lastData&&lastData.days)||[]).reduce((n,[j,c])=>j===k.slice(5)?n+c:n,0);
  const parts=days.map(k=>{const d=st[k],pl=a.places[d.which]||[],got=pl.filter(p=>d.places[p]&&d.places[p].status==='ok');
   const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>d.places[p]&&d.places[p].status!=='ok').map(p=>`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}`);
-  return `<b title="${dayDate(k.slice(5))}">${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
- e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'ещё не собирал')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
+  const seen=inWin(k),lost=cars&&!seen?(activeFilters().length?` — <b>в окне их не видно: включены фильтры</b> <button type="button" class="tab" onclick="resetFilters()">показать все машины</button>`
+   :` — <b>⚠ в окне их нет:</b> программа не нашла эти файлы. Она смотрит папки: ${esc(((lastData&&lastData.folders)||[]).join('; '))}. Проверьте, куда Chrome сохраняет скачанное (Настройки → Загрузки)`):'';
+  return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(seen?` (в окне ${seen})`:'')+lost+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
+ e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'аукционы этой недели ещё не собраны')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
 function autoRun(w){window.postMessage({source:'lot-analyzer',type:'auto-run',which:w||''},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='auto-status')drawAuto(e.data.answer)});
 setInterval(()=>{if(hasExt())window.postMessage({source:'lot-analyzer',type:'auto-status'},'*')},20000);setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),2500);
