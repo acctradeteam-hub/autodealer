@@ -28,6 +28,11 @@
       } catch (err) { /* связь умерла */ }
       return;
     }
+    /* «📄 Carfax» у машины: заказ на vin-reports-pro.com (вкладка в фоне), отчёт — в программу. */
+    if (e.data.type === 'carfax-order') {
+      try { chrome.runtime.sendMessage({ type: 'carfax-order', vin: String(e.data.vin || '') }); } catch (err) { /* связь умерла */ }
+      return;
+    }
     if (e.data.type !== 'open-bg') { return; }
     /* Две живые связи в одной вкладке не должны открыть две вкладки: первая отмечает запрос как выполненный. */
     var id = String(e.data.id || '');

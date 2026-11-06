@@ -134,6 +134,35 @@ chrome.runtime.onInstalled.addListener(function () {
   });
 });
 
+/* Carfax: кнопка «📄 Carfax» в окне → вкладка vin-reports-pro.com/pro в фоне (VIN — в адресе, заказ делает vrp_order.js);
+   готовый PDF от vrp_order.js → программе. Ход заказа — в окно программы (/api/carfax_status). */
+function laCarfaxStatus(vin, status, note) {
+  fetch('http://127.0.0.1:8765/api/carfax_status', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
+    body: JSON.stringify({ vin: vin, status: status, note: note || '' }) }).catch(function () {});
+}
+chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
+  if (!msg) { return; }
+  if (msg.type === 'carfax-order' && /^[A-HJ-NPR-Z0-9]{17}$/.test(String(msg.vin || '').toUpperCase())) {
+    var vin = String(msg.vin).toUpperCase();
+    chrome.tabs.create({ url: 'https://www.vin-reports-pro.com/pro#la-carfax=' + vin, active: false }, function () { void chrome.runtime.lastError; });
+    laCarfaxStatus(vin, 'opened');
+    return;
+  }
+  if (msg.type === 'carfax-status' && msg.vin) { laCarfaxStatus(String(msg.vin).toUpperCase(), String(msg.status || ''), String(msg.note || '')); return; }
+  if (msg.type === 'carfax-show' && sender.tab) { chrome.tabs.update(sender.tab.id, { active: true }, function () { void chrome.runtime.lastError; }); return; }
+  if (msg.type === 'carfax-close' && sender.tab) { chrome.tabs.remove(sender.tab.id, function () { void chrome.runtime.lastError; }); return; }
+  if (msg.type === 'carfax-pdf') {
+    fetch('http://127.0.0.1:8765/api/carfax_pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
+      body: JSON.stringify({ vin: msg.vin || '', url: msg.url || '', pdf: msg.pdf || '' }) })
+      .then(function (r) { return r.json(); })
+      .then(function (got) {
+        if (msg.vin) { laCarfaxStatus(String(msg.vin).toUpperCase(), got && got.ok ? 'done' : 'error', got && got.ok ? '' : (got && got.error) || ''); }
+        reply(got);
+      }, function () { reply({ ok: false, error: 'программа не запущена (127.0.0.1:8765)' }); });
+    return true;                                  // ответ — асинхронно
+  }
+});
+
 /* Файлы закладки и расширения (страницы KBB, аукционов, отчёты KBB) — не в сами «Загрузки», а в их папку «Lot Analyzer»:
    «Загрузки» не засоряются, программа читает эту папку. Остальные скачивания не трогаем. */
 var LA_FILE = /^(CarMax|ACV|Manheim|ADESA|KBB|auction)_.+\.html?$|^auction_(all|results)_\d{4}-\d\d-\d\d_\d{4}\.(csv|xlsx)$/i;   // + итоги записи аукциона (Velocicast)

@@ -146,7 +146,9 @@ def assess_history(text: str, costs: dict) -> HistoryFlags:
     if accident_count >= 2:
         flags.discounts["2+ ДТП"] = rates.get("accidents_multiple", 0.15)
     elif accident_count == 1:
-        if re.search(r"minor|незначительн|мелк", text, re.I):
+        if re.search(r"accidents?\s+(severe|functional|disabling)\b", text, re.I):     # Carfax: «Damage Severity: Severe»
+            flags.discounts["сильное ДТП"] = rates.get("accident_severe", 0.15)
+        elif re.search(r"minor|незначительн|мелк", text, re.I):
             flags.discounts["мелкое ДТП"] = rates.get("accident_minor", 0.05)
         else:
             flags.discounts["ДТП"] = rates.get("accident", 0.10)

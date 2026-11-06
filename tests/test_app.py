@@ -1320,3 +1320,64 @@ class SavePageTest(unittest.TestCase):
         self.assertEqual(Path(got["path"]), folder / "CarMax_Search_2026-11-05_2105.html")
         self.assertEqual(Path(again["path"]).name, "CarMax_Search_2026-11-05_2105 (1).html")     # тот же час — не затирает
         self.assertEqual(Path(got["path"]).read_text(encoding="utf-8"), html)
+
+
+class ManualInspectTest(unittest.TestCase):
+    """«➕ В список на осмотр» в окне: машина в списке на осмотр всегда, с пометкой «вручную из программы»."""
+
+    def test_manual(self) -> None:
+        from unittest import mock
+        from lot_analyzer import inspection
+        tmp = Path(tempfile.mkdtemp())
+        with mock.patch.object(app, "MANUAL_PATH", tmp / "inspect_manual.json"), mock.patch.object(app, "REJECTED_PATH", tmp / "rejected.json"):
+            app.set_rejected("1HGCR2F38DA104530", True)
+            self.assertTrue(app.set_manual("1hgcr2f38da104530", True, "2013 Honda Accord"))
+            self.assertIn("1HGCR2F38DA104530", app.load_manual())
+            self.assertNotIn("1HGCR2F38DA104530", app.load_rejected())          # добавили после отбоя — отбой снят
+            app.set_manual("1HGCR2F38DA104530", False)
+            self.assertEqual(app.load_manual(), {})
+        car = {"auction": "CarMax", "vin": "V1", "year": "2013", "make": "Honda", "model": "Accord", "lot_number": "A/3",
+               "favorite_known": "1", "favorite": "", "calc_verdict": "ПРОПУСТИТЬ: повреждение рамы / кузова"}
+        self.assertEqual(inspection.why(car), "")                                    # не в избранном, стоп-фактор — не в списке
+        self.assertEqual(inspection.why(dict(car, inspect_manual="2026-11-06")), "вручную из программы")
+        self.assertEqual(inspection.why(dict(car, inspect_manual="2026-11-06", rejected="2026-11-07")), "")   # отбой позже — нет
+        self.assertEqual(inspection.why(dict(car, my_proxy_usd="5000")), "ставка")
+        page = inspection.render_html([dict(car, inspect_manual="2026-11-06", sale_date="Nov 9, 9:00am PT", location="Murrieta, CA")])
+        self.assertIn("<th>Добавлено</th>", page)
+        self.assertIn("<td class='manual'>вручную из программы</td>", page)
+
+
+class CarfaxPdfImportTest(unittest.TestCase):
+    """Кнопка «📄 Carfax»: PDF от расширения — в data/carfax/<VIN>.pdf и в расчёт (ДТП — скидка, рама — стоп-фактор)."""
+
+    def test_history_text_and_calc(self) -> None:
+        from lot_analyzer import carfax
+        from lot_analyzer.bid import assess_history
+        costs = load_costs(COSTS)
+        minor = {"owners": 1, "accidents": 1, "severity": ["лёгкое"], "usage": ["личная"]}
+        self.assertEqual(carfax.history_text(minor), "Carfax: 1 owners; 1 accidents minor")
+        self.assertEqual(assess_history(carfax.history_text(minor), costs).discounts, {"мелкое ДТП": 0.05})
+        severe = {"owners": 4, "accidents": 1, "severity": ["сильное"], "usage": ["аренда"]}
+        self.assertEqual(assess_history(carfax.history_text(severe), costs).discounts, {"сильное ДТП": 0.15, "4 владельцев": 0.03, "аренда/флит": 0.03})
+        frame = assess_history(carfax.history_text({"accidents": 2, "structural": True, "title": ["salvage"]}), costs)
+        self.assertIn("повреждение рамы / кузова", frame.skip)
+        self.assertIn("брендированный титул (salvage/rebuilt/lemon…)", frame.skip)
+        self.assertEqual(carfax.history_text({"owners": 1, "accidents": 0}), "Carfax: 1 owners")          # «без ДТП» — ничего не скидываем
+
+    def test_save_pdf(self) -> None:
+        from unittest import mock
+        from lot_analyzer import carfax
+        tmp = Path(tempfile.mkdtemp())
+        text = CarfaxPdfTest.PDF
+        with mock.patch.object(carfax, "PATH", tmp / "carfax.json"), mock.patch.object(carfax, "PDF_DIR", tmp / "carfax"), \
+                mock.patch.object(carfax, "pdf_text", return_value=text):
+            self.assertIsNone(carfax.save_pdf("1HGCV1F14JA234675", "", b"<html>not a pdf</html>" * 200))
+            rec = carfax.save_pdf("", "https://www.vin-reports-pro.com/pro/report/x", b"%PDF-1.7" + b"0" * 3000)   # VIN — из отчёта
+            self.assertEqual(rec["source"], "pdf")
+            self.assertTrue((tmp / "carfax" / "1HGCV1F14JA234675.pdf").exists())
+            later = carfax.save("1HGCV1F14JA234675", "u", text + " Owner 2 ")       # текст страницы следом — PDF не затирает
+            self.assertEqual(later["source"], "pdf")
+            row = {"vin": "1HGCV1F14JA234675", "carfax_autocheck": ""}
+            carfax.attach([row])
+        self.assertEqual(row["carfax_pdf"], "/carfax/1HGCV1F14JA234675.pdf")
+        self.assertEqual(row["carfax_autocheck"], "Carfax: 1 owners; 1 accidents minor")

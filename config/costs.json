@@ -149,6 +149,7 @@
   "history_discounts": {
     "accident_minor": 0.05,
     "accident": 0.10,
+    "accident_severe": 0.15,
     "accidents_multiple": 0.15,
     "owners_4_plus": 0.03,
     "rental_fleet": 0.03,

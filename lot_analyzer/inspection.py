@@ -59,8 +59,31 @@ def _groups(rows: list[dict[str, str]]) -> dict[int, tuple[str, str]]:
 
 
 def wanted(row: dict[str, str]) -> bool:
+    return bool(why(row))
+
+
+def why(row: dict[str, str]) -> str:
+    """Почему машина в списке на осмотр (графа «Добавлено»); пусто — её в списке нет."""
     if row.get("my_proxy_usd"):
-        return True                                    # ставка поставлена — в списке и на телефоне всегда, что бы ни было
+        return "ставка"                                # ставка поставлена — в списке и на телефоне всегда, что бы ни было
+    if row.get("inspect_manual") and not row.get("rejected"):
+        return "вручную из программы"                  # «➕ В список на осмотр» в окне — сами решили осмотреть
+    return _why_auto(row)
+
+
+def _why_auto(row: dict[str, str]) -> str:
+    if not _wanted_auto(row):
+        return ""
+    if row.get("kbb_private_party_usd") and not row.get("kbb_from_window_field"):
+        return "просчитана (KBB)"
+    if row.get("no_photos") == "да" and row.get("popular"):
+        return "без фото, популярная"
+    if row.get("auction") == "CarMax" and row.get("favorite_known"):
+        return "избранное CarMax"
+    return "отобрана программой"
+
+
+def _wanted_auto(row: dict[str, str]) -> bool:
     if row.get("favorite_removed"):
         return False                                   # сняли звёздочку — сами решили не смотреть
     if row.get("rejected"):
@@ -142,7 +165,7 @@ main{{max-width:1200px;margin:0 auto;padding:16px}}h1{{font-size:20px;margin:0 0
 .muted{{color:var(--muted)}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}}
 td.num{{text-align:right;white-space:nowrap}}td.box{{width:70px}}button{{font:inherit;padding:6px 12px}}
 td.vin{{max-width:260px}}td.vin .note{{font-size:12px;color:var(--muted)}}td.vin .note.own{{color:var(--fg)}}th.notes,td.notes{{width:22%;min-width:180px}}
-.nopics{{font-weight:700;letter-spacing:.5px;margin-top:2px}}
+.nopics{{font-weight:700;letter-spacing:.5px;margin-top:2px}}td.manual{{font-weight:700}}
 td[contenteditable]:hover{{outline:1px dashed var(--muted)}}td[contenteditable]:focus{{outline:2px solid #2f6fd6;background:rgba(47,111,214,.06)}}
 td.edited{{background:rgba(230,180,40,.14)}}td.del{{width:28px;text-align:center}}td.del button{{padding:1px 7px;cursor:pointer}}
 @media print{{td.edited{{background:none}}}}
@@ -157,7 +180,7 @@ CarMax — машины из вашего избранного на сайте: 
     if not items:
         parts.append('<p class="muted">Нет лотов, требующих личного осмотра.</p>')
     for group, group_rows in groups.items():
-        parts.append(f"<h2>{esc(group)}</h2><table><thead><tr><th>Лот</th><th>Машина</th><th>Пробег</th><th>VIN и заметки</th>"
+        parts.append(f"<h2>{esc(group)}</h2><table><thead><tr><th>Лот</th><th>Машина</th><th>Добавлено</th><th>Пробег</th><th>VIN и заметки</th>"
                      "<th>KBB</th><th>Моя оценка</th><th>Средняя цена покупки на аукционе</th><th class='notes'>Заметки</th>"
                      "<th>Моя ставка</th><th>Результат торгов</th><th class='noprint'></th></tr></thead><tbody>")
         for r in group_rows:
@@ -171,8 +194,10 @@ CarMax — машины из вашего избранного на сайте: 
             if r.get("calc_max_bid_if_defect_usd"):
                 mine += f"<div class='muted'>с дефектом {_money(r['calc_max_bid_if_defect_usd'])}</div>"
             result = esc((r.get("auction_result") or "").split(" · ")[0])
+            added = why(r)                                   # графа «Добавлено»: «вручную из программы», «ставка», «избранное CarMax» …
+            added_cls = " class='manual'" if added == "вручную из программы" else ""
             parts.append(
-                f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td>{lot}</td><td>{esc(car)}{no_pics}</td>"
+                f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td>{lot}</td><td>{esc(car)}{no_pics}</td><td{added_cls}>{esc(added)}</td>"
                 f"<td class='num'>{esc(r.get('odometer_miles'))}</td><td class='vin'><b>{esc(r.get('vin'))}</b>{_notes_html(r)}</td>"
                 f"<td class='num'>{kbb}</td><td class='num'><b>{mine}</b></td><td class='num'>{_money(r.get('market_estimate_usd'))}</td>"
                 f"<td class='notes'></td><td class='num'>{_money(r.get('my_proxy_usd')) if r.get('my_proxy_usd') else ''}</td><td>{result}</td>"
@@ -184,7 +209,7 @@ CarMax — машины из вашего избранного на сайте: 
 
 # Правки списка в браузере: ключ — заголовок списка; хранится {removed: [id], cells: {id: {номер ячейки: html}}, title}.
 _SCRIPT = r"""
-const KEY='la-inspection2:'+document.title;   // 2 — новые графы: старые правки ячеек сюда не переносим
+const KEY='la-inspection3:'+document.title;   // 3 — графа «Добавлено»: старые правки ячеек сюда не переносим
 let state={removed:[],cells:{},title:''};
 try{state=Object.assign(state,JSON.parse(localStorage.getItem(KEY)||'{}'))}catch(e){}
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}};

@@ -1,8 +1,13 @@
 """Carfax: отчёт, открытый на vin-reports-pro.com (или carfax.com), — коротко к машине в окне, в списке на осмотр и на телефоне.
 
-Расширение присылает текст отчёта и его адрес (POST /api/carfax); здесь — разбор по обычным фразам Carfax
-(«CARFAX 1-Owner», «Accident reported», «Damage Severity: Moderate», «Point of Impact: Front», «Owned in: Ohio»,
-«Personal vehicle», «Salvage title» …). data/carfax.json: VIN → {url, at, summary}.
+Два пути в программу:
+— кнопка «📄 Carfax» в окне: расширение само заказывает отчёт на vin-reports-pro.com/pro и забирает готовый PDF
+  (POST /api/carfax_pdf) — PDF хранится в data/carfax/<VIN>.pdf, оттуда же — в закрытый репозиторий (Отправка Claude);
+— отчёт, открытый на сайте вручную: расширение присылает его текст (POST /api/carfax).
+Разбор — по обычным фразам Carfax («CARFAX 1-Owner», «Accident reported», «Damage Severity: Moderate», «Point of
+Impact: Front», «Owned in: Ohio», «Personal vehicle», «Salvage title» …). data/carfax.json: VIN → {url, at, summary}.
+Найденное идёт и в расчёт (history_text): ДТП, 4+ владельца, аренда — скидка к цене продажи (history_discounts),
+рама, подушки, брендированный титул, скрутка — стоп-факторы, как у замечаний аукциона.
 """
 
 from __future__ import annotations
@@ -10,10 +15,13 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 
 from .paths import DATA_DIR
 
 PATH = DATA_DIR / "carfax.json"
+PDF_DIR = DATA_DIR / "carfax"
+VIN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 
 STATES = ("Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia",
           "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts",
@@ -179,23 +187,88 @@ def flags(s: dict) -> list[str]:
     return out
 
 
-def save(vin: str, url: str, text: str) -> dict | None:
+def history_text(s: dict) -> str:
+    """Находки Carfax словами, которые понимает расчёт (bid.assess_history): только то, что есть, — без «No …»."""
+    parts = []
+    if s.get("owners"):
+        parts.append(f"{s['owners']} owners")
+    if s.get("accidents"):
+        sev = s.get("severity") or []
+        word = "severe" if "сильное" in sev else "moderate" if "среднее" in sev else "minor" if "лёгкое" in sev else ""
+        parts.append(f"{s['accidents']} accidents" + (f" {word}" if word else ""))
+    if s.get("structural"):
+        parts.append("structural damage")
+    if s.get("airbags"):
+        parts.append("airbags deployed")
+    if s.get("total_loss"):
+        parts.append("total loss")
+    for t in s.get("title") or []:
+        if t == "total loss":
+            continue
+        parts.append("odometer problem" if t.startswith("пробег") or t in ("not actual mileage", "exceeds mechanical limits")
+                     else ("salvage/rebuilt brand" if t.startswith("проблема") else f"{t} title"))
+    if s.get("rollback"):
+        parts.append("odometer rollback")
+    parts += [{"аренда": "rental", "флит": "fleet", "такси": "taxi", "полиция": "police"}[u] for u in s.get("usage") or []
+              if u in ("аренда", "флит", "такси", "полиция")]
+    return "Carfax: " + "; ".join(parts) if parts else ""
+
+
+def save(vin: str, url: str, text: str, source: str = "text", pdf: str = "") -> dict | None:
     vin = str(vin or "").strip().upper()
-    if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) or len(text or "") < 500:
+    if not VIN_RE.fullmatch(vin) or len(text or "") < 500:
         return None
-    summary = parse(text)
     data = load()
-    data[vin] = {"url": str(url or "")[:1000], "at": time.time(), "summary": summary, "line": line(summary), "flags": flags(summary)}
+    old = data.get(vin) or {}
+    # Отчёт из PDF (кнопка «📄 Carfax») точнее текста страницы: текст того же отчёта, пришедший следом, его не затирает.
+    if old.get("source") == "pdf" and source != "pdf" and time.time() - float(old.get("at") or 0) < 7 * 86400:
+        return old
+    summary = parse(text)
+    data[vin] = {"url": str(url or "")[:1000], "at": time.time(), "summary": summary, "line": line(summary), "flags": flags(summary),
+                 "source": source, "pdf": pdf or (old.get("pdf", "") if source != "pdf" else "")}
     PATH.parent.mkdir(parents=True, exist_ok=True)
     PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
     return data[vin]
 
 
+def pdf_text(data: bytes) -> str:
+    """Текст PDF-отчёта (pypdf — из requirements.txt)."""
+    import io
+    try:
+        from pypdf import PdfReader
+    except ImportError as err:
+        raise RuntimeError("для PDF нужен pypdf: python3 -m pip install pypdf") from err
+    reader = PdfReader(io.BytesIO(data))
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+def save_pdf(vin: str, url: str, data: bytes) -> dict | None:
+    """PDF Carfax (кнопка «📄 Carfax»): файл — в data/carfax/<VIN>.pdf, разбор — как у текста отчёта."""
+    if not data.startswith(b"%PDF") or len(data) < 2000:
+        return None
+    text = pdf_text(data)
+    vin = str(vin or "").strip().upper()
+    if not VIN_RE.fullmatch(vin):                      # VIN из самого отчёта: чаще всего встречающийся
+        found = [v for v in VIN_RE.findall(text.upper()) if re.search(r"\d", v) and re.search(r"[A-Z]", v)]
+        vin = max(set(found), key=found.count) if found else ""
+    if not VIN_RE.fullmatch(vin) or len(text) < 500:
+        return None
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
+    path = PDF_DIR / f"{vin}.pdf"
+    path.write_bytes(data)
+    return save(vin, url, text, source="pdf", pdf=str(path))
+
+
 def attach(rows: list[dict]) -> None:
     data = load()
     for row in rows:
-        rec = data.get(str(row.get("vin", "")).upper())
+        vin = str(row.get("vin", "")).upper()
+        rec = data.get(vin)
         if rec:
             row["carfax"] = rec.get("line") or "отчёт прочитан"
             row["carfax_url"] = rec.get("url", "")
             row["carfax_flags"] = "; ".join(rec.get("flags") or [])
+            row["carfax_pdf"] = f"/carfax/{vin}.pdf" if rec.get("pdf") and Path(rec["pdf"]).exists() else ""
+            found = history_text(rec.get("summary") or {})
+            if found and found not in row.get("carfax_autocheck", ""):          # в расчёт: скидки и стоп-факторы истории
+                row["carfax_autocheck"] = " | ".join(x for x in (row.get("carfax_autocheck", ""), found) if x)
