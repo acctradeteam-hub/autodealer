@@ -172,5 +172,12 @@ def attach(rows: list[dict]) -> None:
         parts = [x for x in ((text_of(note) if note else ""), (own or {}).get("text", "")) if x]
         if parts:
             row["voice_notes"] = " · ".join(parts)[:600]
+        if note:                                     # «Моя оценка» в окне: звёзды и решение с телефона
+            try:
+                rating = int(note.get("rating") or 0)
+            except (TypeError, ValueError):
+                rating = 0
+            row["phone_rating"] = str(rating) if 1 <= rating <= 5 else ""
+            row["phone_take"] = next((t for t in ("Беру", "Не беру") if t in (note.get("tags") or [])), "")
         if own:
             row["window_note"] = own.get("text", "")

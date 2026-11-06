@@ -1452,3 +1452,19 @@ class ProfitAtBidTest(unittest.TestCase):
         apply_to_rows([poor], costs, estimator=None)
         self.assertTrue(poor["calc_verdict"].startswith("НЕВЫГОДНО"), poor["calc_verdict"])
         self.assertEqual(poor["profit_at_my_bid_usd"], f"{2000 - 1500 - auction_fee(1500, 'CarMax', costs) - 300 - 40:.0f}")
+
+
+class PhoneRatingInWindowTest(unittest.TestCase):
+    """«Моя оценка» в окне (вместо CR): звёзды и «Беру» / «Не беру» с телефона."""
+
+    def test_rating_fields(self) -> None:
+        from unittest import mock
+        from lot_analyzer import voice
+        row = {"vin": "V1"}
+        with mock.patch.object(voice, "load", return_value={"V1": {"tags": ["Беру"], "rating": 4, "text": "ок"}}), \
+                mock.patch.object(voice, "load_window", return_value={}):
+            voice.attach([row])
+        self.assertEqual((row["phone_rating"], row["phone_take"]), ("4", "Беру"))
+        page = app.PAGE
+        self.assertIn(">Моя оценка</th>", page)
+        self.assertNotIn("<th>CR</th>", page)
