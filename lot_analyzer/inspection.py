@@ -163,15 +163,19 @@ def render_html(rows: list[dict[str, str]], title: str = "Список на ос
 body{{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}}
 main{{max-width:1200px;margin:0 auto;padding:16px}}h1{{font-size:20px;margin:0 0 4px}}h2{{font-size:15px;margin:18px 0 6px}}
 .muted{{color:var(--muted)}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}}
-td.num{{text-align:right;white-space:nowrap}}td.box{{width:70px}}button{{font:inherit;padding:6px 12px}}
-td.vin{{max-width:260px}}td.vin .note{{font-size:12px;color:var(--muted)}}td.vin .note.own{{color:var(--fg)}}th.notes,td.notes{{width:22%;min-width:180px}}
+td.num{{text-align:right}}td.box{{width:70px}}button{{font:inherit;padding:6px 12px}}
+table{{table-layout:fixed}}td,th{{overflow-wrap:break-word}}th{{hyphens:auto}}td.lot .place{{white-space:nowrap}}td.added{{font-size:12px}}td.num{{white-space:nowrap}}
+td.car .vin{{font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-top:2px;overflow-wrap:anywhere}}td.car .miles{{margin-top:1.3em}}
+@page{{size:letter;margin:8mm}}
+@media print{{body{{font-size:11px}}main{{padding:0}}th,td{{padding:3px 4px}}td.info .note,td.car .vin,td.lot .place,td.added{{font-size:10px}}th{{font-size:10px}}}}
+td.info .note{{font-size:12px;color:var(--muted)}}td.info .note.own{{color:var(--fg)}}td.lot .place{{font-size:12px;color:var(--muted)}}
 .nopics{{font-weight:700;letter-spacing:.5px;margin-top:2px}}td.manual{{font-weight:700}}
 td[contenteditable]:hover{{outline:1px dashed var(--muted)}}td[contenteditable]:focus{{outline:2px solid #2f6fd6;background:rgba(47,111,214,.06)}}
 td.edited{{background:rgba(230,180,40,.14)}}td.del{{width:28px;text-align:center}}td.del button{{padding:1px 7px;cursor:pointer}}
 @media print{{td.edited{{background:none}}}}
 </style></head><body><main>
 <h1 contenteditable="true">{esc(title)}</h1><div class="muted">Лотов: <span id="count">{len(items)}</span>. NO PICTURES — фото нет: осмотреть обязательно. «Major … Defect» у CarMax часто не подтверждается — на месте: заводится ли, как едет, как переключается,
-нет ли стуков и ошибок. Ставка: до «без дефекта», если дефекта нет; до «с дефектом» — если подтвердился.
+нет ли стуков и ошибок.
 CarMax — машины из вашего избранного на сайте: сняли звёздочку — машина уходит из этого списка.</div>
 <p class="noprint"><button onclick="print()">Печать</button>
 <button id="restore" onclick="restoreAll()" hidden>Вернуть всё</button>
@@ -180,8 +184,13 @@ CarMax — машины из вашего избранного на сайте: 
     if not items:
         parts.append('<p class="muted">Нет лотов, требующих личного осмотра.</p>')
     for group, group_rows in groups.items():
-        parts.append(f"<h2>{esc(group)}</h2><table><thead><tr><th>Лот</th><th>Машина</th><th>Добавлено</th><th>Пробег</th><th>VIN и заметки</th>"
-                     "<th>KBB</th><th>Моя оценка</th><th>Средняя цена покупки на аукционе</th><th class='notes'>Заметки</th>"
+        # Графы: лот и площадка · машина (год, марка, модель, VIN, через строку — пробег) · откуда в списке · замечания
+        # и история · KBB · средняя цена покупки · ваши заметки · ставка · итог. Ширины — под печать на одну страницу.
+        parts.append(f"<h2>{esc(group)}</h2><table><colgroup><col style='width:9%'><col style='width:16%'><col style='width:9%'>"
+                     "<col style='width:20%'><col style='width:8%'><col style='width:7%'><col style='width:15%'><col style='width:8%'>"
+                     "<col style='width:8%'><col class='noprint' style='width:30px'></colgroup>"
+                     "<thead><tr><th>Лот</th><th>Машина</th><th>Добавлено</th><th>Замечания и история</th>"
+                     "<th>KBB</th><th>Средняя цена покупки на аукционе</th><th class='notes'>Заметки</th>"
                      "<th>Моя ставка</th><th>Результат торгов</th><th class='noprint'></th></tr></thead><tbody>")
         for r in group_rows:
             kbb = _money(r.get("kbb_private_party_usd")) if r.get("kbb_private_party_usd") else (
@@ -189,17 +198,19 @@ CarMax — машины из вашего избранного на сайте: 
             car = " ".join(x for x in (r.get("year"), r.get("make"), r.get("model"), r.get("trim")) if x)
             no_pics = "<div class='nopics'>NO PICTURES</div>" if r.get("no_photos") == "да" else ""
             lot = f'<a href="{esc(r["lot_url"])}">{esc(r.get("lot_number") or "лот")}</a>' if r.get("lot_url") else esc(r.get("lot_number"))
-            # Моя оценка — потолок программы; у «Major … Defect» — и потолок, если дефект подтвердится.
-            mine = _money(r.get("calc_max_bid_usd"))
-            if r.get("calc_max_bid_if_defect_usd"):
-                mine += f"<div class='muted'>с дефектом {_money(r['calc_max_bid_if_defect_usd'])}</div>"
+            place = re.sub(r"^CarMax\s+", "", keys[id(r)][0] or "")      # площадка — под номером лота
+            try:
+                miles = f"{int(float(str(r.get('odometer_miles')).replace(',', ''))):,} mi"
+            except (TypeError, ValueError):
+                miles = str(r.get("odometer_miles") or "")
             result = esc((r.get("auction_result") or "").split(" · ")[0])
             added = why(r)                                   # графа «Добавлено»: «вручную из программы», «ставка», «избранное CarMax» …
-            added_cls = " class='manual'" if added == "вручную из программы" else ""
+            added_cls = " class='added manual'" if added == "вручную из программы" else " class='added'"
             parts.append(
-                f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td>{lot}</td><td>{esc(car)}{no_pics}</td><td{added_cls}>{esc(added)}</td>"
-                f"<td class='num'>{esc(r.get('odometer_miles'))}</td><td class='vin'><b>{esc(r.get('vin'))}</b>{_notes_html(r)}</td>"
-                f"<td class='num'>{kbb}</td><td class='num'><b>{mine}</b></td><td class='num'>{_money(r.get('market_estimate_usd'))}</td>"
+                f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td class='lot'>{lot}<div class='place'>{esc(place)}</div></td>"
+                f"<td class='car'><b>{esc(car)}</b>{no_pics}<div class='vin'>{esc(r.get('vin'))}</div><div class='miles'>{esc(miles)}</div></td>"
+                f"<td{added_cls}>{esc(added)}</td><td class='info'>{_notes_html(r)}</td>"
+                f"<td class='num'>{kbb}</td><td class='num'>{_money(r.get('market_estimate_usd'))}</td>"
                 f"<td class='notes'></td><td class='num'>{_money(r.get('my_proxy_usd')) if r.get('my_proxy_usd') else ''}</td><td>{result}</td>"
                 "<td class='del noprint'><button type='button' title='Убрать из списка'>✕</button></td></tr>")
         parts.append("</tbody></table>")
@@ -209,7 +220,7 @@ CarMax — машины из вашего избранного на сайте: 
 
 # Правки списка в браузере: ключ — заголовок списка; хранится {removed: [id], cells: {id: {номер ячейки: html}}, title}.
 _SCRIPT = r"""
-const KEY='la-inspection3:'+document.title;   // 3 — графа «Добавлено»: старые правки ячеек сюда не переносим
+const KEY='la-inspection4:'+document.title;   // 4 — графы переставлены (VIN и пробег — в «Машине», без «Моей оценки»): старые правки не переносим
 let state={removed:[],cells:{},title:''};
 try{state=Object.assign(state,JSON.parse(localStorage.getItem(KEY)||'{}'))}catch(e){}
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}};

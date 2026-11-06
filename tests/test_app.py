@@ -125,6 +125,7 @@ class TestOneWindow(unittest.TestCase):
 
     def test_inspection_page(self) -> None:
         from lot_analyzer.inspection import inspection_rows, render_html
+        import re
 
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "")
         picked = inspection_rows(rows)
@@ -133,7 +134,10 @@ class TestOneWindow(unittest.TestCase):
         self.assertTrue(all((r.get("kbb_private_party_usd") and not r.get("kbb_from_window_field")) or r.get("my_proxy_usd")
                             or (r["inspect"] and not r["calc_verdict"].startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО"))) for r in picked))
         page = render_html(rows)
-        self.assertIn("Моя оценка", page)
+        self.assertNotIn("Моя оценка", page)                         # графу убрали
+        heads = re.findall(r"<th(?:\s[^>]*)?>(.*?)</th>", page.split("</thead>")[0])
+        self.assertEqual(heads, ["Лот", "Машина", "Добавлено", "Замечания и история", "KBB", "Средняя цена покупки на аукционе",
+                                 "Заметки", "Моя ставка", "Результат торгов", ""])
         self.assertNotIn("Почему в списке", page)
         self.assertIn("A/70", page)                                  # Civic с «Major transmission defect»
         self.assertIn("Убрать из списка", page)                      # перед печатью позиции можно убрать
@@ -1344,7 +1348,7 @@ class ManualInspectTest(unittest.TestCase):
         self.assertEqual(inspection.why(dict(car, my_proxy_usd="5000")), "ставка")
         page = inspection.render_html([dict(car, inspect_manual="2026-11-06", sale_date="Nov 9, 9:00am PT", location="Murrieta, CA")])
         self.assertIn("<th>Добавлено</th>", page)
-        self.assertIn("<td class='manual'>вручную из программы</td>", page)
+        self.assertIn("<td class='added manual'>вручную из программы</td>", page)
 
 
 class CarfaxPdfImportTest(unittest.TestCase):
