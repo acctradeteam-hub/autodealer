@@ -3,7 +3,7 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const money = v => v ? "$" + Number(v).toLocaleString("en-US") : "—";
-const TAGS = [["Дефекта нет", "good"], ["Дефект есть", "badc"], ["Беру", "good"], ["Не беру", "badc"], ["Кузов / краска", "badc"], ["Шины", "badc"], ["Салон", "badc"]];
+const TAGS = [["Беру", "good"], ["Не беру", "badc"]];      // только решение; остальное — голосом и текстом
 const BRANCH = "main", LIST = "voice/list.json", NOTES = "voice/notes.json";
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
@@ -72,7 +72,10 @@ async function pullNotes() {
   return f.sha;
 }
 
-const hasNote = vin => { const n = notes[vin]; return !!(n && ((n.text || "").trim() || (n.tags || []).length)); };
+const hasNote = vin => { const n = notes[vin]; return !!(n && ((n.text || "").trim() || (n.tags || []).length || n.rating)); };
+/* Заметки программы без строк KBB (он и так крупно) и MP (ставка) — в поле нужно только важное. */
+const progNotes = c => (c.notes || []).filter(x => !/^\s*(KBB|MP)\b/i.test(x));
+const shortLot = lot => String(lot || "").replace(/\s*\/\s*/, "");          // «A/5» → «A5»
 function stateLine() {
   const done = cars.filter(c => hasNote(c.vin)).length;
   $("liststate").innerHTML = cars.length ? `<b>${cars.length}</b> машин · с заметкой <b>${done}</b>` + (made ? ` · список от ${esc(made)}` : "") : "Список пуст.";
@@ -86,20 +89,20 @@ function render() {
   const shown = cars.filter(c => (!place || c.place === place) && (!q || [c.lot, c.car, (c.vin || "").slice(-6)].join(" ").toLowerCase().includes(q)));
   $("empty").hidden = cars.length > 0;
   stateLine();
+  /* Полоса справа: короткие номера лотов в том же порядке, что и карточки. */
+  $("lots").innerHTML = shown.map(c => { const n = notes[c.vin] || {};
+    return `<button type="button" data-go="${esc(c.vin)}" class="${[hasNote(c.vin) ? "done" : "", (n.tags || []).includes("Беру") ? "take" : "", c.manual ? "man" : ""].join(" ").trim()}">${esc(shortLot(c.lot) || "—")}</button>`; }).join("");
+  $("lots").hidden = !shown.length;
   $("list").innerHTML = shown.map(c => {
-    const n = notes[c.vin] || {}, tags = n.tags || [];
-    const mine = c.mine ? money(c.mine) + (c.mine_defect ? " / " + money(c.mine_defect) : "") : "—";
-    return `<article class="car${hasNote(c.vin) ? " done" : ""}" data-vin="${esc(c.vin)}">
+    const n = notes[c.vin] || {}, tags = n.tags || [], rating = Number(n.rating) || 0;
+    return `<article class="car${hasNote(c.vin) ? " done" : ""}" data-vin="${esc(c.vin)}" id="car-${esc(c.vin)}">
       <div class="head"><div class="lot">${esc(c.lot || "—")}</div>
         <div class="name">${esc(c.car)}<small>${c.miles ? Number(c.miles).toLocaleString("en-US") + " миль · " : ""}…${esc((c.vin || "").slice(-6))}${c.place ? " · " + esc(c.place.replace(/^CarMax /, "")) : ""}</small>
         ${c.no_pics ? '<span class="nopics">NO PICTURES</span>' : ""}</div></div>
-      <div class="nums">
-        <div class="num"><span>KBB</span><b>${c.kbb ? money(c.kbb) : c.kbb_est ? "≈" + money(c.kbb_est) : "—"}</b></div>
-        <div class="num"><span>Моя оценка</span><b>${mine}</b></div>
-        <div class="num"><span>Средняя</span><b>${money(c.market)}</b></div>
-        <div class="num"><span>Ставка</span><b>${money(c.mp)}</b></div>
-      </div>
-      ${(c.notes || []).length || (c.own || []).length ? `<div class="prog">${(c.notes || []).map(x => `<div>${esc(x)}</div>`).join("")}${(c.own || []).map(x => `<div>Мои: ${esc(x)}</div>`).join("")}</div>` : ""}
+      ${c.manual ? '<div class="manual">✋ Добавлено вручную — смотреть внимательно</div>' : ""}
+      <div class="kbb"><span>KBB</span>${c.kbb ? money(c.kbb) : c.kbb_est ? "≈" + money(c.kbb_est) : "—"}</div>
+      ${progNotes(c).length || (c.own || []).length ? `<div class="prog">${progNotes(c).map(x => `<div>${esc(x)}</div>`).join("")}${(c.own || []).map(x => `<div>Мои: ${esc(x)}</div>`).join("")}</div>` : ""}
+      <div class="stars" role="group" aria-label="Оценка машины"><span>Оценка</span>${[1, 2, 3, 4, 5].map(k => `<button type="button" class="star${k <= rating ? " on" : ""}" data-star="${k}" aria-label="${k} из 5" aria-pressed="${k <= rating}">${k <= rating ? "★" : "☆"}</button>`).join("")}</div>
       <div class="tags">${TAGS.map(([t, k]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(t)}</button>`).join("")}</div>
       <div class="say"><button type="button" class="mic" data-mic="${esc(c.vin)}" aria-label="Надиктовать заметку">🎤</button>
         <textarea id="n-${esc(c.vin)}" data-vin="${esc(c.vin)}" placeholder="Нажмите 🎤 и говорите, или пишите здесь">${esc(n.text || "")}</textarea></div>
@@ -115,6 +118,8 @@ function saveNote(vin, patch) {
   store.set("vn-notes", notes); dirty = true; store.set("vn-dirty", true);
   const s = $("s-" + vin); if (s) s.textContent = "сохранено " + hhmm(Date.now());
   const card = document.querySelector(`article[data-vin="${CSS.escape(vin)}"]`); if (card) card.classList.toggle("done", hasNote(vin));
+  const go = document.querySelector(`#lots button[data-go="${CSS.escape(vin)}"]`);
+  if (go) { const n = notes[vin] || {}; go.classList.toggle("done", hasNote(vin)); go.classList.toggle("take", (n.tags || []).includes("Беру")); }
   stateLine();
   clearTimeout(sendTimer); sendTimer = setTimeout(() => send(false), 6000);   // в программу — после паузы
 }
@@ -125,7 +130,7 @@ async function send(byHand) {
   try {
     const sha = await pullNotes();                     // свежие с GitHub — не затираем заметки с другого устройства
     const out = {};
-    for (const [vin, n] of Object.entries(notes)) if (hasNote(vin)) out[vin] = {text: n.text || "", tags: n.tags || [], lot: n.lot || "", car: n.car || "", at: n.at || 0};
+    for (const [vin, n] of Object.entries(notes)) if (hasNote(vin)) out[vin] = {text: n.text || "", tags: n.tags || [], rating: Number(n.rating) || 0, lot: n.lot || "", car: n.car || "", at: n.at || 0};
     const body = {message: `voice: заметки с аукциона (${Object.keys(out).length})`, branch: BRANCH,
                   content: textToB64(JSON.stringify({updated: new Date().toISOString(), notes: out}, null, 1))};
     if (sha) body.sha = sha;
@@ -150,13 +155,27 @@ $("list").addEventListener("input", e => { const t = e.target; if (t.tagName ===
 $("list").addEventListener("click", e => {
   const mic = e.target.closest("button[data-mic]");
   if (mic) { if (window.Native) window.Native.voice(mic.dataset.mic); else $("sync").textContent = "Голос работает в приложении на телефоне."; return; }
+  const star = e.target.closest("button[data-star]");
+  if (star) {                                         // оценка 1–5; та же звезда ещё раз — снять оценку
+    const vin = star.closest("article").dataset.vin, k = Number(star.dataset.star);
+    const rating = (Number((notes[vin] || {}).rating) || 0) === k ? 0 : k;
+    saveNote(vin, {rating});
+    star.closest(".stars").querySelectorAll("button[data-star]").forEach(x => { const on = Number(x.dataset.star) <= rating; x.classList.toggle("on", on); x.textContent = on ? "★" : "☆"; x.setAttribute("aria-pressed", on); });
+    return;
+  }
   const b = e.target.closest("button[data-tag]"); if (!b) return;
   const vin = b.closest("article").dataset.vin, tag = b.dataset.tag;
   const tags = new Set((notes[vin] || {}).tags || []);
   tags.has(tag) ? tags.delete(tag) : tags.add(tag);
-  for (const [a, z] of [["Дефекта нет", "Дефект есть"], ["Беру", "Не беру"]]) { if (tag === a) tags.delete(z); if (tag === z) tags.delete(a); }
+  for (const [a, z] of [["Беру", "Не беру"]]) { if (tag === a) tags.delete(z); if (tag === z) tags.delete(a); }
   saveNote(vin, {tags: [...tags]});
   b.closest("article").querySelectorAll("button[data-tag]").forEach(x => { const on = tags.has(x.dataset.tag); x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
+});
+$("lots").addEventListener("click", e => {          // полоса лотов справа — к машине
+  const b = e.target.closest("button[data-go]"); if (!b) return;
+  const card = document.getElementById("car-" + b.dataset.go); if (!card) return;
+  card.scrollIntoView({behavior: "smooth", block: "start"});
+  card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1200);
 });
 $("places").addEventListener("click", e => { const b = e.target.closest("button[data-place]"); if (!b) return; place = b.dataset.place; store.set("vn-place", place); render(); });
 $("q").addEventListener("input", render);

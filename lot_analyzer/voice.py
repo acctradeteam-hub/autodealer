@@ -51,7 +51,7 @@ def car_of(row: dict) -> dict:
             "kbb": row.get("kbb_private_party_usd") or "", "kbb_est": row.get("kbb_estimate_usd") or "",
             "mine": row.get("calc_max_bid_usd", ""), "mine_defect": row.get("calc_max_bid_if_defect_usd", ""),
             "market": row.get("market_estimate_usd", ""), "mp": row.get("my_proxy_usd", ""), "no_pics": row.get("no_photos") == "да",
-            "notes": notes, "own": own, "url": row.get("lot_url", "")}
+            "notes": notes, "own": own, "url": row.get("lot_url", ""), "manual": bool(row.get("inspect_manual"))}
 
 
 def push_list(rows: list[dict]) -> dict:
@@ -130,9 +130,14 @@ def pull_soon() -> None:
 
 
 def text_of(note: dict) -> str:
-    """Одна строка: пометки («дефекта нет», «беру») и надиктованный текст."""
+    """Одна строка: решение («беру» / «не беру»), оценка 1–5 с телефона и надиктованный текст."""
     tags = [str(t) for t in note.get("tags") or [] if t]
-    return " · ".join(x for x in (", ".join(tags), str(note.get("text") or "").strip()) if x).replace("\n", " ")[:400]
+    try:
+        rating = int(note.get("rating") or 0)
+    except (TypeError, ValueError):
+        rating = 0
+    stars = f"оценка {rating}/5" if 1 <= rating <= 5 else ""
+    return " · ".join(x for x in (", ".join(tags), stars, str(note.get("text") or "").strip()) if x).replace("\n", " ")[:400]
 
 
 def load_window() -> dict[str, dict]:

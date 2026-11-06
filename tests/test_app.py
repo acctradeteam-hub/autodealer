@@ -366,8 +366,13 @@ class HybridTest(unittest.TestCase):
         plain = calculate(BidInput(**base, miles=135000), costs)
         hybrid = calculate(BidInput(**base, miles=135000, hybrid=True), costs)
         young = calculate(BidInput(**base, miles=60000, hybrid=True), costs)
-        self.assertEqual(plain.max_bid - hybrid.max_bid, 750)
+        # резерв на батарею — только если о ней написано (CarMax примет машину обратно за 7 дней)
+        self.assertEqual(plain.max_bid, hybrid.max_bid)
+        sick = calculate(BidInput(**base, miles=135000, hybrid=True, defects_text="Check hybrid system light on"), costs)
+        self.assertEqual(plain.max_bid - sick.max_bid, 750)
         self.assertEqual(plain.max_bid, young.max_bid)
+        costs["hybrid"]["battery_only_if_reported"] = False                  # по-старому: всегда при большом пробеге
+        self.assertEqual(plain.max_bid - calculate(BidInput(**base, miles=135000, hybrid=True), costs).max_bid, 750)
         price, note = expected_market_price(BidInput(**base, miles=135000, hybrid=True), costs)
         self.assertAlmostEqual(price, 8000 * 0.72)
         self.assertIn("гибрид", note)
@@ -1417,3 +1422,33 @@ class VrpLoginTest(unittest.TestCase):
             finally:
                 server.shutdown()
             self.assertEqual(oct((tmp / "vrp.json").stat().st_mode & 0o777), "0o600")
+
+
+class PhoneNoteTextTest(unittest.TestCase):
+    """С телефона: «Беру» / «Не беру», оценка 1–5 и текст — одной строкой в окне и в Notes."""
+
+    def test_rating(self) -> None:
+        from lot_analyzer import voice
+        self.assertEqual(voice.text_of({"tags": ["Беру"], "rating": 4, "text": "мотор ровный"}), "Беру · оценка 4/5 · мотор ровный")
+        self.assertEqual(voice.text_of({"rating": "x", "text": "ок"}), "ок")
+        self.assertEqual(voice.car_of({"vin": "V1", "inspect_manual": "2026-11-06"})["manual"], True)
+
+
+class ProfitAtBidTest(unittest.TestCase):
+    """Прибыль при вашей ставке: KBB − ставка − сбор аукциона − дилер − смог (− ремонт по объявлению и пр.)."""
+
+    def test_profit_at_bid(self) -> None:
+        from lot_analyzer.bid import apply_to_rows, auction_fee
+        costs = load_costs(COSTS)
+        base = {"auction": "CarMax", "location": "Murrieta, CA", "year": "2016", "make": "Honda", "model": "Civic", "odometer_miles": "90000"}
+        row = dict(base, kbb_private_party_usd="10000", my_proxy_usd="6000")
+        apply_to_rows([row], costs, estimator=None)
+        fee = auction_fee(6000, "CarMax", costs)
+        self.assertEqual(row["profit_at_my_bid_usd"], f"{10000 - 6000 - fee - 300 - 40:.0f}")
+        self.assertIn("ставка $6,000", row["profit_at_my_bid_items"])
+        self.assertIn("дилер $300", row["profit_at_my_bid_items"])
+        # «НЕВЫГОДНО» (потолок не выходит) — прибыль при ставке всё равно видна
+        poor = dict(base, kbb_private_party_usd="2000", my_proxy_usd="1500")
+        apply_to_rows([poor], costs, estimator=None)
+        self.assertTrue(poor["calc_verdict"].startswith("НЕВЫГОДНО"), poor["calc_verdict"])
+        self.assertEqual(poor["profit_at_my_bid_usd"], f"{2000 - 1500 - auction_fee(1500, 'CarMax', costs) - 300 - 40:.0f}")

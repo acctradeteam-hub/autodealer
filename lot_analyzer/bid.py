@@ -422,6 +422,9 @@ class BidResult:
     win_chance: float | None = None      # доля похожих лотов, ушедших не дороже потолка
     inspect: list[str] = field(default_factory=list)   # почему нужен личный осмотр
     max_bid_if_defect: int | None = None  # потолок, если объявленный дефект подтвердится
+    discount: float = 0.0                  # скидка за историю (Carfax, замечания) к цене продажи
+    fixed_total: float | None = None       # расходы, не зависящие от ставки (дилер, смог, ремонт …) — для прибыли при вашей ставке
+    fixed_parts: dict = field(default_factory=dict)   # те же расходы по статьям (ненулевые)
     verdict: str = ""
     lines: list[str] = field(default_factory=list)  # расчёт по статьям
 
@@ -573,9 +576,15 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         "содержание": (float(costs.get("days_to_sell", 0)) + flags.extra_days) * float(costs.get("holding_per_day_usd", 0)),
         "резерв": sale * float(costs.get("reserve_pct_of_sale", 0)),
         "DMV": dmv_fees(f"{data.defects_text} {data.history_text}"),
-        "батарея гибрида": float(hybrid_cfg(costs).get("battery_reserve_usd", 0)) if hybrid_high_miles(data, costs) else 0.0,
+        # Гибрид с большим пробегом — резерв на батарею, только если о ней написано: крепкие гибриды (Corolla, Prius)
+        # с исправной батареей при проблеме CarMax примет обратно в течение 7 дней, а лишние $750 сбивают потолок.
+        "батарея гибрида": float(hybrid_cfg(costs).get("battery_reserve_usd", 0)) if hybrid_high_miles(data, costs) and (
+            not hybrid_cfg(costs).get("battery_only_if_reported", True)
+            or _positive_hits(f"{data.defects_text} {data.history_text}", _HYBRID_BATTERY)) else 0.0,
     }
     fixed_total = sum(fixed.values())
+    result.discount, result.fixed_total = discount, fixed_total
+    result.fixed_parts = {k: v for k, v in fixed.items() if v}
     lines.append(f"ремонт {_usd(recon)} ({recon_note})")
     lines.append(", ".join(f"{k} {_usd(v)}" for k, v in fixed.items() if v and k != "ремонт"))
 
@@ -708,6 +717,8 @@ _EV = re.compile(r"\b(bolt|leaf|i3|e-?golf|id\.?\s?4|mustang mach-e|mach-e|ioniq
                  r"model [3sxy]|lyriq|blazer ev|equinox ev|f-150 lightning|hummer ev|r1[st]|prologue|zdx|cooper se|xc40 recharge|c40)\b", re.I)
 
 
+_HYBRID_BATTERY = (r"hybrid\s+(battery|system)|check hybrid|hybrid (warning|malfunction|issue)|high[\s-]?voltage battery|\bibat\b"
+                   r"|гибридн\w*\s+(батаре|систем)|батаре\w*\s+гибрид")
 _HYBRID = re.compile(r"hybrid|plug-?\s?in|phev|\bprime\b|^prius|^insight|^clarity|^volt\b|\b(ct|es|rx|nx|ux|gs|ls)\s?\d{3}h\b", re.I)
 
 
@@ -759,7 +770,8 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         electric=is_electric(row),
         hybrid=is_hybrid(row),
         miles=parse_money(row.get("odometer_miles")),
-        consider=bool(parse_money(row.get("kbb_private_party_usd"))) and not row.get("kbb_from_window_field"),
+        # Вы посмотрели KBB или поставили ставку — считаем и при стоп-факторах (вердикт «РИСК»), чтобы видеть прибыль при ставке.
+        consider=(bool(parse_money(row.get("kbb_private_party_usd"))) and not row.get("kbb_from_window_field")) or bool(parse_money(row.get("my_proxy_usd"))),
     )
 
 
@@ -811,13 +823,19 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
-        # Прибыль при вашей ставке: от потолка к ставке со своими сборами аукциона.
+        # Прибыль при вашей ставке: цена продажи (KBB) − ставка − сбор аукциона при ставке − дилер, смог и прочие расходы
+        # (ремонт по объявлению, доставка, DMV) − скидка за историю. Считается и у «НЕВЫГОДНО» — ставку вы поставили сами.
         proxy = parse_money(row.get("my_proxy_usd"))
-        row["profit_at_my_bid_usd"] = ""
-        if proxy and result.max_bid and result.profit_at_max is not None:
+        row["profit_at_my_bid_usd"] = row["profit_at_my_bid_items"] = ""
+        if proxy and result.sale_price and result.fixed_total is not None:
             auction = resolve_auction(data.auction, costs)
-            fee = (lambda bid: auction_fee(bid, auction, costs)) if auction else (lambda bid: 0.0)
-            row["profit_at_my_bid_usd"] = f"{result.profit_at_max + result.max_bid - proxy + fee(result.max_bid) - fee(proxy):.0f}"
+            fee = auction_fee(proxy, auction, costs) if auction else 0.0
+            row["profit_at_my_bid_usd"] = f"{result.sale_price - result.discount - proxy - fee - result.fixed_total:.0f}"
+            base = f"KBB {_usd(result.sale_price)}" if result.sale_source.startswith("KBB") else f"продажа {_usd(result.sale_price)}"
+            row["profit_at_my_bid_items"] = " − ".join([base, f"ставка {_usd(proxy)}"] + ([f"сбор {auction} {_usd(fee)}"] if fee else [])
+                                                      + [f"{k} {_usd(v)}" for k, v in result.fixed_parts.items()]
+                                                      + ([f"история {_usd(result.discount)}"] if result.discount else []))
+            row["profit_at_my_bid_items"] += f" = {_usd(result.sale_price - result.discount - proxy - fee - result.fixed_total)}"
         real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
         if costs.get("require_kbb") and not real_kbb and result.max_bid:
             # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.

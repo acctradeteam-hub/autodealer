@@ -72,7 +72,8 @@
   "title_required": true,
 
   "_hybrid": "Гибриды (Prius, Insight, Civic / Camry / Accord Hybrid, Lexus …h, plug-in): с пробегом от high_miles батарея близка к замене. Средняя цена покупки на торгах для них = доля площадки × market_factor — окно считает его само по вашим итогам торгов (гибриды ÷ обычные машины с таким же пробегом), пока своих гибридов меньше 8 — берётся market_factor_default. battery_reserve_usd — резерв на батарею в расчёте потолка (вероятность замены × цена восстановленной батареи ~$1,500–2,500).",
-  "hybrid": {"high_miles": 130000, "battery_reserve_usd": 750, "market_factor_default": 0.9},
+  "hybrid": {"high_miles": 130000, "battery_reserve_usd": 750,
+    "battery_only_if_reported": true, "market_factor_default": 0.9},
 
   "detailing_usd": 0,
   "smog_usd": 40,
