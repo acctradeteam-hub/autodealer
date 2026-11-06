@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.12"
-PROGRAM_VERSION = "2026-11-06.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.13"
+PROGRAM_VERSION = "2026-11-06.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
 
@@ -1407,6 +1407,31 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(b'{"ok":true}')
                 threading.Thread(target=lambda: (time.sleep(0.3), os._exit(0)), daemon=True).start()
                 return
+            if urlparse(self.path).path == "/api/save_page":      # расширение, автосбор: страница аукциона — сразу в папку программы
+                # Мимо загрузок Chrome: файл не теряется из-за настроек или сбоя скачивания (05.11: «собрано 3 площадки,
+                # 696 машин», а файлов в «Загрузках» нет). Только с заголовком X-LA — обычная веб-страница его не пошлёт.
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > 80 * 1024 * 1024:
+                    self._send(b'{"ok":false,"error":"too big"}', status=413)
+                    return
+                data = json.loads(self.rfile.read(length) or b"{}")
+                name, html = Path(str(data.get("name") or "")).name, str(data.get("html") or "")
+                if not SAVED_BY_BOOKMARKLET.match(name) or name.startswith("KBB_") or len(html) < 500:
+                    self._send(b'{"ok":false,"error":"bad page"}', status=400)
+                    return
+                folder = next((f for f in folders if f.name == ARCHIVE_NAME), folders[0])
+                try:
+                    folder.mkdir(parents=True, exist_ok=True)
+                    target = _free_name(folder, name)
+                    target.write_text(html, encoding="utf-8")
+                except OSError as err:
+                    self._send(json.dumps({"ok": False, "error": str(err)}, ensure_ascii=False).encode("utf-8"), status=500)
+                    return
+                self._send(json.dumps({"ok": True, "path": str(target)}, ensure_ascii=False).encode("utf-8"))
+                return
             if urlparse(self.path).path == "/api/favorite":       # расширение: звёздочка на CarMax
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -1943,8 +1968,8 @@ function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML
  const st=a.state,days=Object.keys(st).filter(k=>/^\d{4}-\d\d-\d\d$/.test(k)&&k>=today).sort().slice(0,2);   // прошедшие торги — не показываем
  const inWin=k=>((lastData&&lastData.days)||[]).reduce((n,[j,c])=>j===k.slice(5)?n+c:n,0);
  const parts=days.map(k=>{const d=st[k],pl=a.places[d.which]||[],got=pl.filter(p=>d.places[p]&&d.places[p].status==='ok');
-  const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>d.places[p]&&d.places[p].status!=='ok').map(p=>`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}`);
-  const seen=inWin(k),lost=cars&&!seen?(activeFilters().length?` — <b>в окне их не видно: включены фильтры</b> <button type="button" class="tab" onclick="resetFilters()">показать все машины</button>`
+  const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>!d.places[p]||d.places[p].status!=='ok').map(p=>d.places[p]?`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}${d.places[p].note?': '+d.places[p].note:''}`:`${p} — не собрано`);
+  const seen=inWin(k),lost=cars&&seen<cars*0.5?(activeFilters().length?` — <b>в окне их не видно: включены фильтры</b> <button type="button" class="tab" onclick="resetFilters()">показать все машины</button>`
    :` — <b>⚠ в окне их нет:</b> программа не нашла эти файлы. Она смотрит папки: ${esc(((lastData&&lastData.folders)||[]).join('; '))}. Проверьте, куда Chrome сохраняет скачанное (Настройки → Загрузки)`):'';
   return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(seen?` (в окне ${seen})`:'')+lost+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
  e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'аукционы этой недели ещё не собраны')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}

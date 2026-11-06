@@ -1288,3 +1288,35 @@ class SaleDayButtonsTest(unittest.TestCase):
                 self.assertEqual((len(hidden["rows"]), hidden["hidden_total"]), (0, 2))
         finally:
             server.shutdown()
+
+
+class SavePageTest(unittest.TestCase):
+    """Автосбор: расширение отдаёт страницу программе — файл сразу в «Загрузки/Lot Analyzer», мимо загрузок Chrome."""
+
+    def test_save_page(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        folder = tmp / app.ARCHIVE_NAME
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([folder, tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/save_page"
+
+        def post(body: dict, header: bool = True) -> tuple[int, dict]:
+            req = urllib.request.Request(url, method="POST", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json", **({"X-LA": "1"} if header else {})})
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    return resp.status, json.loads(resp.read())
+            except urllib.error.HTTPError as err:
+                return err.code, {}
+        html = "<!-- saved-at: 2026-11-06T05:05:00.000Z -->" + "<html>" + "x" * 1000 + "</html>"
+        try:
+            self.assertEqual(post({"name": "CarMax_Search_2026-11-05_2105.html", "html": html}, header=False)[0], 403)   # не от расширения
+            self.assertEqual(post({"name": "../evil.sh", "html": html})[0], 400)
+            code, got = post({"name": "CarMax_Search_2026-11-05_2105.html", "html": html})
+            again = post({"name": "CarMax_Search_2026-11-05_2105.html", "html": html})[1]
+        finally:
+            server.shutdown()
+        self.assertEqual((code, got["ok"]), (200, True))
+        self.assertEqual(Path(got["path"]), folder / "CarMax_Search_2026-11-05_2105.html")
+        self.assertEqual(Path(again["path"]).name, "CarMax_Search_2026-11-05_2105 (1).html")     # тот же час — не затирает
+        self.assertEqual(Path(got["path"]).read_text(encoding="utf-8"), html)

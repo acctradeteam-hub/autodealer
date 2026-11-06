@@ -39,13 +39,44 @@ function autoTargets(now) {
 function autoState(cb) { chrome.storage.local.get('auto-state', function (got) { cb((got || {})['auto-state'] || {}); }); }
 function autoSave(state) { chrome.storage.local.set({ 'auto-state': state }); }
 
-/* Файл страницы — в «Загрузки» (data: URL: у фона расширения нет Blob-ссылок). */
+/* Файл страницы: сначала — прямо программе (она кладёт его в «Загрузки/Lot Analyzer»), так он не зависит от загрузок
+   Chrome; программа не запущена — через загрузки Chrome, и площадка «собрана», только когда файл правда записан.
+   Итог: { ok, path, via, error }. */
 function autoDownload(name, html) {
+  return fetch('http://127.0.0.1:8765/api/save_page', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
+    body: JSON.stringify({ name: name, html: html }) })
+    .then(function (r) { return r.json().catch(function () { return null; }); }, function () { return null; })
+    .then(function (got) {
+      if (got && got.ok) { return { ok: true, path: got.path, via: 'program' }; }
+      return autoChromeDownload(name, html).then(function (res) {
+        if (!res.ok && got && got.error) { res.error = 'программа: ' + got.error + '; Chrome: ' + (res.error || ''); }
+        return res;
+      });
+    });
+}
+
+/* data: URL — у фона расширения нет Blob-ссылок. Ждём, пока Chrome допишет файл (или скажет, почему не смог). */
+function autoChromeDownload(name, html) {
   var bytes = new TextEncoder().encode(html), bin = '';
   for (var i = 0; i < bytes.length; i += 0x8000) { bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); }
   return new Promise(function (resolve) {
     chrome.downloads.download({ url: 'data:text/html;charset=utf-8;base64,' + btoa(bin), filename: 'Lot Analyzer/' + name, conflictAction: 'uniquify', saveAs: false },
-      function (id) { resolve(!chrome.runtime.lastError && !!id); });
+      function (id) {
+        if (chrome.runtime.lastError || !id) { resolve({ ok: false, error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'Chrome не начал скачивание' }); return; }
+        var settled = false;
+        var check = function () {
+          chrome.downloads.search({ id: id }, function (items) {
+            var it = (items || [])[0];
+            if (settled || !it) { return; }
+            if (it.state === 'complete') { settled = true; chrome.downloads.onChanged.removeListener(onChange); resolve({ ok: true, path: it.filename, via: 'chrome' }); }
+            else if (it.state === 'interrupted') { settled = true; chrome.downloads.onChanged.removeListener(onChange); resolve({ ok: false, path: it.filename, error: 'Chrome: ' + (it.error || 'скачивание прервано') }); }
+          });
+        };
+        var onChange = function (d) { if (d.id === id && d.state) { check(); } };
+        chrome.downloads.onChanged.addListener(onChange);
+        check();
+        setTimeout(function () { if (!settled) { settled = true; chrome.downloads.onChanged.removeListener(onChange); resolve({ ok: false, error: 'Chrome не дописал файл за минуту' }); } }, 60000);
+      });
   });
 }
 
@@ -69,9 +100,9 @@ function autoOne(place, focused) {
         var m = /expected (\d+), got (\d+)/.exec(msg.diag || '');
         var expected = m ? Number(m[1]) : 0, cars = msg.total || (m ? Number(m[2]) : 0);
         if (!cars) { finish({ status: 'empty', cars: 0, note: 'машин пока нет (Check back for cars)' }); return; }
-        autoDownload(msg.name, msg.html).then(function (ok) {
-          if (!ok) { finish({ status: 'error', cars: cars, note: 'Chrome не сохранил файл' }); return; }
-          finish({ status: expected && cars < expected * 0.95 ? 'short' : 'ok', cars: cars, expected: expected, file: msg.name,
+        autoDownload(msg.name, msg.html).then(function (saved) {
+          if (!saved.ok) { finish({ status: 'error', cars: cars, note: 'файл не сохранился — ' + (saved.error || 'причина неизвестна') }); return; }
+          finish({ status: expected && cars < expected * 0.95 ? 'short' : 'ok', cars: cars, expected: expected, file: saved.path || msg.name, via: saved.via,
                    note: expected && cars < expected * 0.95 ? 'загружено ' + cars + ' из ' + expected : '' });
         });
       };
