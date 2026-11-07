@@ -15,6 +15,11 @@ from pathlib import Path
 
 from lot_analyzer import app
 from lot_analyzer.bid import load_costs
+from lot_analyzer import inspection as _inspection
+
+# Общие тесты списка на осмотр — на машинах любых площадок; правило «только куда ездите» — в VisitPlacesTest.
+_REAL_VISIT_PLACES = _inspection.VISIT_PLACES
+_inspection.VISIT_PLACES = ()
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -136,7 +141,7 @@ class TestOneWindow(unittest.TestCase):
         page = render_html(rows)
         self.assertNotIn("Моя оценка", page)                         # графу убрали
         heads = re.findall(r"<th(?:\s[^>]*)?>(.*?)</th>", page.split("</thead>")[0])
-        self.assertEqual(heads, ["Лот", "Машина", "Замечания и история", "KBB", "Средняя цена покупки на аукционе",
+        self.assertEqual(heads, ["Лот", "Машина", "Замечания и история", "KBB", "Средняя покупка на аукционе",
                                  "Заметки", "Моя ставка", "Результат торгов", ""])
         self.assertNotIn("Почему в списке", page)
         self.assertIn("A/70", page)                                  # Civic с «Major transmission defect»
@@ -153,8 +158,9 @@ class TestOneWindow(unittest.TestCase):
                 dict(base, vin="V2", lot_number="A/2", location="Oceanside, CA", sale_date="Oct 19"),
                 dict(base, vin="V3", lot_number="A/3", location="Oceanside, CA", sale_date=""),
                 dict(base, vin="V4", lot_number="B/1", location="Murrieta, CA", sale_date="Oct 19, 9:00am PT")]
-        heads = re.findall(r"<h2>(.*?)</h2>", render_html(rows))
-        self.assertEqual(heads, ["CarMax Oceanside · Oct 19, 9:00am PT", "CarMax Murrieta · Oct 19, 9:00am PT"])   # сначала едете в Oceanside
+        heads = re.findall(r"<h2[^>]*>(.*?)</h2>", render_html(rows))
+        self.assertEqual([h.split(" — ")[0] for h in heads], ["Oceanside", "Murrieta"])   # одна группа на площадку; сначала Oceanside
+        self.assertTrue(all("19 октября · 9:00am PT" in h for h in heads), heads)
 
     def test_phone_from_print_list(self) -> None:
         """«📱 На телефон» в самом списке на осмотр: только оставленные машины и текст графы «Заметки»."""
@@ -1468,3 +1474,25 @@ class PhoneRatingInWindowTest(unittest.TestCase):
         page = app.PAGE
         self.assertIn(">Моя оценка</th>", page)
         self.assertNotIn("<th>CR</th>", page)
+
+
+class VisitPlacesTest(unittest.TestCase):
+    """Список на осмотр: только Oceanside, Murrieta, Chino; каждый аукцион — с новой страницы; строка не рвётся."""
+
+    def test_places_and_print_layout(self) -> None:
+        from unittest import mock
+        base = {"auction": "CarMax", "sale_date": "Nov 9, 9:00am PT", "year": "2016", "make": "Honda", "model": "Civic", "kbb_private_party_usd": "9000",
+                "odometer_miles": "90000"}
+        rows = [dict(base, vin="V1", lot_number="A/1", location="Oceanside, CA"), dict(base, vin="V2", lot_number="A/2", location="Murrieta, CA"),
+                dict(base, vin="V3", lot_number="A/3", location="Fresno, CA", sale_date="Nov 10, 9:00am PT", my_proxy_usd="5000"),
+                dict(base, vin="V4", lot_number="A/4", location="Fresno, CA", sale_date="Nov 10, 9:00am PT", inspect_manual="2026-11-07"),
+                dict(base, vin="V5", lot_number="A/5", location="Chino, CA", sale_date="Nov 10, 9:00am PT")]
+        with mock.patch.object(_inspection, "VISIT_PLACES", _REAL_VISIT_PLACES):
+            vins = [r["vin"] for r in _inspection.inspection_rows(rows)]
+            page = _inspection.render_html(rows)
+        self.assertEqual(vins, ["V1", "V2", "V5", "V4"])           # Fresno со ставкой — нет; добавленная вручную — есть (после Chino)
+        self.assertIn("<h2>Oceanside — ", page)
+        self.assertIn("<h2 class=newpage>Murrieta — ", page)      # новый аукцион — с новой страницы
+        self.assertIn("ноября", page)
+        self.assertIn("tr{break-inside:avoid", page)
+        self.assertIn('<h1 class="noprint">', page)

@@ -100,8 +100,36 @@ def _wanted_auto(row: dict[str, str]) -> bool:
 # Площадка под номером лота — коротко, чтобы графа «Лот» оставалась узкой: Oceanside → Ocean (Murrieta — целиком).
 SHORT_PLACE = {"Oceanside": "Ocean"}
 
-# Порядок площадок в один день — как вы их объезжаете: сначала Oceanside, потом Murrieta; остальные — после, по алфавиту.
-PLACE_ORDER = ("Oceanside", "Murrieta")
+# Порядок площадок в один день — как вы их объезжаете: сначала Oceanside, потом Murrieta, потом Chino.
+PLACE_ORDER = ("Oceanside", "Murrieta", "Chino")
+# Куда вы можете доехать на осмотр. Машины остальных площадок в список на осмотр и на телефон не попадают
+# (и со ставкой тоже — их не осмотреть); исключение — «На осмотр» в окне: вы сами выбрали машину.
+VISIT_PLACES = ("Oceanside", "Murrieta", "Chino")
+
+
+def can_visit(row: dict[str, str]) -> bool:
+    if not VISIT_PLACES:                              # пусто — все площадки
+        return True
+    low = _place(row).lower()
+    return any(name.lower() in low for name in VISIT_PLACES)
+
+
+_WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+_MONTHS_RU = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")
+
+
+def day_title(day: str, sale_date: str = "") -> str:
+    """«11-09» (+ «Nov 9, 9:00am PT») → «понедельник, 9 ноября · 9:00am PT»."""
+    import datetime as dt
+    try:
+        month, num = (int(x) for x in day.split("-"))
+        today = dt.date.today()
+        year = today.year + (1 if month < today.month - 6 else 0)
+        date = dt.date(year, month, num)
+    except (ValueError, TypeError):
+        return sale_date or "дата торгов не указана"
+    time = re.search(r"\d{1,2}:\d{2}\s*[ap]m(\s*[A-Z]{2})?", sale_date or "", re.I)
+    return f"{_WEEKDAYS[date.weekday()]}, {date.day} {_MONTHS_RU[date.month - 1]}" + (f" · {time.group(0)}" if time else "")
 
 
 def _place_rank(place: str) -> tuple:
@@ -110,7 +138,7 @@ def _place_rank(place: str) -> tuple:
 
 
 def inspection_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    picked = [r for r in rows if wanted(r)]
+    picked = [r for r in rows if wanted(r) and (can_visit(r) or why(r) == "вручную из программы")]
     groups = _groups(picked)
 
     def lane_run(row: dict[str, str]) -> tuple:
@@ -154,9 +182,14 @@ def render_html(rows: list[dict[str, str]], title: str = "Список на ос
         by_key.setdefault(keys[id(row)], []).append(row)
     groups: "OrderedDict[str, list[dict[str, str]]]" = OrderedDict()
     for (place, day), group_rows in by_key.items():
-        # Подпись дня — самая полная запись даты в группе («Oct 12, 9:00am PT» лучше, чем «Oct 12»).
-        when = max((r.get("sale_date", "") for r in group_rows), key=len) or "дата торгов не указана"
-        groups[" · ".join(x for x in (place, when) if x)] = group_rows
+        # Сверху страницы — площадка и дата: «Oceanside — понедельник, 9 ноября · 9:00am PT».
+        when = max((r.get("sale_date", "") for r in group_rows), key=len)
+        groups[re.sub(r"^CarMax\s+", "", place or "") + " — " + day_title(day, when)] = group_rows
+    # На экране сверху — все площадки и дни списка («Oceanside, Murrieta — понедельник, 9 ноября»); на печать не идёт.
+    by_day: "OrderedDict[str, list[str]]" = OrderedDict()
+    for (place, day), _rows in by_key.items():
+        by_day.setdefault(day_title(day), []).append(re.sub(r"^CarMax\s+", "", place or ""))
+    heading = "; ".join(f"{', '.join(dict.fromkeys(p))} — {d}" for d, p in by_day.items()) or title
     esc = lambda s: html.escape(str(s or ""))
     parts = [f"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)}</title><style>
@@ -168,7 +201,9 @@ main{{max-width:1200px;margin:0 auto;padding:16px}}h1{{font-size:20px;margin:0 0
 .muted{{color:var(--muted)}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}}
 td.num{{text-align:right}}td.box{{width:70px}}button{{font:inherit;padding:6px 12px}}
 table{{table-layout:fixed}}td,th{{overflow-wrap:break-word}}th{{hyphens:auto}}td.lot .place{{white-space:nowrap}}td.car .manual{{margin-top:4px;font-weight:700;padding:1px 4px;border-left:3px solid #d97706;background:rgba(217,119,6,.12)}}td.num{{white-space:nowrap}}
-td.car .vin{{font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-top:2px;overflow-wrap:anywhere}}td.car .miles{{margin-top:1.3em}}
+td.car .vin{{font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-top:2px;overflow-wrap:anywhere}}td.car .miles{{margin-top:0}}
+tr{{break-inside:avoid;page-break-inside:avoid}}thead{{display:table-header-group}}
+@media print{{h2.newpage{{break-before:page;page-break-before:always}}h2{{margin-top:0}}}}
 @page{{size:letter;margin:8mm}}
 @media print{{body{{font-size:11px}}main{{padding:0}}th,td{{padding:3px 4px}}td.info .note,td.car .vin,td.lot .place{{font-size:10px}}th{{font-size:10px}}td.car .manual{{background:none}}}}
 td.info .note{{font-size:12px;color:var(--muted)}}td.info .note.own{{color:var(--fg)}}td.lot .place{{font-size:12px;color:var(--muted)}}
@@ -177,7 +212,7 @@ td[contenteditable]:hover{{outline:1px dashed var(--muted)}}td[contenteditable]:
 td.edited{{background:rgba(230,180,40,.14)}}td.del{{width:28px;text-align:center}}td.del button{{padding:1px 7px;cursor:pointer}}
 @media print{{td.edited{{background:none}}}}
 </style></head><body><main>
-<h1 contenteditable="true">{esc(title)}</h1><div class="muted">Лотов: <span id="count">{len(items)}</span>. NO PICTURES — фото нет: осмотреть обязательно. «Major … Defect» у CarMax часто не подтверждается — на месте: заводится ли, как едет, как переключается,
+<h1 class="noprint">{esc(heading)}</h1><div class="muted noprint">Лотов: <span id="count">{len(items)}</span>. Только площадки, куда вы ездите: {', '.join(VISIT_PLACES)}. NO PICTURES — фото нет: осмотреть обязательно. «Major … Defect» у CarMax часто не подтверждается — на месте: заводится ли, как едет, как переключается,
 нет ли стуков и ошибок.
 CarMax — машины из вашего избранного на сайте: сняли звёздочку — машина уходит из этого списка.</div>
 <p class="noprint"><button onclick="print()">Печать</button>
@@ -186,14 +221,15 @@ CarMax — машины из вашего избранного на сайте: 
 <span class="muted">Ячейки можно исправить — щёлкните и пишите; ✕ убирает машину из списка. Правки запоминаются в этом браузере.</span></p>"""]
     if not items:
         parts.append('<p class="muted">Нет лотов, требующих личного осмотра.</p>')
-    for group, group_rows in groups.items():
+    for n, (group, group_rows) in enumerate(groups.items()):
         # Графы: лот и площадка · машина (год, марка, модель, VIN, через строку — пробег; «добавлено вручную») · замечания
         # и история · KBB · средняя цена покупки · ваши заметки · ставка · итог. Ширины — под печать на одну страницу.
-        parts.append(f"<h2>{esc(group)}</h2><table><colgroup><col style='width:7%'><col style='width:18%'>"
-                     "<col style='width:25%'><col style='width:8%'><col style='width:7%'><col style='width:19%'><col style='width:8%'>"
-                     "<col style='width:8%'><col class='noprint' style='width:30px'></colgroup>"
+        # Каждый аукцион — с новой страницы.
+        parts.append(f"<h2{' class=newpage' if n else ''}>{esc(group)}</h2><table><colgroup><col style='width:7%'><col style='width:18%'>"
+                     "<col style='width:22%'><col style='width:8%'><col style='width:9%'><col style='width:17%'><col style='width:8%'>"
+                     "<col style='width:11%'><col class='noprint' style='width:30px'></colgroup>"
                      "<thead><tr><th>Лот</th><th>Машина</th><th>Замечания и история</th>"
-                     "<th>KBB</th><th>Средняя цена покупки на аукционе</th><th class='notes'>Заметки</th>"
+                     "<th>KBB</th><th>Средняя покупка на аукционе</th><th class='notes'>Заметки</th>"
                      "<th>Моя ставка</th><th>Результат торгов</th><th class='noprint'></th></tr></thead><tbody>")
         for r in group_rows:
             kbb = _money(r.get("kbb_private_party_usd")) if r.get("kbb_private_party_usd") else (
@@ -249,8 +285,6 @@ rows().forEach(tr=>{
   tr.querySelector('td.del button').addEventListener('click',()=>{if(!state.removed.includes(id))state.removed.push(id);save();refresh()});
 });
 const h1=document.querySelector('h1');
-if(state.title)h1.textContent=state.title;
-h1.addEventListener('input',()=>{state.title=h1.textContent;save();refresh()});
 document.addEventListener('click',e=>{const a=e.target.closest('td[contenteditable] a');if(a&&!(e.metaKey||e.ctrlKey)){e.preventDefault();window.open(a.href,'_blank')}});
 /* «📱 На телефон»: что видно на странице (без убранных ✕) и ваш текст из графы «Заметки» — в приложение для осмотра. */
 async function toPhone(){
