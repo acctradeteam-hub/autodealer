@@ -444,12 +444,33 @@ MAJOR_DEFECT_RE = re.compile(r"major\s+(engine|transmission)\s+defect", re.I)
 def calculate(data: BidInput, costs: dict) -> BidResult:
     """Потолок ставки. Стоп-фактор (рама, титул …) у машины, по которой вы смотрели KBB, не обрывает расчёт:
     всё считается как обычно, а вердикт начинается с «РИСК: …» — решаете сами."""
+    risks = assess_history(data.history_text, costs).skip
+    if risks and not data.consider:
+        # Стоп-фактор (рама, нет титула …): вердикт — «ПРОПУСТИТЬ», но средняя цена покупки, прибыль по ней и потолок
+        # всё равно считаются — видно, сколько такая машина стоит на торгах и до скольких её можно брать, если всё же брать.
+        result = _calculate_scenarios(BidInput(**{**data.__dict__, "consider": True}), costs)
+        result.verdict = "ПРОПУСТИТЬ: " + ", ".join(risks)
+        if result.max_bid:
+            result.verdict += f"; если всё же брать — до {_usd(result.max_bid)}"
+        result.lines.insert(0, "стоп-факторы в истории — ниже расчёт на случай, если всё же брать" if result.sale_price
+                            else "стоп-факторы в истории; KBB нет — посчитать не из чего")
+        return result
     result = _calculate_scenarios(data, costs)
-    if data.consider:
-        risks = assess_history(data.history_text, costs).skip
-        if risks:
-            result.verdict = "РИСК: " + ", ".join(risks) + "; " + result.verdict
+    if data.consider and risks:
+        result.verdict = "РИСК: " + ", ".join(risks) + "; " + result.verdict
     return result
+
+
+def _signed_usd(value: float) -> str:
+    return ("−" if value < 0 else "") + _usd(abs(value))
+
+
+def _unprofitable(verdict: str, result: "BidResult") -> str:
+    """«НЕВЫГОДНО: …» + средняя цена покупки и прибыль при ней — если они посчитаны."""
+    head = verdict.split("; ")[0]
+    if result.market_price and result.profit_at_market is not None:
+        head += f"; средняя цена покупки ≈ {_usd(result.market_price)}, прибыль при ней {_signed_usd(result.profit_at_market)}"
+    return head
 
 
 def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
@@ -470,22 +491,24 @@ def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
                         "defects_text": MAJOR_DEFECT_RE.sub("", data.defects_text)})
     result = _calculate(clean, costs)                       # дефект не подтвердится
     result.inspect = inspect
-    result.max_bid_if_defect = confirmed.max_bid
-    if result.max_bid is None:                              # стоп-факторы или нет оценки — как есть
-        return result
+    # «НЕВЫГОДНО» при подтверждённом дефекте — потолка «с дефектом» нет: такую не брать.
+    result.max_bid_if_defect = None if confirmed.verdict.startswith("НЕВЫГОДНО") else confirmed.max_bid
 
     # Рынок для таких лотов — как для машин с тяжёлым дефектом: другие дилеры ставят с поправкой на него.
-    result.market_price, result.market_source = confirmed.market_price, confirmed.market_source
-    if result.market_price and result.profit_at_max is not None:
-        # Прибыль, если купить по этому рынку (машина без дефекта): пересчёт от потолка к цене рынка со сборами.
+    # Прибыль, если купить по этому рынку (машина без дефекта): продажа − история − расходы − (рынок + сборы).
+    if confirmed.market_price and result.sale_price and result.fixed_total is not None:
         auction = resolve_auction(data.auction, costs)
-        m = result.market_price
-        result.profit_at_market = (result.profit_at_max + result.max_bid + auction_fee(result.max_bid, auction, costs)
-                                   - m - auction_fee(m, auction, costs))
+        m = confirmed.market_price
+        result.market_price, result.market_source = m, confirmed.market_source
+        result.profit_at_market = result.sale_price - result.discount - result.fixed_total - m - auction_fee(m, auction, costs)
         if result.profit_items:                             # последние две статьи — покупка и сборы по этому рынку
             result.profit_items = result.profit_items[:-2] + [
                 [f"Средняя цена покупки на аукционе ({result.market_source}; лоты с таким объявлением уходят дешевле)", -round(m)],
                 [f"Сборы аукциона {auction or ''} при цене {_usd(m)}".replace("  ", " "), -round(auction_fee(m, auction, costs))]]
+    if result.max_bid is None or result.verdict.startswith("НЕВЫГОДНО"):   # нет оценки или невыгодно — как есть
+        if result.verdict.startswith("НЕВЫГОДНО"):
+            result.verdict = _unprofitable(result.verdict, result)
+        return result
     market = market_config(data.auction, costs, data.location)
     base_kind = _market_base(data, market)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -493,7 +516,7 @@ def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
     result.win_chance = win_chance(result.max_bid, base_value, heavy_curve) if base_value else None
     bid = result.max_bid
     verdict = f"ОСМОТР: до {_usd(bid)}, если дефект не подтвердится"
-    verdict += f" (подтвердится — до {_usd(confirmed.max_bid)})" if confirmed.max_bid else " (подтвердится — не брать)"
+    verdict += f" (подтвердится — до {_usd(result.max_bid_if_defect)})" if result.max_bid_if_defect else " (подтвердится — не брать)"
     if result.market_price:
         verdict += f"; средняя цена покупки ≈ {_usd(result.market_price)} — лоты с таким объявлением уходят дешевле"
         if result.win_chance is not None:
@@ -502,7 +525,7 @@ def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
         verdict = f"ДОРОЖЕ ПОТОЛКА: ставка {_usd(data.current_bid)} > {_usd(bid)} (даже без дефекта)"
     rest = [x for x in result.verdict.split("; ")[1:] if not x.startswith("средняя цена покупки ≈")]
     result.verdict = "; ".join([verdict] + rest)
-    result.lines.append(f"если дефект подтвердится: потолок {_usd(confirmed.max_bid) if confirmed.max_bid else 'нет'}")
+    result.lines.append(f"если дефект подтвердится: потолок {_usd(result.max_bid_if_defect) if result.max_bid_if_defect else 'нет'}")
     return result
 
 
@@ -610,19 +633,20 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         bid = int(budget // step) * step
         lines.append(f"ограничено бюджетом {_usd(budget)}")
 
-    if bid <= 0:
-        result.verdict = "НЕВЫГОДНО: расходы и цель прибыли съедают всю цену продажи"
-        return result
+    # Невыгодно — вердикт «НЕВЫГОДНО», но средняя цена покупки, прибыль по ней и потолок (если он больше нуля) считаются.
+    unprofitable = ""
     min_bid = float(costs.get("min_max_bid_usd", 0))
-    if bid < min_bid:
-        result.verdict = f"НЕВЫГОДНО: потолок {_usd(bid)} ниже {_usd(min_bid)} — слишком дешёвая машина"
-        return result
+    if bid <= 0:
+        unprofitable = "НЕВЫГОДНО: расходы и цель прибыли съедают всю цену продажи"
+    elif bid < min_bid:
+        unprofitable = f"НЕВЫГОДНО: потолок {_usd(bid)} ниже {_usd(min_bid)} — слишком дешёвая машина"
 
-    fee = auction_fee(bid, auction, costs)
-    lines.append(f"сборы аукциона при потолке {_usd(fee)}")
-    result.max_bid = bid
-    result.costs_over_bid = fee + fixed_total
-    result.profit_at_max = sale - discount - bid - result.costs_over_bid
+    if bid > 0:
+        fee = auction_fee(bid, auction, costs)
+        lines.append(f"сборы аукциона при потолке {_usd(fee)}")
+        result.max_bid = bid
+        result.costs_over_bid = fee + fixed_total
+        result.profit_at_max = sale - discount - bid - result.costs_over_bid
 
     verdict = f"МОЖНО до {_usd(bid)}"
     if data.current_bid and data.current_bid > bid:
@@ -673,6 +697,11 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         items += [[market_label, -round(market)],
                   [f"Сборы аукциона {auction or ''} при цене {_usd(market)}".replace("  ", " "), -round(market_fee)]]
         result.profit_items = items
+    if unprofitable:
+        if market:
+            lines.append(f"средняя цена покупки ≈ {_usd(market)} ({market_source})")
+        result.verdict = _unprofitable(unprofitable, result)
+        return result
     market_cfg = market_config(data.auction, costs, data.location)
     base_kind = _market_base(data, market_cfg)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
@@ -838,12 +867,13 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
             total = result.sale_price - result.discount - proxy - fee - result.fixed_total
             row["profit_at_my_bid_items"] += f" = {'−' if total < 0 else ''}{_usd(abs(total))}"
         real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
-        if costs.get("require_kbb") and not real_kbb and result.max_bid:
+        can_buy = not result.verdict.startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО"))
+        if costs.get("require_kbb") and not real_kbb and result.max_bid and can_buy:
             # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.
             rest = [x for x in row["calc_verdict"].split("; ")[1:] if "грубо по MMR" not in x]
             basis = "KBB — прикидка по вашей базе" if row.get("kbb_estimate_usd") else "цена продажи по MMR"
             row["calc_verdict"] = "; ".join([f"НУЖЕН KBB: предварительно до {_usd(result.max_bid)} ({basis})"] + rest)
-        if result.max_bid and "из списка:" in row.get("needs_review", ""):
+        if result.max_bid and can_buy and "из списка:" in row.get("needs_review", ""):
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.
             row["calc_verdict"] += "; предварительно — откройте карточку лота"
         row["calc_breakdown"] = result.breakdown()

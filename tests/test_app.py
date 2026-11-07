@@ -77,8 +77,11 @@ class TestOneWindow(unittest.TestCase):
         rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "toyota corolla", kbb=9000)
         self.assertTrue(rows)
         self.assertTrue(all(r["kbb_private_party_usd"] == "9000" for r in rows))
-        # «Рынок» считается для всех, кроме отсеянных стоп-факторами (у них расчёт не нужен).
-        self.assertTrue(all(r["market_estimate_usd"] for r in rows if not r["calc_verdict"].startswith("ПРОПУСТИТЬ")))
+        # Средняя цена покупки, прибыль по ней и потолок — у всех машин, и у «ПРОПУСТИТЬ» тоже.
+        self.assertTrue(all(r["market_estimate_usd"] and r["calc_profit_market_usd"] for r in rows))
+        self.assertTrue(all(r["calc_max_bid_usd"] for r in rows if not r["calc_verdict"].startswith("НЕВЫГОДНО")))
+        # «ПРОПУСТИТЬ» — не в «реально купить» и без ставки на 15%
+        self.assertFalse(any(app.buyable(r) or r.get("calc_bid_goal_usd") for r in rows if r["calc_verdict"].startswith("ПРОПУСТИТЬ")))
 
     def test_kbb_entered_in_window_by_vin(self) -> None:
         costs = load_costs(COSTS)

@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.17"
-PROGRAM_VERSION = "2026-11-07.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-07.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
 
@@ -1026,6 +1026,8 @@ def goal_bids(rows: list[dict], costs: dict) -> None:
     if not goal:
         return
     for r in rows:
+        if str(r.get("calc_verdict", "")).startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО")):
+            continue
         try:
             cap, sale = float(r.get("calc_max_bid_usd") or 0), float(r.get("sale_estimate_usd") or 0)
         except ValueError:
@@ -1060,6 +1062,8 @@ def buyable(row: dict) -> bool:
         cap = float(row.get("calc_max_bid_if_defect_usd") or row.get("calc_max_bid_usd") or 0)
         market = float(row.get("market_estimate_usd") or 0)
     except ValueError:
+        return False
+    if str(row.get("calc_verdict", "")).startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО")):
         return False
     return cap > 0 and market > 0 and cap >= market
 
@@ -1800,7 +1804,7 @@ PAGE = r"""<!DOCTYPE html>
 :root{--bg:#f6f6f3;--fg:#1c1c1a;--muted:#62625c;--card:#fff;--line:#e2e2dc;--ok:#1f6f43;--okbg:#e3f1e8;--bad:#9b2c2c;--badbg:#f8e3e3;--mid:#8a6d00;--midbg:#fbf1d0;--acc:#2f5597}
 @media (prefers-color-scheme:dark){:root{--bg:#151514;--fg:#ececea;--muted:#a2a29c;--card:#1f1f1d;--line:#34342f;--ok:#5cc28a;--okbg:#17301f;--bad:#f08b8b;--badbg:#3a1d1d;--mid:#e0c060;--midbg:#352c10;--acc:#7da2e8}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1640px;margin:0 auto;padding:16px 8px 40px}h1{font-size:22px;margin:0 0 4px}.muted{color:var(--muted);font-size:13px}
+main{max-width:1640px;margin:0 auto;padding:16px 8px 40px}b.ceil-off{color:var(--muted)}h1{font-size:22px;margin:0 0 4px}.muted{color:var(--muted);font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 10px;margin:12px 0}
 form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
 input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:90px}
@@ -1877,7 +1881,7 @@ function passedPrice(x){if(x.auction_result_price)return `<span class="pill v-ok
  if(x.auction_result)return `<span class="pill v-mid">${esc(x.auction_result.split(' · ')[0])}</span> `;
  return '<span class="pill" title="Положите файл итогов торгов (CarMax / Velocicast CSV) в «Загрузки» — цена появится сама">итога в файлах нет</span> '}
 function resultCell(x){if(!x.auction_result)return '';const p=Number(x.auction_result_price),c=Number(x.calc_max_bid_usd);
- const vs=p&&c?(c>=p?`<div class="pos">потолок ${money(c)} — выиграли бы</div>`:`<div class="neg">потолок ${money(c)} — ниже на ${money(p-c)}</div>`):'';
+ const vs=p&&c&&/^(ПРОПУСТИТЬ|НЕВЫГОДНО)/.test(x.calc_verdict||'')?`<div class="muted">потолок ${money(c)} — если бы всё же брали</div>`:p&&c?(c>=p?`<div class="pos">потолок ${money(c)} — выиграли бы</div>`:`<div class="neg">потолок ${money(c)} — ниже на ${money(p-c)}</div>`):'';
  return `<div class="result"><b>${esc(x.auction_result.split(' · ')[0])}</b><div class="muted">${esc(x.auction_result.split(' · ').slice(1).join(' · '))}</div>${vs}</div>`}
 /* CR grade Manheim (0–5): 4+ хорошо, 3–4 средне, ниже 3 — много вложений */
 const crCls=g=>{const n=parseFloat(g);return isNaN(n)?'':n>=4?'v-ok':n>=3?'v-mid':'v-bad'};
@@ -1960,6 +1964,12 @@ function sortProfit(){setSort(sortBy==='profit'?'profit_asc':'profit')}
 const SORT_NOTE={lane:'по линии и номеру: A/1, A/2 … затем B/1 … — каждая площадка отдельно',market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};
 function setPassed(on){showPassed=on;try{localStorage.setItem('la-passed',on?'1':'')}catch(e){}refresh()}
 const params=()=>new URLSearchParams({rejected:showRejected?'1':'',place,picked:$('picked').checked?'1':'',passed:showPassed?'1':'',sort:sortBy,defect:defectBy,returned:onlyReturned?'1':'',buyable:onlyBuyable?'1':'',day:saleDay,vin:($('vin')&&$('vin').value||'').trim(),removed:showRemoved?'1':'',arrived:onlyArrived?'1':'',bids:onlyBids?'1':'',models:models.join(','),q:$('q').value,y1:$('y1').value,y2:$('y2').value,miles:$('miles').value,kbb:$('kbb').value,hours:$('hours').value,maxbid:$('maxbid').value,nophoto:$('nophoto').checked?'1':''});
+/* Потолок: у «ПРОПУСТИТЬ» / «НЕВЫГОДНО» — серым (если всё же брать); нет потолка — коротко почему. */
+function ceilCell(x){const v=x.calc_verdict||'',off=/^(ПРОПУСТИТЬ|НЕВЫГОДНО)/.test(v);
+ if(x.calc_max_bid_usd)return off?`<b class="ceil-off" title="${v.startsWith('ПРОПУСТИТЬ')?'Стоп-фактор в истории — потолок, если всё же брать':'Потолок ниже минимума — машина слишком дешёвая для оборота'}">${money(x.calc_max_bid_usd)}</b>`:`<b>${money(x.calc_max_bid_usd)}</b>`;
+ if(!x.sale_estimate_usd)return '<span class="muted" title="Нет ни KBB, ни похожих машин для прикидки — нажмите «получить KBB»">нужен KBB</span>';
+ if(v.startsWith('НЕВЫГОДНО'))return '<span class="muted" title="Расходы и цель прибыли больше цены продажи">нет</span>';
+ return ''}
 /* «РИСК: рама; МОЖНО до $X; …» — в плашке и риск, и что вышло по расчёту. */
 const vParts=v=>String(v||'').split(';'),vN=v=>String(v||'').startsWith('РИСК')?2:1;
 function vHead(v){return vParts(v).slice(0,vN(v)).map(x=>x.trim()).join(' · ')}
@@ -2029,7 +2039,7 @@ ${!x.kbb_private_party_usd&&x.kbb_estimate_usd?`<div class="muted" title="${esc(
 
 <td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}</td>
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
-<td class="num" title="Потолок — предел: выше не ставить, прибыль при нём ≈ 10% от цены продажи (KBB). Ниже — ставка на 15% прибыли: с неё начинать"><b>${money(x.calc_max_bid_usd)}</b>${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}${x.calc_bid_goal_usd?`<div class="goal" title="Ставка, при которой прибыль ≈ ${esc(x.calc_goal_pct)} от цены продажи (KBB)">${esc(x.calc_goal_pct)}: ${money(x.calc_bid_goal_usd)}</div>`:''}</td>
+<td class="num" title="Потолок — предел: выше не ставить, прибыль при нём ≈ 10% от цены продажи (KBB). Ниже — ставка на 15% прибыли: с неё начинать">${ceilCell(x)}${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}${x.calc_bid_goal_usd?`<div class="goal" title="Ставка, при которой прибыль ≈ ${esc(x.calc_goal_pct)} от цены продажи (KBB)">${esc(x.calc_goal_pct)}: ${money(x.calc_bid_goal_usd)}</div>`:''}</td>
 <td>${x.passed?`<span class="pill v-bad" title="Аукцион этой машины уже прошёл">⏱ ${esc(x.passed)}</span> ${passedPrice(x)}`:''}${x.today_done?`<span class="pill v-mid" title="Торги сегодня — машина в списке до конца дня, для разбора">⏱ торги сегодня прошли</span> ${passedPrice(x)}`:''}<span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
 <details><summary>расчёт</summary><div class="muted">${esc(x.calc_breakdown)}<br>${esc(x.needs_review)}</div></details></td><td class="muted">${esc(x.sale_date)}${resultCell(x)}</td></tr>`).join('')||`<tr><td colspan="11" class="muted">${d.vin_search?`По VIN «${esc(d.vin_search)}» машины нет в сохранённых страницах за 30 дней — сохраните страницу аукциона с этой машиной закладкой.`:d.rows.length?'В этой вкладке машин нет.':d.hidden_total?`Машин на торгах ${d.hidden_total}, но все скрыты фильтрами${activeFilters().length?': '+esc(activeFilters().join(' · ')):''}. <button type="button" class="tab on" onclick="resetFilters()">Показать все машины</button>`:'Пока пусто: откройте поиск на аукционах и нажмите закладку на каждой вкладке.'}</td></tr>`;keepOrder=null;setTimeout(afterRender,0);
 const n=d.total,ok=d.rows.filter(x=>(x.calc_verdict||'').startsWith('МОЖНО')).length;

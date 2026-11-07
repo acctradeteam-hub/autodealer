@@ -169,12 +169,24 @@ class TestCalculate(unittest.TestCase):
 
     def test_stop_factor_skips(self) -> None:
         result = calculate(BidInput(auction="Manheim", sale_price=9000, history_text="Rebuilt title"), simple_costs())
-        self.assertIsNone(result.max_bid)
         self.assertTrue(result.verdict.startswith("ПРОПУСТИТЬ"))
+        # потолок всё равно посчитан — на случай, если всё же брать
+        self.assertTrue(result.max_bid)
+        self.assertIn(f"если всё же брать — до ${result.max_bid:,}", result.verdict)
 
     def test_unprofitable(self) -> None:
         result = calculate(BidInput(auction="Manheim", sale_price=1200, history_text="clean"), simple_costs())
         self.assertTrue(result.verdict.startswith("НЕВЫГОДНО"))
+        self.assertIsNone(result.max_bid)                      # расходы больше цены — потолка нет
+
+    def test_unprofitable_still_has_market_and_ceiling(self) -> None:
+        costs = dict(simple_costs(), min_max_bid_usd=1500, market={"kbb_clean": 0.78, "kbb_heavy": 0.6})
+        result = calculate(BidInput(auction="Manheim", kbb_private_party=2600, history_text="clean"), costs)
+        self.assertTrue(result.verdict.startswith("НЕВЫГОДНО: потолок"), result.verdict)
+        self.assertTrue(result.max_bid and result.max_bid < 1500)   # потолок ниже минимума — но виден
+        self.assertAlmostEqual(result.market_price, 2600 * 0.78)
+        self.assertIsNotNone(result.profit_at_market)
+        self.assertIn("средняя цена покупки ≈", result.verdict)
 
     def test_current_bid_above_ceiling(self) -> None:
         result = calculate(BidInput(auction="Manheim", sale_price=8000, current_bid=6200, history_text="clean"), simple_costs())
@@ -267,6 +279,16 @@ class TestMajorDefectInspection(unittest.TestCase):
     def test_stop_factor_still_wins(self) -> None:
         r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Engine Defect, Structural damage"), self.costs)
         self.assertTrue(r.verdict.startswith("ПРОПУСТИТЬ"))
+        self.assertTrue(r.max_bid and r.market_price and r.profit_at_market is not None)   # средняя, прибыль, потолок — есть
+
+    def test_market_when_defect_makes_it_unprofitable(self) -> None:
+        # Дешёвая машина: при подтверждённом дефекте — «НЕВЫГОДНО», без дефекта — потолок есть.
+        # Средняя цена покупки (как у лотов с таким объявлением) и прибыль по ней — всё равно посчитаны.
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=4500, history_text="Major Engine Defect"), self.costs)
+        self.assertTrue(r.max_bid, r.verdict)
+        self.assertIsNone(r.max_bid_if_defect)
+        self.assertAlmostEqual(r.market_price, 4500 * self.costs["market"]["kbb_heavy"])
+        self.assertIsNotNone(r.profit_at_market)
 
 
 class TestRows(unittest.TestCase):
