@@ -179,10 +179,7 @@ function autoRun(force, only) {
 /* После сбора: у машин «без фото» смотрим карточки лотов — список CarMax пишет «Check back for images» дольше,
    чем у самой карточки уже есть фото (carmax_photos.js на вкладке #la-photos; вкладка закроется сама). */
 function autoPhotos() {
-  chrome.tabs.create({ url: 'https://www.carmaxauctions.com/#la-photos', active: false }, function (tab) {
-    if (chrome.runtime.lastError || !tab) { return; }
-    var mark = {}; mark['photos-' + tab.id] = 1; chrome.storage.session.set(mark);
-  });
+  photosStart(null, 'после автосбора');     // photo_check.js: вкладка сама идёт по карточкам лотов
 }
 
 chrome.runtime.onMessage.addListener(function (msg, sender, reply) {

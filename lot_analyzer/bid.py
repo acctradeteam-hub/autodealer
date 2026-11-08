@@ -767,6 +767,18 @@ def hybrid_high_miles(data: "BidInput", costs: dict) -> bool:
     return bool(data.hybrid and data.miles and data.miles >= float(hybrid_cfg(costs).get("high_miles", 130000)))
 
 
+def all_in_model(row: dict[str, str], costs: dict) -> bool:
+    """Honda Civic, Toyota Corolla (costs: all_in_models) — их считаем все, со стоп-факторами тоже."""
+    models = (costs.get("all_in_models") or {}).get("models") or []
+    make, model = str(row.get("make", "")).strip().lower(), squeeze(f"{row.get('model', '')} {row.get('trim', '')}")
+    return any(make == m.lower() and re.search(p, model, re.I) for m, p in models)
+
+
+def branded_title(row: dict[str, str]) -> bool:
+    """Брендированный титул (salvage / rebuilt / lemon …) — по тем же полям, что и расчёт."""
+    return bool(_positive_hits(_words_to_digits(squeeze(input_from_row(row).history_text)), _SKIP_PATTERNS["branded_title"]))
+
+
 def is_electric(row: dict[str, str]) -> bool:
     if str(row.get("make", "")).strip().lower() in ("tesla", "rivian", "lucid", "polestar"):
         return True
@@ -839,6 +851,13 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
                 row["kbb_estimate_raw_usd"] = f"{est.raw:.0f}" if getattr(est, "raw", None) else ""
                 row["kbb_estimate_source"] = est.source + (" (грубо, ±20%)" if market_based else "")
         data = input_from_row(row)
+        row["all_in"] = row["branded_hidden"] = ""
+        if all_in_model(row, costs):
+            # Civic / Corolla: считаем все — стоп-факторы дают «РИСК» с полным расчётом, а не «ПРОПУСТИТЬ».
+            data.consider = True
+            row["all_in"] = "1"
+            if (costs.get("all_in_models") or {}).get("hide_branded_title") and branded_title(row) and not parse_money(row.get("my_proxy_usd")):
+                row["branded_hidden"] = "1"             # брендированный титул — из списка совсем
         if not data.kbb_private_party and row.get("kbb_estimate_usd"):
             data.kbb_private_party = parse_money(row["kbb_estimate_usd"])
             data.kbb_source = row["kbb_estimate_source"]
@@ -867,12 +886,15 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
             total = result.sale_price - result.discount - proxy - fee - result.fixed_total
             row["profit_at_my_bid_items"] += f" = {'−' if total < 0 else ''}{_usd(abs(total))}"
         real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
-        can_buy = not result.verdict.startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО"))
+        # «РИСК: рама; МОЖНО до …» — решает то, что после риска; сам риск в вердикте остаётся.
+        parts = row["calc_verdict"].split("; ")
+        risk = parts.pop(0) if parts[0].startswith("РИСК") and len(parts) > 1 else ""
+        can_buy = not parts[0].startswith(("ПРОПУСТИТЬ", "НЕВЫГОДНО"))
         if costs.get("require_kbb") and not real_kbb and result.max_bid and can_buy:
             # Без настоящего KBB потолок — только прикидка по MMR: сначала KBB из приложения.
-            rest = [x for x in row["calc_verdict"].split("; ")[1:] if "грубо по MMR" not in x]
+            rest = [x for x in parts[1:] if "грубо по MMR" not in x]
             basis = "KBB — прикидка по вашей базе" if row.get("kbb_estimate_usd") else "цена продажи по MMR"
-            row["calc_verdict"] = "; ".join([f"НУЖЕН KBB: предварительно до {_usd(result.max_bid)} ({basis})"] + rest)
+            row["calc_verdict"] = "; ".join(([risk] if risk else []) + [f"НУЖЕН KBB: предварительно до {_usd(result.max_bid)} ({basis})"] + rest)
         if result.max_bid and can_buy and "из списка:" in row.get("needs_review", ""):
             # Строка из списка поиска: истории и повреждений из карточки ещё нет.
             row["calc_verdict"] += "; предварительно — откройте карточку лота"

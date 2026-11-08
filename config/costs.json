@@ -156,6 +156,8 @@
     "rental_fleet": 0.03,
     "theft_recovery": 0.10
   },
+  "_all_in_models": "Модели, которые считаем все: стоп-факторы (рама, нет титула, подушки …) не «ПРОПУСТИТЬ», а «РИСК» с полным расчётом; KBB — всем. hide_branded_title — с брендированным титулом (salvage / rebuilt / lemon …) машины этих моделей не показываются вовсе (кроме тех, где уже стоит ваша ставка).",
+  "all_in_models": {"models": [["Honda", "^civic\\b"], ["Toyota", "^corolla\\b(?!\\s*cross)"]], "hide_branded_title": true},
   "history_skip": [
     "branded_title",
     "odometer_problem",

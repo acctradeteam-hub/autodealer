@@ -87,7 +87,8 @@ class TestManheimList(unittest.TestCase):
     def test_frame_damage_and_disclosures_skip(self) -> None:
         r = self.by_miles["137066"]
         self.assertIn("Further Disclosures: Structural Damage", r["defects"])
-        self.assertTrue(r["calc_verdict"].startswith("ПРОПУСТИТЬ"))
+        # Corolla — модель «считаем все»: рама — не «ПРОПУСТИТЬ», а «РИСК» с расчётом
+        self.assertTrue(r["calc_verdict"].startswith("РИСК: повреждение рамы"), r["calc_verdict"])
 
     def test_only_negative_disclosures_kept(self) -> None:
         self.assertNotIn("Airbags: No Issues", " ".join(r["defects"] for r in self.rows))

@@ -4,6 +4,9 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const money = v => v ? "$" + Number(v).toLocaleString("en-US") : "—";
 const TAGS = [["Беру", "good"], ["Не беру", "badc"]];      // только решение; остальное — голосом и текстом
+/* Смог-чек на осмотре: проходит / не проходит — в программу тегом «Смог проходит» / «Смог не проходит». */
+const SMOG = [["Смог проходит", "good", "проходит"], ["Смог не проходит", "badc", "не проходит"]];
+const PAIRS = [["Беру", "Не беру"], ["Смог проходит", "Смог не проходит"]];
 const BRANCH = "main", LIST = "voice/list.json", NOTES = "voice/notes.json";
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
@@ -91,7 +94,7 @@ function render() {
   stateLine();
   /* Полоса справа: короткие номера лотов в том же порядке, что и карточки. */
   $("lots").innerHTML = shown.map(c => { const n = notes[c.vin] || {};
-    return `<button type="button" data-go="${esc(c.vin)}" class="${[hasNote(c.vin) ? "done" : "", (n.tags || []).includes("Беру") ? "take" : "", c.manual ? "man" : ""].join(" ").trim()}">${esc(shortLot(c.lot) || "—")}</button>`; }).join("");
+    return `<button type="button" data-go="${esc(c.vin)}" class="${[hasNote(c.vin) ? "done" : "", (n.tags || []).includes("Беру") ? "take" : "", (n.tags || []).includes("Не беру") ? "no" : "", c.manual ? "man" : ""].join(" ").trim()}">${esc(shortLot(c.lot) || "—")}</button>`; }).join("");
   $("lots").hidden = !shown.length;
   $("list").innerHTML = shown.map(c => {
     const n = notes[c.vin] || {}, tags = n.tags || [], rating = Number(n.rating) || 0;
@@ -104,6 +107,7 @@ function render() {
       ${progNotes(c).length || (c.own || []).length ? `<div class="prog">${progNotes(c).map(x => `<div>${esc(x)}</div>`).join("")}${(c.own || []).map(x => `<div>Мои: ${esc(x)}</div>`).join("")}</div>` : ""}
       <div class="stars" role="group" aria-label="Оценка машины"><span>Оценка</span>${[1, 2, 3, 4, 5].map(k => `<button type="button" class="star${k <= rating ? " on" : ""}" data-star="${k}" aria-label="${k} из 5" aria-pressed="${k <= rating}">${k <= rating ? "★" : "☆"}</button>`).join("")}</div>
       <div class="tags">${TAGS.map(([t, k]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(t)}</button>`).join("")}</div>
+      <div class="tags smog" role="group" aria-label="Смог-чек"><span>Смог-чек</span>${SMOG.map(([t, k, label]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(label)}</button>`).join("")}</div>
       <div class="say"><button type="button" class="mic" data-mic="${esc(c.vin)}" aria-label="Надиктовать заметку">🎤</button>
         <textarea id="n-${esc(c.vin)}" data-vin="${esc(c.vin)}" placeholder="Нажмите 🎤 и говорите, или пишите здесь">${esc(n.text || "")}</textarea></div>
       <div class="saved" id="s-${esc(c.vin)}">${n.at ? "сохранено " + hhmm(n.at) : ""}</div>
@@ -119,7 +123,7 @@ function saveNote(vin, patch) {
   const s = $("s-" + vin); if (s) s.textContent = "сохранено " + hhmm(Date.now());
   const card = document.querySelector(`article[data-vin="${CSS.escape(vin)}"]`); if (card) card.classList.toggle("done", hasNote(vin));
   const go = document.querySelector(`#lots button[data-go="${CSS.escape(vin)}"]`);
-  if (go) { const n = notes[vin] || {}; go.classList.toggle("done", hasNote(vin)); go.classList.toggle("take", (n.tags || []).includes("Беру")); }
+  if (go) { const n = notes[vin] || {}; go.classList.toggle("done", hasNote(vin)); go.classList.toggle("take", (n.tags || []).includes("Беру")); go.classList.toggle("no", (n.tags || []).includes("Не беру")); }
   stateLine();
   clearTimeout(sendTimer); sendTimer = setTimeout(() => send(false), 6000);   // в программу — после паузы
 }
@@ -167,7 +171,7 @@ $("list").addEventListener("click", e => {
   const vin = b.closest("article").dataset.vin, tag = b.dataset.tag;
   const tags = new Set((notes[vin] || {}).tags || []);
   tags.has(tag) ? tags.delete(tag) : tags.add(tag);
-  for (const [a, z] of [["Беру", "Не беру"]]) { if (tag === a) tags.delete(z); if (tag === z) tags.delete(a); }
+  for (const [a, z] of PAIRS) { if (tag === a) tags.delete(z); if (tag === z) tags.delete(a); }
   saveNote(vin, {tags: [...tags]});
   b.closest("article").querySelectorAll("button[data-tag]").forEach(x => { const on = tags.has(x.dataset.tag); x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
 });

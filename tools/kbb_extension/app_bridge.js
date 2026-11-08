@@ -33,6 +33,15 @@
       try { chrome.runtime.sendMessage({ type: 'carfax-order', vin: String(e.data.vin || '') }); } catch (err) { /* связь умерла */ }
       return;
     }
+    /* «📷 Проверить фото»: фон сам откроет карточки лотов «без фото» на CarMax (вкладка в фоне, закроется сама). */
+    if (e.data.type === 'photos-start') {
+      /* Две живые связи в одной вкладке — одна проверка: первая отмечает запрос как выполненный. */
+      var pid = String(e.data.id || '');
+      if (pid && document.documentElement.getAttribute('data-la-done') === pid) { return; }
+      if (pid) { document.documentElement.setAttribute('data-la-done', pid); }
+      try { chrome.runtime.sendMessage({ type: 'photos-start', why: 'кнопка' }); } catch (err) { /* связь умерла */ }
+      return;
+    }
     if (e.data.type !== 'open-bg') { return; }
     /* Две живые связи в одной вкладке не должны открыть две вкладки: первая отмечает запрос как выполненный. */
     var id = String(e.data.id || '');

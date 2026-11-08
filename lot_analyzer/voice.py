@@ -179,5 +179,7 @@ def attach(rows: list[dict]) -> None:
                 rating = 0
             row["phone_rating"] = str(rating) if 1 <= rating <= 5 else ""
             row["phone_take"] = next((t for t in ("Беру", "Не беру") if t in (note.get("tags") or [])), "")
+            # Смог-чек на осмотре: «Смог проходит» / «Смог не проходит»
+            row["phone_smog"] = next((t.replace("Смог ", "") for t in ("Смог проходит", "Смог не проходит") if t in (note.get("tags") or [])), "")
         if own:
             row["window_note"] = own.get("text", "")

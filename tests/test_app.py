@@ -1499,3 +1499,93 @@ class VisitPlacesTest(unittest.TestCase):
         self.assertIn("ноября", page)
         self.assertIn("tr{break-inside:avoid", page)
         self.assertIn('<h1 class="noprint">', page)
+
+
+class AllInModelsTest(unittest.TestCase):
+    """Civic и Corolla считаем все: стоп-факторы — «РИСК» с расчётом; брендированный титул — из списка совсем."""
+
+    def test_civic_corolla_all_in(self) -> None:
+        from lot_analyzer.bid import apply_to_rows
+        costs = load_costs(COSTS)
+        base = {"auction": "CarMax", "year": "2016", "odometer_miles": "90000", "kbb_private_party_usd": "", "kbb_estimate_usd": "",
+                "retail_estimate_usd": "11000"}
+        frame = dict(base, vin="V1", make="Honda", model="Civic", trim="EX", damage_primary="Structural damage")
+        accord = dict(base, vin="V2", make="Honda", model="Accord", trim="EX", damage_primary="Structural damage")
+        salvage = dict(base, vin="V3", make="Toyota", model="Corolla", trim="LE", title_type="Salvage")
+        salvage_bid = dict(salvage, vin="V4", my_proxy_usd="3000")
+        cross = dict(base, vin="V5", make="Toyota", model="Corolla Cross", trim="LE", title_type="Salvage")
+        rows = [frame, accord, salvage, salvage_bid, cross]
+        apply_to_rows(rows, costs, estimator=None)
+        self.assertTrue(frame["calc_verdict"].startswith("РИСК: повреждение рамы"), frame["calc_verdict"])
+        self.assertTrue(frame["calc_max_bid_usd"] and frame["all_in"])
+        self.assertTrue(accord["calc_verdict"].startswith("ПРОПУСТИТЬ"))          # остальные модели — как раньше
+        self.assertEqual((salvage["branded_hidden"], salvage_bid["branded_hidden"], cross["branded_hidden"]), ("1", "", ""))
+
+    def test_kbb_for_all_civic_corolla(self) -> None:
+        self.assertIn("const allIn=shown.filter(x=>x.all_in&&need(x));", app.PAGE)
+
+
+class NotTakeTest(unittest.TestCase):
+    """«Не беру» на осмотре (телефон): отдельный список; сверху — где ставка ещё стоит; не в «MP = потолок»."""
+
+    def test_not_take_filter_and_bid_warning(self) -> None:
+        from unittest import mock
+        from lot_analyzer import voice
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1431.html")
+        old_bids = app.BIDS_PATH.read_bytes() if app.BIDS_PATH.exists() else None
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with mock.patch.object(app, "mark_passed", lambda rows: None):
+                allrows = json.loads(urllib.request.urlopen(base + "/api/rows").read())["rows"]
+                vins = [r["vin"] for r in allrows if r.get("vin") and not r.get("my_proxy_usd")][:3]
+                phone = {vins[0]: {"tags": ["Не беру", "Смог не проходит"]}, vins[1]: {"tags": ["Не беру"]}, vins[2]: {"tags": ["Беру"]}}
+                app.BIDS_PATH.write_text(json.dumps({vins[1]: {"usd": 4000}}), encoding="utf-8")
+                with mock.patch.object(voice, "load", return_value=phone), mock.patch.object(voice, "load_window", return_value={}):
+                    got = json.loads(urllib.request.urlopen(base + "/api/rows?nottake=1&hours=1000").read())
+                    rows = got["rows"]
+                    self.assertEqual([r["vin"] for r in rows], [vins[1], vins[0]])            # сверху — со ставкой
+                    self.assertEqual(got["nottake_total"], 2)
+                    self.assertEqual([b["vin"] for b in got["nottake_bids"]], [vins[1]])
+                    self.assertEqual(rows[1]["phone_smog"], "не проходит")
+                    req = urllib.request.Request(base + "/api/bids_ceiling", data=json.dumps({"vins": vins, "hours": 1000}).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    urllib.request.urlopen(req).read()
+                    saved = json.loads(app.BIDS_PATH.read_text(encoding="utf-8"))
+                    self.assertEqual(saved.get(vins[1], {}).get("usd"), 4000)                  # «Не беру» — ставку не трогаем
+                    self.assertNotIn(vins[0], saved)                                            # и не ставим
+        finally:
+            server.shutdown()
+            if old_bids is None:
+                app.BIDS_PATH.unlink(missing_ok=True)
+            else:
+                app.BIDS_PATH.write_bytes(old_bids)
+        page = app.PAGE
+        self.assertIn("function notTakeBanner(d)", page)
+        self.assertIn("📱 Не беру <span class=\"cnt\">", page)
+
+
+class PhotosStatusTest(unittest.TestCase):
+    """«📷 Проверить фото»: расширение (2.18+) сообщает ход проверки, окно его показывает."""
+
+    def test_status_roundtrip(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        body = json.dumps({"state": "running", "total": 4, "done": 1, "found": 1, "failed": 1, "pass": 1, "current": "1003"}).encode()
+        try:
+            with self.assertRaises(urllib.error.HTTPError):          # без заголовка расширения — нельзя
+                urllib.request.urlopen(urllib.request.Request(base + "/api/photos_status", data=body, headers={"Content-Type": "application/json"}))
+            urllib.request.urlopen(urllib.request.Request(base + "/api/photos_status", data=body,
+                                                          headers={"Content-Type": "application/json", "X-LA": "1"})).read()
+            got = json.loads(urllib.request.urlopen(base + "/api/photos_status").read())
+            self.assertEqual((got["state"], got["total"], got["done"], got["found"], got["failed"]), ("running", 4, 1, 1, 1))
+        finally:
+            server.shutdown()
+            app.PHOTOS_STATUS.clear()
+        page = app.PAGE
+        self.assertIn("type:'photos-start'", page)
+        self.assertIn("function photosLine(s)", page)

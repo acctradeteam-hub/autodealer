@@ -2,6 +2,7 @@
    Окно открывает https://www.carmaxauctions.com/vehicledetail/<stock>#la-bid=<сумма>. Здесь: «Bid early» →
    сумма (вниз до шага $50) → подсветка. Способ оплаты и «Place bid» — ВЫ: сами ставку программа не ставит. */
 (function () {
+  if (/la-photo/.test(location.hash)) { return; }          // вкладка «📷 Проверить фото» — ставку не трогаем
   var m = /[#&]la-bid=(\d+)/.exec(location.hash);
   try {
     if (m) { sessionStorage.setItem('la-bid', m[1]); } else { m = [null, sessionStorage.getItem('la-bid') || '']; }
