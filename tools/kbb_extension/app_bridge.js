@@ -19,9 +19,9 @@
       return;
     }
     /* Автосбор CarMax: состояние для окна и кнопка «Собрать сейчас». */
-    if (e.data.type === 'auto-status' || e.data.type === 'auto-run') {
+    if (e.data.type === 'auto-status' || e.data.type === 'auto-run' || e.data.type === 'join-status' || e.data.type === 'join-run' || e.data.type === 'join-enable') {
       try {
-        chrome.runtime.sendMessage({ type: e.data.type, which: String(e.data.which || '') }, function (a) {
+        chrome.runtime.sendMessage({ type: e.data.type, which: String(e.data.which || ''), on: !!e.data.on }, function (a) {
           void chrome.runtime.lastError;
           window.postMessage({ source: 'lot-analyzer-ext', type: e.data.type, answer: a || null }, '*');
         });

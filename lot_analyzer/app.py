@@ -45,8 +45,10 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.19"
-PROGRAM_VERSION = "2026-11-09.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.20"
+PROGRAM_VERSION = "2026-11-09.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
+LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 PHOTOS_STATUS: dict = {}              # «📷 Проверить фото»: как идёт проверка карточек (сообщает расширение 2.18+)
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
@@ -1458,6 +1460,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/vrp":               # окно: вход на vin-reports-pro сохранён? (пароль не показывается)
                 v = load_vrp()
                 self._send(json.dumps({"email": v.get("email", ""), "saved": bool(v.get("email") and v.get("password"))}, ensure_ascii=False).encode("utf-8"))
+            elif url.path == "/api/logger_status":     # окно: запись торгов (понедельник 7:55)
+                self._send(json.dumps(LOGGER_STATUS, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/photos_status":     # окно: как идёт «📷 Проверить фото»
                 self._send(json.dumps(PHOTOS_STATUS, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/carfax_status":     # окно: что сейчас с заказами Carfax (расширение сообщает по ходу)
@@ -1596,6 +1600,52 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(json.dumps({"ok": True, "path": str(path)}, ensure_ascii=False).encode("utf-8"))
                 else:
                     self._send(b'{"ok":false}')
+                return
+            if urlparse(self.path).path in ("/api/auction_log", "/api/logger_status", "/api/logger_page"):
+                # Запись торгов (расширение): итоги логгера — файлом в «Загрузки/Lot Analyzer» (тот же файл дописывается
+                # каждые 15 минут), ход записи — окну, страница, на которой не вышло, — в данные программы для разбора.
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > 60 * 1024 * 1024:
+                    self._send(b'{"ok":false,"error":"too big"}', status=413)
+                    return
+                data = json.loads(self.rfile.read(length) or b"{}")
+                path = urlparse(self.path).path
+                if path == "/api/logger_status":
+                    LOGGER_STATUS.clear()
+                    LOGGER_STATUS.update({k: data.get(k) for k in ("enabled", "date", "step", "note", "file", "started", "exported", "next", "at", "manual")})
+                    stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+                    LOGGER_STATUS["stats"] = {k: stats.get(k) for k in ("lots", "sold", "bids", "lanes", "last")}
+                    LOGGER_STATUS["got"] = time.time()
+                    self._send(b'{"ok":true}')
+                    return
+                if path == "/api/logger_page":
+                    step = re.sub(r"[^a-z]", "", str(data.get("step") or "page"))[:12] or "page"
+                    try:
+                        DATA_DIR.mkdir(parents=True, exist_ok=True)
+                        (DATA_DIR / f"logger_page_{step}_{time.strftime('%Y-%m-%d_%H%M%S')}.html").write_text(str(data.get("html") or ""), encoding="utf-8")
+                        for old in sorted(DATA_DIR.glob("logger_page_*.html"))[:-6]:
+                            old.unlink()
+                    except OSError:
+                        pass
+                    self._send(b'{"ok":true}')
+                    return
+                name, text = Path(str(data.get("name") or "")).name, str(data.get("text") or "")
+                if not LOGGER_FILE.match(name) or len(text) < 50:
+                    self._send(b'{"ok":false,"error":"bad file"}', status=400)
+                    return
+                folder = next((f for f in folders if f.name == ARCHIVE_NAME), folders[0])
+                try:
+                    folder.mkdir(parents=True, exist_ok=True)
+                    tmp = folder / (name + ".part")
+                    tmp.write_text(text, encoding="utf-8")
+                    tmp.replace(folder / name)            # тот же файл — новая версия целиком, без полузаписанного
+                except OSError as err:
+                    self._send(json.dumps({"ok": False, "error": str(err)}, ensure_ascii=False).encode("utf-8"), status=500)
+                    return
+                self._send(json.dumps({"ok": True, "path": str(folder / name)}, ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/photos_status":  # расширение: проверка фото идёт / готово / CarMax не пустил
                 if self.headers.get("X-LA") != "1":
@@ -1910,7 +1960,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="joinst" class="muted" style="margin:2px 0 4px"></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th style="width:290px">Машина</th><th>Пробег</th><th title="Ваша оценка машины на осмотре — из приложения «Аукцион: заметки» (1–5 звёзд), и решение «Беру» / «Не беру»">Моя оценка</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110 sorth" onclick="sortHead()" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов). Нажмите — сортировка по ней: от низкой к высокой, ещё раз — наоборот">Средняя покупка<br>на аукционе <span id="sortmark">⇅</span></th><th class="w110 sorth" onclick="sortProfit()" title="Нажмите — сортировка по прибыли при покупке по средней цене: сверху самая большая, одним списком; ещё раз — наоборот">Прибыль при покупке<br>по средней цене <span id="sortmark2">⇅</span></th><th>Потолок</th><th style="width:230px">Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -2206,6 +2256,23 @@ function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML
    :` — <b>⚠ в окне их нет:</b> программа не нашла эти файлы. Она смотрит папки: ${esc(((lastData&&lastData.folders)||[]).join('; '))}. Проверьте, куда Chrome сохраняет скачанное (Настройки → Загрузки)`):'';
   return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(seen?` (в окне ${seen})`:'')+lost+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
  e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'аукционы этой недели ещё не собраны')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
+/* Запись торгов CarMax: понедельник 7:55 — Join Auction, все линии Velocicast, логгер; итоги — файлом в программу. */
+const JOIN_STEP={open:'открываю CarMax…',join:'нажал «Join Auction», жду Velocicast…',lanes:'открываю все линии Velocicast…',logging:'идёт запись',done:'записано',lost:'вкладку Velocicast закрыли',error:'не вышло'};
+function drawJoin(a){const e=$('joinst');if(!e)return;const s=a&&a.state;if(!s){e.innerHTML='';return}
+ const t=x=>x?new Date(x).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'',st=s.stats||{};
+ const next=s.next?new Date(s.next).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+ const today=s.date===new Date().toLocaleDateString('sv-SE');
+ let line=s.step&&today?`<b>${JOIN_STEP[s.step]||s.step}</b>`+(['logging','done','lost'].includes(s.step)&&st.lots!=null?`: лотов ${st.lots}, продано ${st.sold}, ставок ${st.bids}`:'')+
+  (s.exported?` · файл ${esc(s.file||'')} обновлён ${t(s.exported)}`:s.step==='logging'?' · первый файл — через 15 минут':'')+(s.note?` — ${esc(s.note)}`:''):(s.date?`последняя запись ${esc(s.date)}${s.step?' — '+(JOIN_STEP[s.step]||s.step):''}`:'ещё не запускалась');
+ e.innerHTML=`🎙 Запись торгов CarMax (пн 7:55${s.enabled===false?' — <b>выключена</b>':next?' · следующая: '+esc(next):''}): ${line} `+
+  `<button type="button" class="tab" onclick="joinRun()" title="Открыть CarMax, нажать «Join Auction», открыть все линии Velocicast и начать запись сейчас (если торги идут). Ставок программа не делает">▶ Запустить сейчас</button> `+
+  `<button type="button" class="tab" onclick="joinEnable(${s.enabled===false})">${s.enabled===false?'включить':'выключить'}</button>`;
+ if(['open','join','lanes','logging'].includes(s.step))setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'join-status'},'*'),15000)}
+function joinRun(){if(!hasExt()||extV()<2.2){alert('Нужно расширение «Lot Analyzer KBB» 2.20 или новее: chrome://extensions → ⟳, потом обновите это окно.');return}
+ window.postMessage({source:'lot-analyzer',type:'join-run'},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'join-status'},'*'),2000)}
+function joinEnable(on){window.postMessage({source:'lot-analyzer',type:'join-enable',on},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'join-status'},'*'),800)}
+window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='join-status')drawJoin(e.data.answer)});
+setInterval(()=>{if(hasExt()&&extV()>=2.2)window.postMessage({source:'lot-analyzer',type:'join-status'},'*')},60000);setTimeout(()=>{if(extV()>=2.2)window.postMessage({source:'lot-analyzer',type:'join-status'},'*')},3000);
 function autoRun(w){window.postMessage({source:'lot-analyzer',type:'auto-run',which:w||''},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='auto-status')drawAuto(e.data.answer)});
 setInterval(()=>{if(hasExt())window.postMessage({source:'lot-analyzer',type:'auto-status'},'*')},20000);setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),2500);

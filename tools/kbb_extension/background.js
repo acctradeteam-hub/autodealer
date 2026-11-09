@@ -3,7 +3,7 @@
      запоминает машины автопилота — вкладка спросит их сама;
    — закрывает вкладку kbb.com, когда автопилот закончил (просит сама вкладка);
    — берёт у окна программы (только 127.0.0.1:8765, ваш компьютер) тексты заметок для CarMax и Manheim. */
-importScripts('auto_collect.js', 'photo_check.js');   // автосбор CarMax по пятницам; «📷 Проверить фото»
+importScripts('auto_collect.js', 'photo_check.js', 'auction_join.js');   // автосбор CarMax по пятницам; «📷 Проверить фото»; запись торгов по понедельникам
 
 var favQueue = [];
 var favTimer = null;

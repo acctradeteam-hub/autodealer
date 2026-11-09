@@ -1648,3 +1648,60 @@ class MajorDefectInInspectionTest(unittest.TestCase):
         self.assertEqual(voice.car_of({"vin": "V2", "auction": "CarMax", "auction_notes": "no announcements"})["major"], [])
         app_js = (Path(__file__).resolve().parents[1] / "tools/android_voice/app/src/main/assets/app.js").read_text(encoding="utf-8")
         self.assertIn('<div class="major">⚠ MAJOR ', app_js)
+
+
+class AuctionRecorderTest(unittest.TestCase):
+    """Запись торгов (расширение 2.20): итоги логгера — файлом в папку программы; ход записи — окну; страница — для разбора."""
+
+    def test_auction_log_status_and_page(self) -> None:
+        from lot_analyzer import results
+        tmp = Path(tempfile.mkdtemp()) / app.ARCHIVE_NAME
+        tmp.mkdir()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        post = lambda path, body, xla=True: urllib.request.urlopen(urllib.request.Request(
+            base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **({"X-LA": "1"} if xla else {})})).read()
+        text = (FIXTURES / "auction_all_logger_sample.csv").read_text(encoding="utf-8")
+        old_pages = set(app.DATA_DIR.glob("logger_page_*.html")) if app.DATA_DIR.exists() else set()
+        try:
+            with self.assertRaises(urllib.error.HTTPError):                       # без заголовка расширения — нельзя
+                post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text}, xla=False)
+            with self.assertRaises(urllib.error.HTTPError):                       # только auction_all_<дата>_<время>.csv
+                post("/api/auction_log", {"name": "../evil.csv", "text": text})
+            post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text[:2000]})
+            post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text})    # тот же файл — новая версия
+            saved = tmp / "auction_all_2026-11-09_0800.csv"
+            self.assertEqual(saved.read_text(encoding="utf-8"), text)
+            self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["auction_all_2026-11-09_0800.csv"])
+            rows = results.read_auction_logger(saved)
+            self.assertTrue(rows and rows[0]["date"] == "2026-11-09" and rows[0]["buyer"])      # итоги понедельника
+            post("/api/logger_status", {"step": "logging", "file": saved.name, "stats": {"lots": 5, "sold": 4, "bids": 20, "secret": "x"}})
+            got = json.loads(urllib.request.urlopen(base + "/api/logger_status").read())
+            self.assertEqual((got["step"], got["stats"]["sold"]), ("logging", 4))
+            self.assertNotIn("secret", got["stats"])
+            post("/api/logger_page", {"step": "lanes", "html": "<html>vc</html>"})
+            new = set(app.DATA_DIR.glob("logger_page_lanes_*.html")) - old_pages
+            self.assertEqual(len(new), 1)
+        finally:
+            server.shutdown()
+            app.LOGGER_STATUS.clear()
+            for p in set(app.DATA_DIR.glob("logger_page_*.html")) - old_pages:
+                p.unlink()
+        page = app.PAGE
+        self.assertIn("function drawJoin(a)", page)
+        self.assertIn("type:'join-run'", page)
+
+    def test_extension_files(self) -> None:
+        ext = Path(__file__).resolve().parents[1] / "tools/kbb_extension"
+        manifest = json.loads((ext / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], app.EXTENSION_VERSION)
+        self.assertIn("https://*.velocicast.io/*", manifest["host_permissions"])
+        self.assertIn("auction_join.js", (ext / "background.js").read_text(encoding="utf-8"))
+        logger = (ext / "velocicast_logger.js").read_bytes().decode("utf-8")
+        self.assertNotIn("￾", logger)                                          # Chrome не грузит файл с U+FFFE / U+FFFF
+        self.assertNotIn("￿", logger)
+        self.assertIn("A.combinedCSV = function", logger)
+        # Нажимаются только Join Auction, выбор линий и подтверждение — ничего со «bid» / «buy».
+        for name in ("carmax_join.js", "velocicast_join.js"):
+            self.assertIn("bid", (ext / name).read_text(encoding="utf-8").split("NEVER = ")[1].split(";")[0])
