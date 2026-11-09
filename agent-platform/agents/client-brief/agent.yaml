@@ -1,0 +1,18 @@
+name: client-brief
+version: 1.0.0
+owner: ivan
+description: Справка по клиенту перед звонком — кто это, на какой стадии сделка, какие кейсы показать
+context: [clients, cases]
+roles: [ceo, sales, delivery]
+input:
+  type: object
+  required: [client]
+  properties:
+    client: {type: string, title: Клиент, description: "Название клиента, например «ТрансЛогистик»"}
+output:
+  type: object
+  required: [client, brief, cases]
+  properties:
+    client: {type: string}
+    brief: {type: string, description: Справка в markdown}
+    cases: {type: array, items: {type: string}}

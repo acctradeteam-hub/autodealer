@@ -1,0 +1,27 @@
+# Сотрудники. token — ключ для Run API (Authorization: Bearer <token>).
+# В демо токены простые и видны в интерфейсе; в реальной установке их выдаёт SSO.
+- id: olga
+  name: Ольга Петрова
+  position: Генеральный директор
+  role: ceo
+  token: demo-olga
+- id: ivan
+  name: Иван Смирнов
+  position: Менеджер по продажам
+  role: sales
+  token: demo-ivan
+- id: maria
+  name: Мария Козлова
+  position: Руководитель продаж
+  role: sales
+  token: demo-maria
+- id: dmitry
+  name: Дмитрий Орлов
+  position: Руководитель внедрения
+  role: delivery
+  token: demo-dmitry
+- id: elena
+  name: Елена Васильева
+  position: Финансовый директор
+  role: finance
+  token: demo-elena

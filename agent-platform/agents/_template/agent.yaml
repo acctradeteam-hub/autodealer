@@ -1,0 +1,29 @@
+# Шаблон агента. Скопируйте папку: cp -r agents/_template agents/my-agent
+# Папки, имя которых начинается с «_», платформа не загружает.
+
+name: my-agent            # совпадает с именем папки и сервиса в docker-compose.yml
+version: 0.1.0
+owner: ivan               # id сотрудника из config/people.yaml — кто отвечает за агента
+description: Что делает агент, одной строкой — её видно на карточке
+
+# Разделы knowledge/, которые агенту нужны. Запросить другой раздел агент не сможет.
+context: [clients, cases]
+
+# Кто может запускать. Остальным платформа откажет до вызова агента.
+roles: [ceo, sales, delivery]
+
+# Вход (JSON Schema). По нему строится форма запуска в интерфейсе.
+input:
+  type: object
+  required: [client]
+  properties:
+    client: {type: string, title: Клиент}
+
+# Выход (JSON Schema). Платформа проверит ответ агента и не пропустит выход не по схеме.
+output:
+  type: object
+  required: [client, brief, cases]
+  properties:
+    client: {type: string}
+    brief: {type: string}
+    cases: {type: array, items: {type: string}}

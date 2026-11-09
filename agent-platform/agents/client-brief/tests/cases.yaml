@@ -1,0 +1,26 @@
+# Примеры запуска: as — кто запускает (id из config/people.yaml), expect — проверки выхода.
+- name: справка по известному клиенту
+  as: ivan
+  input: {client: ТрансЛогистик}
+  expect:
+    status: ok
+    contains: [ТрансЛогистик]
+    min_items: {cases: 1}
+- name: неизвестный клиент — честный ответ, а не выдумка
+  as: maria
+  input: {client: Несуществующая компания}
+  expect:
+    status: ok
+    contains: [не найден]
+    max_items: {cases: 0}
+- name: продажам не выдаются кейсы под NDA
+  as: ivan
+  input: {client: МедТех Плюс}
+  expect:
+    status: ok
+    not_contains: [NDA]
+- name: финансы не запускают справку
+  as: elena
+  input: {client: ТрансЛогистик}
+  expect:
+    status: denied

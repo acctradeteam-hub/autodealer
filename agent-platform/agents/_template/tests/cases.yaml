@@ -1,0 +1,16 @@
+# Примеры запуска агента; их прогоняет `make test`.
+# as — id сотрудника из config/people.yaml; expect — проверки:
+#   status: ok | denied | invalid_input | error | invalid_output
+#   contains / not_contains: подстроки в JSON выхода
+#   equals: {путь.к.полю: значение}; min: {поле: число}; min_items / max_items: {поле: длина}
+- name: справка по известному клиенту
+  as: ivan
+  input: {client: ТрансЛогистик}
+  expect:
+    status: ok
+    contains: [ТрансЛогистик]
+- name: финансы не запускают агента
+  as: elena
+  input: {client: ТрансЛогистик}
+  expect:
+    status: denied

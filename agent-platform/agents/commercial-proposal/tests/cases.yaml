@@ -1,0 +1,47 @@
+# Примеры запуска: as — кто запускает (id из config/people.yaml), expect — проверки выхода.
+- name: поддержка для ритейла — агент поддержки и интеграция
+  as: ivan
+  input:
+    client: Ромашка Ритейл
+    task: Поддержка не справляется с обращениями клиентов в чате, нужна интеграция с amoCRM
+    budget: 3000000
+    deadline: "2027-06-30"
+    language: ru
+  expect:
+    status: ok
+    contains: [Ромашка Ритейл, support-agent, integration]
+    min: {total_price: 1}
+    min_items: {services: 2, cases: 1}
+    equals: {currency: RUB, timeline.fits_deadline: true}
+- name: бюджет меньше сметы — это видно в допущениях
+  as: maria
+  input:
+    client: ТрансЛогистик
+    task: Автоматизировать обработку транспортных документов и заявок, интеграция с ERP
+    budget: 500000
+    deadline: "2027-03-31"
+    language: ru
+  expect:
+    status: ok
+    contains: [выше бюджета]
+- name: жёсткий срок — предупреждение о сроке
+  as: olga
+  input:
+    client: МедТех Плюс
+    task: База знаний по регламентам и инструкциям для сервисных инженеров, обучение и сопровождение
+    deadline: "2026-11-20"
+    language: ru
+  expect:
+    status: ok
+    contains: [позже желаемого срока, rag-knowledge]
+    equals: {timeline.fits_deadline: false}
+- name: внедрение не запускает КП
+  as: dmitry
+  input: {client: ТрансЛогистик, task: Обработка документов и заявок, deadline: "2027-01-31", language: ru}
+  expect:
+    status: denied
+- name: вход не по схеме — отказ до запуска
+  as: ivan
+  input: {client: ТрансЛогистик, task: коротко, deadline: "2027-01-31", language: de}
+  expect:
+    status: invalid_input

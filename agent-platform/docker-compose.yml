@@ -1,0 +1,54 @@
+# docker compose up --build   → интерфейс на http://localhost:8000
+services:
+  db:
+    image: postgres:16-alpine
+    environment: {POSTGRES_USER: platform, POSTGRES_PASSWORD: platform, POSTGRES_DB: platform}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform"]
+      interval: 2s
+      retries: 30
+
+  platform:
+    build: {context: ., dockerfile: platform/Dockerfile}
+    ports: ["8000:8000"]
+    environment:
+      # значения берутся из .env (необязателен): без ключа — демо-режим
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-claude-opus-5-5}
+      DATABASE_URL: postgresql://platform:platform@db:5432/platform
+      PLATFORM_INTERNAL_URL: http://platform:8000
+    volumes:
+      # знания, роли и описания агентов читаются с диска: добавили файл → «Синхронизировать»
+      - ./knowledge:/workspace/knowledge:ro
+      - ./config:/workspace/config:ro
+      - ./agents:/workspace/agents:ro
+    depends_on:
+      db: {condition: service_healthy}
+
+  # Агенты: у каждого свой контейнер. Порт наружу не открыт — их вызывает только платформа.
+  client-brief:
+    build: {context: ., dockerfile: agents/client-brief/Dockerfile}
+    restart: unless-stopped
+
+  commercial-proposal:
+    build: {context: ., dockerfile: agents/commercial-proposal/Dockerfile}
+    restart: unless-stopped
+
+  # make test: платформа и агенты поднимаются внутри контейнера тестов, нужна только база
+  tests:
+    profiles: [test]
+    build: {context: ., dockerfile: platform/Dockerfile}
+    working_dir: /workspace/platform
+    command: ["python", "-m", "pytest", "-v"]
+    environment:
+      TEST_DATABASE_URL: postgresql://platform:platform@db:5432/platform_test
+    volumes:
+      - ./knowledge:/workspace/knowledge:ro
+      - ./config:/workspace/config:ro
+      - ./agents:/workspace/agents:ro
+    depends_on:
+      db: {condition: service_healthy}
+
+volumes:
+  pgdata:
