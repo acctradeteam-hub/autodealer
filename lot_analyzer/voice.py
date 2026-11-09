@@ -40,6 +40,7 @@ def _url(repo: str, path: str) -> str:
 
 
 def car_of(row: dict) -> dict:
+    from .inspection import major_defects
     from .notes import lot_note
 
     notes = [x for x in lot_note(row).split("\n") if x.strip() and not x.startswith("Голос: ")]
@@ -51,7 +52,8 @@ def car_of(row: dict) -> dict:
             "kbb": row.get("kbb_private_party_usd") or "", "kbb_est": row.get("kbb_estimate_usd") or "",
             "mine": row.get("calc_max_bid_usd", ""), "mine_defect": row.get("calc_max_bid_if_defect_usd", ""),
             "market": row.get("market_estimate_usd", ""), "mp": row.get("my_proxy_usd", ""), "no_pics": row.get("no_photos") == "да",
-            "notes": notes, "own": own, "url": row.get("lot_url", ""), "manual": bool(row.get("inspect_manual"))}
+            "notes": notes, "own": own, "url": row.get("lot_url", ""), "manual": bool(row.get("inspect_manual")),
+            "major": major_defects(row)}             # «Major Engine / Transmission Defect» — крупно на телефоне
 
 
 def push_list(rows: list[dict]) -> dict:

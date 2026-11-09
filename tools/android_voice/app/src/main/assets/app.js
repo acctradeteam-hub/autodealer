@@ -102,6 +102,7 @@ function render() {
       <div class="head"><div class="lot">${esc(c.lot || "—")}</div>
         <div class="name">${esc(c.car)}<small>${c.miles ? Number(c.miles).toLocaleString("en-US") + " миль · " : ""}…${esc((c.vin || "").slice(-6))}${c.place ? " · " + esc(c.place.replace(/^CarMax /, "")) : ""}</small>
         ${c.no_pics ? '<span class="nopics">NO PICTURES</span>' : ""}</div></div>
+      ${(c.major || []).map(k => `<div class="major">⚠ MAJOR ${esc(String(k).toUpperCase())} DEFECT</div>`).join("")}
       ${c.manual ? '<div class="manual">✋ Добавлено вручную — смотреть внимательно</div>' : ""}
       <div class="kbb"><span>KBB</span>${c.kbb ? money(c.kbb) : c.kbb_est ? "≈" + money(c.kbb_est) : "—"}</div>
       ${progNotes(c).length || (c.own || []).length ? `<div class="prog">${progNotes(c).map(x => `<div>${esc(x)}</div>`).join("")}${(c.own || []).map(x => `<div>Мои: ${esc(x)}</div>`).join("")}</div>` : ""}

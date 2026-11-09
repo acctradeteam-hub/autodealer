@@ -1640,3 +1640,11 @@ class MajorDefectInInspectionTest(unittest.TestCase):
         car2 = page.split("data-id='V2'")[1].split("<td class='info'>")[0]
         self.assertNotIn("class='major'", car2)
         self.assertIn("td.car .major{margin-top:4px;padding:2px 5px;font-weight:800", page)
+
+    def test_major_defect_to_phone(self) -> None:
+        from lot_analyzer import voice
+        car = voice.car_of({"vin": "V1", "auction": "CarMax", "auction_notes": "Major Transmission Defect, Major engine defect"})
+        self.assertEqual(car["major"], ["engine", "transmission"])
+        self.assertEqual(voice.car_of({"vin": "V2", "auction": "CarMax", "auction_notes": "no announcements"})["major"], [])
+        app_js = (Path(__file__).resolve().parents[1] / "tools/android_voice/app/src/main/assets/app.js").read_text(encoding="utf-8")
+        self.assertIn('<div class="major">⚠ MAJOR ', app_js)

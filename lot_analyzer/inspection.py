@@ -171,10 +171,14 @@ def _notes_html(row: dict[str, str]) -> str:
 _MAJOR = re.compile(r"major\s+(engine|transmission)\s+defect", re.I)
 
 
-def _major_html(row: dict[str, str]) -> str:
+def major_defects(row: dict[str, str]) -> list[str]:
+    """«engine», «transmission» — объявленные CarMax тяжёлые дефекты (сначала двигатель)."""
     text = " ".join(str(row.get(k) or "") for k in ("auction_notes", "defects", "condition_report"))
-    found = sorted({m.group(1).lower() for m in _MAJOR.finditer(text)}, key=lambda x: x != "engine")
-    return "".join(f"<div class='major'>⚠ MAJOR {kind.upper()} DEFECT</div>" for kind in found)
+    return sorted({m.group(1).lower() for m in _MAJOR.finditer(text)}, key=lambda x: x != "engine")
+
+
+def _major_html(row: dict[str, str]) -> str:
+    return "".join(f"<div class='major'>⚠ MAJOR {kind.upper()} DEFECT</div>" for kind in major_defects(row))
 
 
 def _money(value: str) -> str:

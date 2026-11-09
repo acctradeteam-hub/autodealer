@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.19"
-PROGRAM_VERSION = "2026-11-09.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-09.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 PHOTOS_STATUS: dict = {}              # «📷 Проверить фото»: как идёт проверка карточек (сообщает расширение 2.18+)
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
