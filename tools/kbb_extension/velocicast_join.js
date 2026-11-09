@@ -1,9 +1,9 @@
 /* Запись торгов (auction_join.js) на Velocicast (CarMax live).
    — Окно записи торгов (понедельник 7:55 или «▶ Запустить сейчас» в окне программы): «CHOOSE LANES» → отметить все
-     линии → подтвердить. Торги CarMax начинаются ровно в 8:00 и в 9:00 — линии выбираются заранее: в 7:55 (сразу при
-     входе) и ещё раз в 8:55 — добавляются линии аукционов, которые начинаются в 9:00 (уже отмеченные не трогаются).
-     В 7:55 линий не оказалось — ещё одна попытка в 8:00. Линии на экране — фон запускает логгер, дальше всё само;
-     итоги дня — одним файлом в 16:00.
+     линии → подтвердить. Торги CarMax начинаются в 8:00, 8:30 (El Mirage) и 9:00 — линии выбираются заранее, за 5 минут
+     до начала: в 7:55 (сразу при входе), в 8:25 и в 8:55 — добавляются линии аукционов, которые начинаются в это время
+     (уже открытые не трогаются). В 7:55 линий не оказалось — ещё одна попытка в 8:00. Линии на экране — фон запускает
+     логгер, дальше всё само; итоги дня — одним файлом в 16:00.
    — Velocicast открыт вручную — внизу кнопка «● Записывать торги в программу»: тот же логгер, тот же один файл.
    Нажимаются только выбор линий и кнопка подтверждения; ничего, где есть «bid» / «buy», не нажимается. */
 (function () {
@@ -36,8 +36,8 @@
   };
 
   /* Все линии: «CHOOSE LANES» → «Select all» (или каждая неотмеченная) → подтверждение.
-     addOnly — линии уже открыты (8:01, 9:01): только неотмеченные галочки, без «Select all» и без кнопок-переключателей,
-     чтобы не снять уже выбранные линии. */
+     addOnly — линии уже открыты (8:25, 8:55): только неотмеченные галочки или линии, которых ещё нет на экране,
+     без «Select all», — чтобы не снять уже выбранные линии. */
   var chooseAll = async function (addOnly) {
     var open = findText(/choose\s+lanes?|select\s+lanes?|add\s+lanes?|^lanes$/i);
     if (!open) { return lanesOpen() > 0; }
@@ -48,8 +48,18 @@
     if (all) {
       all.click();
     } else if (addOnly) {
-      Array.prototype.filter.call(scope.querySelectorAll('input[type="checkbox"]'), function (cb) { return !cb.checked && !cb.disabled; })
-        .forEach(function (cb) { (cb.closest('label') || cb).click(); });
+      var allBoxes = scope.querySelectorAll('input[type="checkbox"]');
+      if (allBoxes.length) {
+        Array.prototype.filter.call(allBoxes, function (cb) { return !cb.checked && !cb.disabled; })
+          .forEach(function (cb) { (cb.closest('label') || cb).click(); });
+      } else {                                         // линии кнопками: нажимаем только те, которых ещё нет на экране
+        var norm = function (t) { return String(t || '').toLowerCase().replace(/\s+/g, ' ').trim(); };
+        var shown = Array.prototype.map.call(document.querySelectorAll('.lane-title-bar__name'), function (e) { return norm(e.innerText || e.textContent); });
+        clickable(scope).concat(Array.prototype.slice.call(scope.querySelectorAll('[role="option"], [role="checkbox"], li')))
+          .filter(function (el) { var t = norm(text(el)); return /\blane\s+\w+/.test(t) && !NEVER.test(t) && visible(el) && el.getAttribute('aria-checked') !== 'true' &&
+                                          el.getAttribute('aria-selected') !== 'true' && !shown.some(function (n) { return n === t || t.indexOf(n) >= 0 || n.indexOf(t) >= 0; }); })
+          .forEach(function (el) { el.click(); });
+      }
     } else {
       var boxes = Array.prototype.filter.call(scope.querySelectorAll('input[type="checkbox"]'), function (cb) { return !cb.checked && !cb.disabled; });
       if (boxes.length) {
@@ -92,6 +102,8 @@
     }
   };
   var at = function (h, m) { var d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
+  /* Ещё раз выбрать линии — за 5 минут до начала торгов: 8:30 (El Mirage) и 9:00. В 7:55 — при входе. */
+  var LANE_TIMES = [[8, 25], [8, 55]];
 
   (async function () {
     var job = await ask({ type: 'vc-ask' });
@@ -117,9 +129,9 @@
     say('Lot Analyzer: запись торгов — открываю все линии…');
     await pause(4000);
     await attempt();
-    /* Торги начинаются в 8:00 и в 9:00 — линии выбираем заранее: сейчас (7:55) и в 8:55 — для торгов с 9:00.
-       Сейчас линий не нашлось — ещё раз в 8:00, к началу первых торгов. */
-    var checks = (logging ? [] : [at(8, 0)]).concat([at(8, 55)]);
+    /* Торги начинаются в 8:00, 8:30 (El Mirage) и 9:00 — линии выбираем заранее, за 5 минут: сейчас (7:55), в 8:25
+       и в 8:55. Сейчас линий не нашлось — ещё раз в 8:00, к началу первых торгов. */
+    var checks = (logging ? [] : [at(8, 0)]).concat(LANE_TIMES.map(function (hm) { return at(hm[0], hm[1]); }));
     for (var i = 0; i < checks.length; i++) {
       if (Date.now() >= checks[i]) { continue; }
       var hhmm = new Date(checks[i]).toTimeString().slice(0, 5);

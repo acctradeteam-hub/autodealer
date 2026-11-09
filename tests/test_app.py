@@ -1719,7 +1719,7 @@ class AuctionRecorderTest(unittest.TestCase):
         for want in ("Скачать итоги (Excel)", "Скачать итоги (CSV)", "Итоги для NotebookLM (CSV)", "A.auctionDate = function",
                      "A.summaryCSV = function", "['Дата торгов', ...S.cols.slice(0, ID)"):
             self.assertIn(want, logger)
-        self.assertIn("at(8, 55)", (ext / "velocicast_join.js").read_text(encoding="utf-8"))   # линии заранее: 7:55 и 8:55
+        self.assertIn("var LANE_TIMES = [[8, 25], [8, 55]];", (ext / "velocicast_join.js").read_text(encoding="utf-8"))   # линии заранее: 7:55, 8:25, 8:55
         # Нажимаются только Join Auction, выбор линий и подтверждение — ничего со «bid» / «buy».
         for name in ("carmax_join.js", "velocicast_join.js"):
             self.assertIn("bid", (ext / name).read_text(encoding="utf-8").split("NEVER = ")[1].split(";")[0])
