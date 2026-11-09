@@ -1,7 +1,8 @@
-/* Логгер торгов Velocicast (CarMax) — тот же скрипт, что в навыке Claude «velocicast-auction-logger», без изменений (только символы U+FFFE / U+FFFF в одном регулярном выражении записаны как \uFFFE / \uFFFF:
-   Chrome не загружает файл расширения с такими символами).
-   Расширение (auction_join.js) запускает его на вкладке Velocicast в мире страницы (world: MAIN) и каждые 15 минут
-   забирает window.__AUC.combinedCSV() в программу. Повторный запуск безопасен: идущая запись сохраняется. */
+/* Логгер торгов Velocicast (CarMax) — тот же скрипт, что в навыке Claude «velocicast-auction-logger» (версия с тремя
+   кнопками: Excel, CSV, итоги для NotebookLM; первая колонка CSV — «Дата торгов»). Символы U+FFFE / U+FFFF и BOM
+   записаны как \uFFFE / \uFFFF / \uFEFF — Chrome не загружает файл расширения с такими символами; смысл тот же.
+   Расширение (auction_join.js) запускает его на вкладке Velocicast в мире страницы (world: MAIN). Повторный запуск
+   безопасен: идущая запись сохраняется, виджет обновляется. */
 /* Velocicast / CarMax Auctions live logger + Excel exporter.
  * Inject once into the open Velocicast tab (carmax.velocicast.io) with all lanes open.
  * Idempotent: re-injecting keeps the running logger and only (re)installs the exporter/UI.
@@ -331,33 +332,60 @@
     ];
   };
 
-  // one flat CSV: per car an "ИТОГ" row, then its "ставка" rows (car + result repeated for filtering)
+  // дата торгов — по первой записи журнала (местное время), а не по часам в момент скачивания
+  A.auctionDate = function () {
+    const first = (A.log || []).find((r) => r[2] !== 'RESTORED');
+    const d = first ? new Date(first[0]) : new Date(), p = (x) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  };
+
+  // one flat CSV: first column «Дата торгов»; per car an "ИТОГ" row, then its "ставка" rows (car + result repeated for filtering)
   A.combinedCSV = function () {
     const [S, B] = A.sheets();
+    const day = A.auctionDate();
     const q = (v) => { if (v === null || v === undefined) return ''; const s = String(v); return /[",\r\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const byCar = new Map();
     for (const b of B.rows) { const k = b[0] + '|' + b[2] + '|' + b[3]; if (!byCar.has(k)) byCar.set(k, []); byCar.get(k).push(b); }
     const ID = 11; // loc, state, straight, road, lane, lot, year, model, vin, color, miles
     const rest = S.cols.length - ID; // 14
-    const head = [...S.cols.slice(0, ID).map((c) => c.h), 'Строка', ...S.cols.slice(ID).map((c) => c.h), 'Шаг №', 'Время ставки', 'Тип ставки', 'Бейдж', 'Дилер', 'Сумма ставки', 'Текст'];
+    const head = ['Дата торгов', ...S.cols.slice(0, ID).map((c) => c.h), 'Строка', ...S.cols.slice(ID).map((c) => c.h), 'Шаг №', 'Время ставки', 'Тип ставки', 'Бейдж', 'Дилер', 'Сумма ставки', 'Текст'];
     const out = [head.map(q).join(',')];
     let nCars = 0, nBids = 0;
     for (const s of S.rows) {
-      out.push([...s.slice(0, ID), 'ИТОГ', ...s.slice(ID), '', '', '', '', '', '', ''].map(q).join(',')); nCars++;
+      out.push([day, ...s.slice(0, ID), 'ИТОГ', ...s.slice(ID), '', '', '', '', '', '', ''].map(q).join(',')); nCars++;
       for (const b of byCar.get(s[0] + '|' + s[4] + '|' + s[5]) || []) {
-        out.push([...s.slice(0, ID), 'ставка', ...s.slice(ID, ID + 4), ...Array(rest - 4).fill(''), ...b.slice(7)].map(q).join(',')); nBids++;
+        out.push([day, ...s.slice(0, ID), 'ставка', ...s.slice(ID, ID + 4), ...Array(rest - 4).fill(''), ...b.slice(7)].map(q).join(',')); nBids++;
       }
     }
-    return { text: '﻿' + out.join('\r\n') + '\r\n', nCars, nBids };
+    return { text: '\uFEFF' + out.join('\r\n') + '\r\n', nCars, nBids };
   };
   A.downloadCombinedCSV = function () {
     const { text, nCars, nBids } = A.combinedCSV();
     const d = new Date(), p = (x) => String(x).padStart(2, '0');
-    const name = `auction_all_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.csv`;
+    const name = `auction_all_${A.auctionDate()}_${p(d.getHours())}${p(d.getMinutes())}.csv`;
     const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
     return { name, kb: Math.round(blob.size / 1024), nCars, nBids };
+  };
+
+  // компактный CSV для NotebookLM: одна строка на машину (лесенка ставок — текстом), без строк «ставка»
+  A.summaryCSV = function () {
+    const [S] = A.sheets();
+    const day = A.auctionDate();
+    const q = (v) => { if (v === null || v === undefined) return ''; const s = String(v); return /[",\r\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const out = [['Дата торгов', ...S.cols.map((c) => c.h)].map(q).join(',')];
+    for (const s of S.rows) out.push([day, ...s].map(q).join(','));
+    return { text: '\uFEFF' + out.join('\r\n') + '\r\n', nCars: S.rows.length };
+  };
+  A.downloadSummaryCSV = function () {
+    const { text, nCars } = A.summaryCSV();
+    const d = new Date(), p = (x) => String(x).padStart(2, '0');
+    const name = `auction_summary_${A.auctionDate()}_${p(d.getHours())}${p(d.getMinutes())}.csv`;
+    const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+    return { name, kb: Math.round(blob.size / 1024), nCars };
   };
 
   A.download = function () {
@@ -366,7 +394,7 @@
     const d = new Date(), p = (x) => String(x).padStart(2, '0');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `auction_results_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.xlsx`;
+    a.download = `auction_results_${A.auctionDate()}_${p(d.getHours())}${p(d.getMinutes())}.xlsx`;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
     return a.download;
   };
@@ -383,7 +411,8 @@
   };
 
   // ---------------------------------------------------------------- floating widget
-  if (typeof document !== 'undefined' && !document.getElementById('auc-widget')) {
+  if (typeof document !== 'undefined') {
+    { const old = document.getElementById('auc-widget'); if (old) { clearInterval(A.ivUI); old.remove(); } }   // при повторной вставке — новый виджет с новыми кнопками
     const el = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; };
     const w = el('div', 'position:fixed;right:12px;bottom:12px;z-index:2147483647;background:#111827;color:#f9fafb;font:12px/1.45 system-ui,-apple-system,sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.35);width:220px');
     w.id = 'auc-widget';
@@ -399,7 +428,9 @@
     reset.onclick = () => { if (confirm('Очистить все записанные данные логгера?')) { A.log.length = 0; A.es.length = 0; A.vlist = {}; for (const k in A.lanes) A.lanes[k] = { item: null, state: null, hist: [] }; try { localStorage.removeItem('__AUC_log'); localStorage.removeItem('__AUC_vlist'); } catch (e) {} } };
     const csv = el('button', 'width:100%;margin-top:6px;padding:7px;border:0;border-radius:6px;background:#059669;color:#fff;font-weight:600;cursor:pointer;font-size:12px', 'Скачать итоги (CSV)');
     csv.onclick = () => { try { A.downloadCombinedCSV(); csv.textContent = 'Скачано ✓'; setTimeout(() => (csv.textContent = 'Скачать итоги (CSV)'), 3000); } catch (e) { csv.textContent = 'Ошибка: ' + e.message; } };
-    body.append(stats, btn, csv, reset);
+    const nlm = el('button', 'width:100%;margin-top:6px;padding:7px;border:0;border-radius:6px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:12px', 'Итоги для NotebookLM (CSV)');
+    nlm.onclick = () => { try { A.downloadSummaryCSV(); nlm.textContent = 'Скачано ✓'; setTimeout(() => (nlm.textContent = 'Итоги для NotebookLM (CSV)'), 3000); } catch (e) { nlm.textContent = 'Ошибка: ' + e.message; } };
+    body.append(stats, btn, csv, nlm, reset);
     w.append(head, body);
     min.onclick = () => { const h = body.style.display === 'none'; body.style.display = h ? '' : 'none'; min.textContent = h ? '–' : '+'; };
     document.body.appendChild(w);

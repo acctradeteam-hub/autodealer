@@ -45,10 +45,11 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.20"
-PROGRAM_VERSION = "2026-11-09.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.21"
+PROGRAM_VERSION = "2026-11-09.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
+LOGGER_BACKUP_DIR = DATA_DIR / "auction_backup"   # резервная копия записи торгов днём — не в «Загрузках»
 PHOTOS_STATUS: dict = {}              # «📷 Проверить фото»: как идёт проверка карточек (сообщает расширение 2.18+)
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
@@ -1602,8 +1603,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(b'{"ok":false}')
                 return
             if urlparse(self.path).path in ("/api/auction_log", "/api/logger_status", "/api/logger_page"):
-                # Запись торгов (расширение): итоги логгера — файлом в «Загрузки/Lot Analyzer» (тот же файл дописывается
-                # каждые 15 минут), ход записи — окну, страница, на которой не вышло, — в данные программы для разбора.
+                # Запись торгов (расширение): днём — резервная копия в данных программы (backup), в 16:00 — ОДИН файл итогов
+                # дня в «Загрузки/Lot Analyzer» (final_of — копия удаляется); вкладку закрыли — файл дня из копии (promote).
+                # Ход записи — окну, страница, на которой не вышло, — в данные программы для разбора.
                 if self.headers.get("X-LA") != "1":
                     self._send(b"{}", status=403)
                     return
@@ -1615,7 +1617,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 path = urlparse(self.path).path
                 if path == "/api/logger_status":
                     LOGGER_STATUS.clear()
-                    LOGGER_STATUS.update({k: data.get(k) for k in ("enabled", "date", "step", "note", "file", "started", "exported", "next", "at", "manual")})
+                    LOGGER_STATUS.update({k: data.get(k) for k in ("enabled", "date", "step", "note", "file", "started", "exported", "next", "at", "manual", "backup", "saved")})
                     stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
                     LOGGER_STATUS["stats"] = {k: stats.get(k) for k in ("lots", "sold", "bids", "lanes", "last")}
                     LOGGER_STATUS["got"] = time.time()
@@ -1633,15 +1635,26 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(b'{"ok":true}')
                     return
                 name, text = Path(str(data.get("name") or "")).name, str(data.get("text") or "")
-                if not LOGGER_FILE.match(name) or len(text) < 50:
+                promote = Path(str(data.get("promote") or "")).name
+                done_backup = Path(str(data.get("final_of") or "")).name
+                if not LOGGER_FILE.match(name) or (promote and not LOGGER_FILE.match(promote)) or (not promote and len(text) < 50):
                     self._send(b'{"ok":false,"error":"bad file"}', status=400)
                     return
-                folder = next((f for f in folders if f.name == ARCHIVE_NAME), folders[0])
+                folder = LOGGER_BACKUP_DIR if data.get("backup") else next((f for f in folders if f.name == ARCHIVE_NAME), folders[0])
                 try:
                     folder.mkdir(parents=True, exist_ok=True)
+                    if promote:
+                        source = LOGGER_BACKUP_DIR / promote
+                        if not source.is_file():
+                            self._send(b'{"ok":false,"error":"no backup"}', status=404)
+                            return
+                        text = source.read_text(encoding="utf-8")
                     tmp = folder / (name + ".part")
                     tmp.write_text(text, encoding="utf-8")
-                    tmp.replace(folder / name)            # тот же файл — новая версия целиком, без полузаписанного
+                    tmp.replace(folder / name)            # новая версия целиком, без полузаписанного
+                    for used in (promote, done_backup):   # файл дня записан — резервная копия больше не нужна
+                        if used and LOGGER_FILE.match(used):
+                            (LOGGER_BACKUP_DIR / used).unlink(missing_ok=True)
                 except OSError as err:
                     self._send(json.dumps({"ok": False, "error": str(err)}, ensure_ascii=False).encode("utf-8"), status=500)
                     return
@@ -2257,15 +2270,15 @@ function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML
   return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(seen?` (в окне ${seen})`:'')+lost+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
  e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'аукционы этой недели ещё не собраны')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
 /* Запись торгов CarMax: понедельник 7:55 — Join Auction, все линии Velocicast, логгер; итоги — файлом в программу. */
-const JOIN_STEP={open:'открываю CarMax…',join:'нажал «Join Auction», жду Velocicast…',lanes:'открываю все линии Velocicast…',logging:'идёт запись',done:'записано',lost:'вкладку Velocicast закрыли',error:'не вышло'};
+const JOIN_STEP={open:'открываю CarMax…',join:'нажал «Join Auction», жду Velocicast…',lanes:'выбираю все линии Velocicast…',logging:'идёт запись',done:'записано',lost:'вкладку Velocicast закрыли',error:'не вышло'};
 function drawJoin(a){const e=$('joinst');if(!e)return;const s=a&&a.state;if(!s){e.innerHTML='';return}
  const t=x=>x?new Date(x).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'',st=s.stats||{};
  const next=s.next?new Date(s.next).toLocaleString('ru-RU',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
  const today=s.date===new Date().toLocaleDateString('sv-SE');
  let line=s.step&&today?`<b>${JOIN_STEP[s.step]||s.step}</b>`+(['logging','done','lost'].includes(s.step)&&st.lots!=null?`: лотов ${st.lots}, продано ${st.sold}, ставок ${st.bids}`:'')+
-  (s.exported?` · файл ${esc(s.file||'')} обновлён ${t(s.exported)}`:s.step==='logging'?' · первый файл — через 15 минут':'')+(s.note?` — ${esc(s.note)}`:''):(s.date?`последняя запись ${esc(s.date)}${s.step?' — '+(JOIN_STEP[s.step]||s.step):''}`:'ещё не запускалась');
+  (s.saved?` · файл итогов ${esc(s.saved)} сохранён в ${t(s.exported)} (в «Загрузки/Lot Analyzer»)`:s.step==='logging'?' · файл итогов — один, в 16:00'+(s.backup?` (резервная копия ${t(s.backup)})`:''):'')+(s.note?` — ${esc(s.note)}`:''):(s.date?`последняя запись ${esc(s.date)}${s.step?' — '+(JOIN_STEP[s.step]||s.step):''}`:'ещё не запускалась');
  e.innerHTML=`🎙 Запись торгов CarMax (пн 7:55${s.enabled===false?' — <b>выключена</b>':next?' · следующая: '+esc(next):''}): ${line} `+
-  `<button type="button" class="tab" onclick="joinRun()" title="Открыть CarMax, нажать «Join Auction», открыть все линии Velocicast и начать запись сейчас (если торги идут). Ставок программа не делает">▶ Запустить сейчас</button> `+
+  `<button type="button" class="tab" onclick="joinRun()" title="Открыть CarMax, нажать «Join Auction», выбрать все линии Velocicast и начать запись сейчас. Итоги всех торгов дня — одним файлом в 16:00. Ставок программа не делает">▶ Запустить сейчас</button> `+
   `<button type="button" class="tab" onclick="joinEnable(${s.enabled===false})">${s.enabled===false?'включить':'выключить'}</button>`;
  if(['open','join','lanes','logging'].includes(s.step))setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'join-status'},'*'),15000)}
 function joinRun(){if(!hasExt()||extV()<2.2){alert('Нужно расширение «Lot Analyzer KBB» 2.20 или новее: chrome://extensions → ⟳, потом обновите это окно.');return}

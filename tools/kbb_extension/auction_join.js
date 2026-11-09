@@ -1,19 +1,20 @@
 /* Запись торгов CarMax сама — фон расширения.
    По понедельникам в 7:55 (Chrome запущен, вход на carmaxauctions.com есть): отдельное окно Chrome → главная CarMax →
-   «Join Auction» → Velocicast → «CHOOSE LANES» — все линии → логгер торгов (velocicast_logger.js — тот же скрипт, что
-   в навыке «velocicast-auction-logger») → каждые 15 минут итоги в программу: auction_all_<дата>_<время>.csv в
-   «Загрузки/Lot Analyzer», программа берёт их как обычные итоги торгов. Торги закончились (20 минут без событий
-   после продаж или 17:00) — последний файл, запись закончена; окно Velocicast остаётся открытым.
+   «Join Auction» → Velocicast → «CHOOSE LANES» — все линии заранее (сразу, в 7:55, и ещё раз в 8:55 — торги
+   начинаются в 8:00 и 9:00)
+   → логгер торгов (velocicast_logger.js — тот же скрипт, что в навыке «velocicast-auction-logger») → в 16:00 ОДИН файл
+   итогов всех торгов дня: auction_all_<дата торгов>_1600.csv в «Загрузки/Lot Analyzer» — программа берёт его как
+   обычные итоги торгов. Днём — только резервная копия раз в 15 минут в данных программы (не в «Загрузках»): закроется
+   вкладка или Chrome — из неё сразу получится тот же один файл. Окно Velocicast остаётся открытым.
    Chrome включили позже 7:55 — запуск сразу, если ещё нет 12:00. Не вышло (нет входа, не нашлась кнопка) — в окне
    программы видно, на каком шаге, а страница сохраняется в данные программы для разбора.
    Ставок программа не делает: нажимаются только «Join Auction», выбор линий и кнопка подтверждения выбора. */
 var JOIN_DAYS = [1];                 // дни недели: 1 — понедельник
 var JOIN_HOUR = 7, JOIN_MIN = 55;
 var JOIN_LATEST_HOUR = 12;           // Chrome включили позже — запускаем, пока нет 12:00
-var JOIN_EXPORT_MIN = 15;            // итоги в программу — каждые 15 минут
-var JOIN_IDLE_MIN = 20;              // столько минут без событий после продаж — торги закончились
-var JOIN_STOP_HOUR = 17;             // и не позже 17:00
-var JOIN_STEP_MS = 4 * 60000;        // шаг (Join, линии) не должен тянуться дольше 4 минут
+var JOIN_BACKUP_MIN = 15;            // резервная копия записи — в данные программы, раз в 15 минут
+var JOIN_STOP_HOUR = 16;             // в 16:00 — один файл итогов всех торгов дня, запись закончена
+var JOIN_STEP_MS = 10 * 60000;       // шаг (Join, линии) без вестей дольше 10 минут — не вышло (Velocicast отзывается раз в 3 мин)
 var JOIN_APP = 'http://127.0.0.1:8765';
 var JOIN_HOME = 'https://www.carmaxauctions.com/#la-join';
 var JOIN_VC = /^https:\/\/[\w.-]*velocicast\.io\//;
@@ -52,7 +53,7 @@ function joinPut(state, report) {
   chrome.storage.local.set({ 'join-state': state });
   if (report !== false) {
     var body = {};
-    ['enabled', 'date', 'step', 'note', 'file', 'started', 'exported', 'next', 'at', 'manual'].forEach(function (k) { body[k] = state[k]; });
+    ['enabled', 'date', 'step', 'note', 'file', 'started', 'exported', 'next', 'at', 'manual', 'backup', 'saved'].forEach(function (k) { body[k] = state[k]; });
     body.stats = state.stats || null;
     fetch(JOIN_APP + '/api/logger_status', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' }, body: JSON.stringify(body) })
       .catch(function () {});
@@ -132,15 +133,32 @@ function joinPull(tabId, withCsv) {
   });
 }
 
-function joinExport(state, got) {
-  return fetch(JOIN_APP + '/api/auction_log', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
-    body: JSON.stringify({ name: state.file, text: got.text }) })
+/* Итоги записи — программе. backup: резервная копия (данные программы); final: один файл дня в «Загрузки/Lot Analyzer»
+   (копия удаляется); promote: вкладку закрыли — файл дня из последней копии. */
+function joinFinalName(state) { return 'auction_all_' + state.date + '_1600.csv'; }
+function joinSend(state, body) {
+  return fetch(JOIN_APP + '/api/auction_log', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' }, body: JSON.stringify(body) })
     .then(function (r) { return r.json(); })
-    .then(function (a) { if (a && a.ok) { state.exported = Date.now(); state.note = ''; } else { state.note = 'файл не записан: ' + ((a && a.error) || 'программа не ответила'); } })
-    .catch(function () { state.note = 'программа не запущена — итоги заберу, когда она будет открыта'; });
+    .then(function (a) { if (a && a.ok) { state.note = ''; return true; } state.note = 'файл не записан: ' + ((a && a.error) || 'программа не ответила'); return false; })
+    .catch(function () { state.note = 'программа не запущена — сохраню, когда она будет открыта'; return false; });
+}
+function joinBackup(state, got) {
+  return joinSend(state, { name: state.file, text: got.text, backup: true }).then(function (ok) { if (ok) { state.backup = Date.now(); } return ok; });
+}
+function joinFinal(state, got) {
+  return joinSend(state, { name: joinFinalName(state), text: got.text, final_of: state.file }).then(function (ok) {
+    if (ok) { state.exported = Date.now(); state.saved = joinFinalName(state); }
+    return ok;
+  });
+}
+function joinPromote(state) {
+  return joinSend(state, { name: joinFinalName(state), promote: state.file }).then(function (ok) {
+    if (ok) { state.exported = Date.now(); state.saved = joinFinalName(state); }
+    return ok;
+  });
 }
 
-/* Раз в 5 минут: пора ли стартовать; как идёт запись; не закончились ли торги. */
+/* Раз в 5 минут: пора ли стартовать; как идёт запись; резервная копия; в 16:00 — один файл итогов дня. */
 function joinTick() {
   joinGet(async function (state) {
     var now = new Date();
@@ -151,10 +169,16 @@ function joinTick() {
       return;
     }
     if (state.step !== 'logging' || !state.vtab) { return; }
-    var due = Date.now() - (state.exported || state.loggingAt || 0) >= JOIN_EXPORT_MIN * 60000;
+    var finish = now.getHours() >= JOIN_STOP_HOUR || state.date !== joinIso(now);
+    var due = finish || Date.now() - (state.backup || state.loggingAt || 0) >= JOIN_BACKUP_MIN * 60000;
     var got = await joinPull(state.vtab, due);
-    if (got.gone) {
-      state.step = 'lost'; state.note = 'вкладку Velocicast закрыли — записано до ' + new Date(state.exported || Date.now()).toLocaleTimeString('ru-RU');
+    if (got.gone) {                                          // вкладку / Chrome закрыли — файл дня из последней копии
+      var when = state.backup ? new Date(state.backup).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+      if (state.backup && await joinPromote(state)) {
+        state.step = 'done'; state.note = 'вкладку Velocicast закрыли — сохранено, что записано до ' + when;
+      } else if (!state.backup) {
+        state.step = 'lost'; state.note = 'вкладку Velocicast закрыли до первой резервной копии — записи нет';
+      }
       joinPut(state); return;
     }
     if (got.missing) {                                       // страницу перезагрузили — логгер заново (данные он восстановит сам)
@@ -162,13 +186,10 @@ function joinTick() {
       return;
     }
     state.stats = got.stats; state.lanes = got.lanes;
-    if (got.text) { await joinExport(state, got); }
-    var last = got.stats && got.stats.last ? Date.parse(got.stats.last) : 0;
-    var idle = last && Date.now() - last > JOIN_IDLE_MIN * 60000 && got.stats.sold > 0;
-    if (idle || now.getHours() >= JOIN_STOP_HOUR) {
-      var fin = await joinPull(state.vtab, true);
-      if (fin && fin.text) { await joinExport(state, fin); state.stats = fin.stats; }
-      state.step = 'done';
+    if (got.text && finish) {
+      if (await joinFinal(state, got)) { state.step = 'done'; }
+    } else if (got.text) {
+      await joinBackup(state, got);
     }
     joinPut(state);
   });

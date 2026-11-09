@@ -1,8 +1,10 @@
 /* Запись торгов (auction_join.js) на Velocicast (CarMax live).
    — Окно записи торгов (понедельник 7:55 или «▶ Запустить сейчас» в окне программы): «CHOOSE LANES» → отметить все
-     линии → подтвердить; линии ещё не открыты (торги не начались) — пробуем каждую минуту до 40 минут. Линии на
-     экране — фон запускает логгер, дальше всё само.
-   — Velocicast открыт вручную — внизу кнопка «● Записывать торги в программу»: тот же логгер, те же файлы.
+     линии → подтвердить. Торги CarMax начинаются ровно в 8:00 и в 9:00 — линии выбираются заранее: в 7:55 (сразу при
+     входе) и ещё раз в 8:55 — добавляются линии аукционов, которые начинаются в 9:00 (уже отмеченные не трогаются).
+     В 7:55 линий не оказалось — ещё одна попытка в 8:00. Линии на экране — фон запускает логгер, дальше всё само;
+     итоги дня — одним файлом в 16:00.
+   — Velocicast открыт вручную — внизу кнопка «● Записывать торги в программу»: тот же логгер, тот же один файл.
    Нажимаются только выбор линий и кнопка подтверждения; ничего, где есть «bid» / «buy», не нажимается. */
 (function () {
   if (window.top !== window) { return; }
@@ -33,16 +35,21 @@
     if (ms) { box.t = setTimeout(function () { box.remove(); }, ms); }
   };
 
-  /* Все линии: «CHOOSE LANES» → «Select all» (или каждая неотмеченная) → подтверждение. */
-  var chooseAll = async function () {
+  /* Все линии: «CHOOSE LANES» → «Select all» (или каждая неотмеченная) → подтверждение.
+     addOnly — линии уже открыты (8:01, 9:01): только неотмеченные галочки, без «Select all» и без кнопок-переключателей,
+     чтобы не снять уже выбранные линии. */
+  var chooseAll = async function (addOnly) {
     var open = findText(/choose\s+lanes?|select\s+lanes?|add\s+lanes?|^lanes$/i);
     if (!open) { return lanesOpen() > 0; }
     open.click();
     await pause(1500);
     var scope = dialog() || document;
-    var all = findText(/^(select|check)\s+all\b|^all\s+lanes\b|выбрать\s+все/i, scope);
+    var all = addOnly ? null : findText(/^(select|check)\s+all\b|^all\s+lanes\b|выбрать\s+все/i, scope);
     if (all) {
       all.click();
+    } else if (addOnly) {
+      Array.prototype.filter.call(scope.querySelectorAll('input[type="checkbox"]'), function (cb) { return !cb.checked && !cb.disabled; })
+        .forEach(function (cb) { (cb.closest('label') || cb).click(); });
     } else {
       var boxes = Array.prototype.filter.call(scope.querySelectorAll('input[type="checkbox"]'), function (cb) { return !cb.checked && !cb.disabled; });
       if (boxes.length) {
@@ -66,46 +73,67 @@
     var b = document.createElement('button');
     b.id = 'la-rec';
     b.textContent = '● Записывать торги в программу';
-    b.title = 'Lot Analyzer: логгер торгов (как навык velocicast-auction-logger) — итоги каждые 15 минут в программу, файлом auction_all_….csv';
+    b.title = 'Lot Analyzer: логгер торгов (как навык velocicast-auction-logger) — итоги всех торгов дня одним файлом auction_all_….csv в программу в 16:00';
     b.setAttribute('style', 'position:fixed;z-index:2147483646;left:16px;bottom:16px;padding:9px 14px;border:0;border-radius:8px;background:#b91c1c;color:#fff;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.3)');
     b.onclick = async function () {
       b.disabled = true; b.textContent = 'Запускаю запись…';
       var a = await ask({ type: 'vc-manual-start', lanes: lanesOpen() });
       b.remove();
-      say(a && a.ok ? 'Lot Analyzer: запись торгов идёт — итоги каждые 15 минут в программу. Вкладку не закрывайте и не обновляйте.' : 'Lot Analyzer: запись не запустилась — обновите расширение.', 12000);
+      say(a && a.ok ? 'Lot Analyzer: запись торгов идёт — итоги дня одним файлом в программу в 16:00. Вкладку не закрывайте.' : 'Lot Analyzer: запись не запустилась — обновите расширение.', 12000);
     };
     document.body.appendChild(b);
   };
 
+  /* Ждём до времени t, сообщая фону, что вкладка жива (раз в 3 минуты). */
+  var waitUntil = async function (t, note) {
+    while (Date.now() < t) {
+      chrome.runtime.sendMessage({ type: 'vc-wait', note: note });
+      await pause(Math.min(180000, t - Date.now()));
+    }
+  };
+  var at = function (h, m) { var d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
+
   (async function () {
     var job = await ask({ type: 'vc-ask' });
-    if (job && job.logging) { say('Lot Analyzer: запись торгов идёт — итоги каждые 15 минут в программу.', 8000); return; }
+    if (job && job.logging) { say('Lot Analyzer: запись торгов идёт — итоги дня одним файлом в программу в 16:00.', 8000); return; }
     if (!job || !job.auto) {                           // открыт вручную — кнопка записи, когда линии на экране
       for (var w = 0; w < 600 && !lanesOpen(); w++) { await pause(2000); }
       if (lanesOpen()) { manualButton(); }
       return;
     }
+    var logging = false;
+    var start = async function () {
+      say('Lot Analyzer: открыто линий: ' + lanesOpen() + '. Запускаю запись…');
+      var a = await ask({ type: 'vc-lanes', lanes: lanesOpen() });
+      logging = !!(a && a.ok);
+      say(logging ? 'Lot Analyzer: запись торгов идёт (линий: ' + lanesOpen() + ') — итоги дня одним файлом в программу в 16:00. Окно не закрывайте.' : 'Lot Analyzer: логгер не запустился.', 15000);
+    };
+    var attempt = async function () {
+      var had = lanesOpen(), ok = false;
+      try { ok = await chooseAll(had > 0); } catch (e) { ok = lanesOpen() > 0; }
+      if (ok && !logging) { await start(); }
+      else if (ok && lanesOpen() > had) { say('Lot Analyzer: добавлены линии — теперь их ' + lanesOpen() + '.', 10000); }
+    };
     say('Lot Analyzer: запись торгов — открываю все линии…');
-    var started = Date.now();
-    for (var attempt = 1; Date.now() - started < 40 * 60000; attempt++) {
-      await pause(attempt === 1 ? 4000 : 60000);
-      var ok = false;
-      try { ok = await chooseAll(); } catch (e) { ok = lanesOpen() > 0; }
-      if (ok) {
-        say('Lot Analyzer: открыто линий: ' + lanesOpen() + '. Запускаю запись…');
-        var a = await ask({ type: 'vc-lanes', lanes: lanesOpen() });
-        say(a && a.ok ? 'Lot Analyzer: запись торгов идёт (линий: ' + lanesOpen() + ') — итоги каждые 15 минут в программу. Окно не закрывайте.' : 'Lot Analyzer: логгер не запустился.', 15000);
-        return;
-      }
-      chrome.runtime.sendMessage({ type: 'vc-wait', note: 'линии ещё не открылись — попытка ' + attempt });
-      say('Lot Analyzer: линии ещё не открылись (торги не начались?) — пробую снова через минуту…');
+    await pause(4000);
+    await attempt();
+    /* Торги начинаются в 8:00 и в 9:00 — линии выбираем заранее: сейчас (7:55) и в 8:55 — для торгов с 9:00.
+       Сейчас линий не нашлось — ещё раз в 8:00, к началу первых торгов. */
+    var checks = (logging ? [] : [at(8, 0)]).concat([at(8, 55)]);
+    for (var i = 0; i < checks.length; i++) {
+      if (Date.now() >= checks[i]) { continue; }
+      var hhmm = new Date(checks[i]).toTimeString().slice(0, 5);
+      if (!logging) { say('Lot Analyzer: линий пока нет — выберу их ещё раз в ' + hhmm + '.'); }
+      await waitUntil(checks[i], logging ? 'идёт запись' : 'линий пока нет — ещё раз в ' + hhmm);
+      await attempt();
     }
-    chrome.runtime.sendMessage({ type: 'join-fail', step: 'lanes', note: 'за 40 минут линии не открылись — выберите их сами («CHOOSE LANES»), запись начнётся сама', html: document.documentElement.outerHTML });
+    if (logging) { return; }
+    chrome.runtime.sendMessage({ type: 'join-fail', step: 'lanes', note: 'линии не открылись — выберите их сами («CHOOSE LANES»), запись начнётся сама', html: document.documentElement.outerHTML });
     say('Lot Analyzer: не смог открыть линии сам. Выберите их («CHOOSE LANES») — запись начнётся сама.');
     for (var k = 0; k < 5400 && !lanesOpen(); k++) { await pause(2000); }     // до 3 часов ждём, пока вы откроете линии
     if (lanesOpen()) {
       var m = await ask({ type: 'vc-manual-start', lanes: lanesOpen() });
-      say(m && m.ok ? 'Lot Analyzer: запись торгов идёт — итоги каждые 15 минут в программу.' : 'Lot Analyzer: логгер не запустился.', 15000);
+      say(m && m.ok ? 'Lot Analyzer: запись торгов идёт — итоги дня одним файлом в программу в 16:00.' : 'Lot Analyzer: логгер не запустился.', 15000);
     }
   })();
 })();

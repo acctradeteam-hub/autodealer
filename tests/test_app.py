@@ -1669,11 +1669,24 @@ class AuctionRecorderTest(unittest.TestCase):
                 post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text}, xla=False)
             with self.assertRaises(urllib.error.HTTPError):                       # только auction_all_<дата>_<время>.csv
                 post("/api/auction_log", {"name": "../evil.csv", "text": text})
-            post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text[:2000]})
-            post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text})    # тот же файл — новая версия
-            saved = tmp / "auction_all_2026-11-09_0800.csv"
+            # днём — резервная копия в данных программы, в «Загрузках» ничего
+            post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text[:2000], "backup": True})
+            post("/api/auction_log", {"name": "auction_all_2026-11-09_0800.csv", "text": text, "backup": True})
+            backup = app.LOGGER_BACKUP_DIR / "auction_all_2026-11-09_0800.csv"
+            self.assertEqual(backup.read_text(encoding="utf-8"), text)
+            self.assertEqual(list(tmp.iterdir()), [])
+            # 16:00 — один файл дня, копия удалена
+            post("/api/auction_log", {"name": "auction_all_2026-11-09_1600.csv", "text": text, "final_of": "auction_all_2026-11-09_0800.csv"})
+            saved = tmp / "auction_all_2026-11-09_1600.csv"
             self.assertEqual(saved.read_text(encoding="utf-8"), text)
-            self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["auction_all_2026-11-09_0800.csv"])
+            self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["auction_all_2026-11-09_1600.csv"])
+            self.assertFalse(backup.exists())
+            # вкладку закрыли днём — файл дня из резервной копии
+            post("/api/auction_log", {"name": "auction_all_2026-11-16_0800.csv", "text": text, "backup": True})
+            post("/api/auction_log", {"name": "auction_all_2026-11-16_1600.csv", "promote": "auction_all_2026-11-16_0800.csv"})
+            self.assertEqual((tmp / "auction_all_2026-11-16_1600.csv").read_text(encoding="utf-8"), text)
+            self.assertFalse((app.LOGGER_BACKUP_DIR / "auction_all_2026-11-16_0800.csv").exists())
+            (tmp / "auction_all_2026-11-16_1600.csv").unlink()
             rows = results.read_auction_logger(saved)
             self.assertTrue(rows and rows[0]["date"] == "2026-11-09" and rows[0]["buyer"])      # итоги понедельника
             post("/api/logger_status", {"step": "logging", "file": saved.name, "stats": {"lots": 5, "sold": 4, "bids": 20, "secret": "x"}})
@@ -1702,6 +1715,11 @@ class AuctionRecorderTest(unittest.TestCase):
         self.assertNotIn("￾", logger)                                          # Chrome не грузит файл с U+FFFE / U+FFFF
         self.assertNotIn("￿", logger)
         self.assertIn("A.combinedCSV = function", logger)
+        # логгер — как в обновлённом навыке: три кнопки, «Дата торгов» первой колонкой, итоги для NotebookLM
+        for want in ("Скачать итоги (Excel)", "Скачать итоги (CSV)", "Итоги для NotebookLM (CSV)", "A.auctionDate = function",
+                     "A.summaryCSV = function", "['Дата торгов', ...S.cols.slice(0, ID)"):
+            self.assertIn(want, logger)
+        self.assertIn("at(8, 55)", (ext / "velocicast_join.js").read_text(encoding="utf-8"))   # линии заранее: 7:55 и 8:55
         # Нажимаются только Join Auction, выбор линий и подтверждение — ничего со «bid» / «buy».
         for name in ("carmax_join.js", "velocicast_join.js"):
             self.assertIn("bid", (ext / name).read_text(encoding="utf-8").split("NEVER = ")[1].split(";")[0])
