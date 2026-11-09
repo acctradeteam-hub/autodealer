@@ -1550,6 +1550,11 @@ class NotTakeTest(unittest.TestCase):
                     self.assertEqual(got["nottake_total"], 2)
                     self.assertEqual([b["vin"] for b in got["nottake_bids"]], [vins[1]])
                     self.assertEqual(rows[1]["phone_smog"], "не проходит")
+                    # «Беру» на осмотре, а ставки нет — в оранжевой плашке и сверху списка «📱 Беру»
+                    self.assertEqual(got["take_total"], 1)
+                    self.assertEqual([b["vin"] for b in got["take_nobid"]], [vins[2]])
+                    taken = json.loads(urllib.request.urlopen(base + "/api/rows?take=1&hours=1000&maxbid=1").read())
+                    self.assertEqual([r["vin"] for r in taken["rows"]], [vins[2]])        # фильтр бюджета «Беру» не прячет
                     req = urllib.request.Request(base + "/api/bids_ceiling", data=json.dumps({"vins": vins, "hours": 1000}).encode(),
                                                  headers={"Content-Type": "application/json"})
                     urllib.request.urlopen(req).read()
@@ -1564,6 +1569,8 @@ class NotTakeTest(unittest.TestCase):
                 app.BIDS_PATH.write_bytes(old_bids)
         page = app.PAGE
         self.assertIn("function notTakeBanner(d)", page)
+        self.assertIn("function takeBanner(d)", page)
+        self.assertIn("⚠ Беру — ставки нет!", page)
         self.assertIn("📱 Не беру <span class=\"cnt\">", page)
 
 
