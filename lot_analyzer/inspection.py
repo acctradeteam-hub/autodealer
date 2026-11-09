@@ -167,6 +167,16 @@ def _notes_html(row: dict[str, str]) -> str:
     return out
 
 
+# «Major Engine Defect», «Major Transmission Defect» в объявлении аукциона — в графе «Машина», крупно и жирно.
+_MAJOR = re.compile(r"major\s+(engine|transmission)\s+defect", re.I)
+
+
+def _major_html(row: dict[str, str]) -> str:
+    text = " ".join(str(row.get(k) or "") for k in ("auction_notes", "defects", "condition_report"))
+    found = sorted({m.group(1).lower() for m in _MAJOR.finditer(text)}, key=lambda x: x != "engine")
+    return "".join(f"<div class='major'>⚠ MAJOR {kind.upper()} DEFECT</div>" for kind in found)
+
+
 def _money(value: str) -> str:
     try:
         return f"${float(value):,.0f}" if value else "—"
@@ -200,12 +210,12 @@ body{{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,-app
 main{{max-width:1200px;margin:0 auto;padding:16px}}h1{{font-size:20px;margin:0 0 4px}}h2{{font-size:15px;margin:18px 0 6px}}
 .muted{{color:var(--muted)}}table{{width:100%;border-collapse:collapse}}th,td{{border:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}}
 td.num{{text-align:right}}td.box{{width:70px}}button{{font:inherit;padding:6px 12px}}
-table{{table-layout:fixed}}td,th{{overflow-wrap:break-word}}th{{hyphens:auto}}td.lot .place{{white-space:nowrap}}td.car .manual{{margin-top:4px;font-weight:700;padding:1px 4px;border-left:3px solid #d97706;background:rgba(217,119,6,.12)}}td.num{{white-space:nowrap}}
+table{{table-layout:fixed}}td,th{{overflow-wrap:break-word}}th{{hyphens:auto}}td.lot .place{{white-space:nowrap}}td.car .major{{margin-top:4px;padding:2px 5px;font-weight:800;font-size:14px;line-height:1.25;color:#b91c1c;border:2px solid #b91c1c;border-radius:4px;background:rgba(185,28,28,.08)}}td.car .manual{{margin-top:4px;font-weight:700;padding:1px 4px;border-left:3px solid #d97706;background:rgba(217,119,6,.12)}}td.num{{white-space:nowrap}}
 td.car .vin{{font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-top:2px;overflow-wrap:anywhere}}td.car .miles{{margin-top:0}}
 tr{{break-inside:avoid;page-break-inside:avoid}}thead{{display:table-header-group}}
 @media print{{h2.newpage{{break-before:page;page-break-before:always}}h2{{margin-top:0}}}}
 @page{{size:letter;margin:8mm}}
-@media print{{body{{font-size:11px}}main{{padding:0}}th,td{{padding:3px 4px}}td.info .note,td.car .vin,td.lot .place{{font-size:10px}}th{{font-size:10px}}td.car .manual{{background:none}}}}
+@media print{{body{{font-size:11px}}main{{padding:0}}th,td{{padding:3px 4px}}td.info .note,td.car .vin,td.lot .place{{font-size:10px}}th{{font-size:10px}}td.car .manual{{background:none}}td.car .major{{font-size:12px;color:#000;border-color:#000;background:none}}}}
 td.info .note{{font-size:12px;color:var(--muted)}}td.info .note.own{{color:var(--fg)}}td.lot .place{{font-size:12px;color:var(--muted)}}
 .nopics{{font-weight:700;letter-spacing:.5px;margin-top:2px}}td.manual{{font-weight:700}}
 td[contenteditable]:hover{{outline:1px dashed var(--muted)}}td[contenteditable]:focus{{outline:2px solid #2f6fd6;background:rgba(47,111,214,.06)}}
@@ -248,7 +258,7 @@ CarMax — машины из вашего избранного на сайте: 
             manual = "<div class='manual'>✋ Добавлено вручную — смотреть внимательно</div>" if why(r) == "вручную из программы" else ""
             parts.append(
                 f"<tr data-id='{esc(r.get('vin') or r.get('lot_url') or r.get('lot_number'))}'><td class='lot'>{lot}<div class='place'>{esc(place)}</div></td>"
-                f"<td class='car'><b>{esc(car)}</b>{no_pics}<div class='vin'>{esc(r.get('vin'))}</div><div class='miles'>{esc(miles)}</div>{manual}</td>"
+                f"<td class='car'><b>{esc(car)}</b>{no_pics}<div class='vin'>{esc(r.get('vin'))}</div><div class='miles'>{esc(miles)}</div>{_major_html(r)}{manual}</td>"
                 f"<td class='info'>{_notes_html(r)}</td>"
                 f"<td class='num'>{kbb}</td><td class='num'>{_money(r.get('market_estimate_usd'))}</td>"
                 f"<td class='notes'></td><td class='num'>{_money(r.get('my_proxy_usd')) if r.get('my_proxy_usd') else ''}</td><td>{result}</td>"

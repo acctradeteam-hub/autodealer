@@ -1624,3 +1624,19 @@ class RemovedBidTest(unittest.TestCase):
                 app.BIDS_PATH.unlink(missing_ok=True)
             else:
                 app.BIDS_PATH.write_bytes(old_bids)
+
+
+class MajorDefectInInspectionTest(unittest.TestCase):
+    """Список на осмотр: Major Engine / Transmission Defect — жирно в графе «Машина», под пробегом."""
+
+    def test_major_defect_in_car_cell(self) -> None:
+        base = {"auction": "CarMax", "sale_date": "Nov 10, 9:00am PT", "year": "2016", "make": "Honda", "model": "Civic",
+                "kbb_private_party_usd": "9000", "odometer_miles": "90000", "location": "Oceanside, CA"}
+        rows = [dict(base, vin="V1", lot_number="A/1", auction_notes="Major engine defect, Major Transmission Defect"),
+                dict(base, vin="V2", lot_number="A/2", auction_notes="no announcements")]
+        page = _inspection.render_html(rows)
+        car1 = page.split("data-id='V1'")[1].split("<td class='info'>")[0]
+        self.assertIn("<div class='miles'>90,000 mi</div><div class='major'>⚠ MAJOR ENGINE DEFECT</div><div class='major'>⚠ MAJOR TRANSMISSION DEFECT</div>", car1)
+        car2 = page.split("data-id='V2'")[1].split("<td class='info'>")[0]
+        self.assertNotIn("class='major'", car2)
+        self.assertIn("td.car .major{margin-top:4px;padding:2px 5px;font-weight:800", page)
