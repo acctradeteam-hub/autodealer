@@ -115,7 +115,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
     return false;
   }
   if (msg && msg.type === 'notes') {
-    fetch('http://127.0.0.1:8765/api/notes', { cache: 'no-store' })
+    fetch('http://127.0.0.1:8765/api/notes?ext=' + chrome.runtime.getManifest().version, { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (data) { reply({ ok: true, notes: data }); })
       .catch(function (e) { reply({ ok: false, error: String(e) }); });

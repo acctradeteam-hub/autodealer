@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.18"
-PROGRAM_VERSION = "2026-11-08.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.19"
+PROGRAM_VERSION = "2026-11-09.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 PHOTOS_STATUS: dict = {}              # «📷 Проверить фото»: как идёт проверка карточек (сообщает расширение 2.18+)
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
@@ -899,9 +899,17 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
             if only_no_photos and row.get("no_photos") != "да":
                 continue
             bid = bids.get(row.get("vin", ""))
-            if bid:                           # ставка, вписанная в окне, — главнее «MP …» из заметки
+            if bid and bid.get("usd"):        # ставка, вписанная в окне, — главнее «MP …» из заметки
                 row["my_proxy_usd"] = str(bid["usd"])
                 row["my_bid_from_window"] = "1"
+            elif bid and bid.get("removed"):  # ставку стёрли в окне — «MP …» из Notes на CarMax её не возвращает
+                row["mp_removed"] = "1"
+                noted = parse_money(row.get("my_proxy_usd"))
+                was = parse_money(str(bid.get("was") or ""))
+                # Та же сумма или страница сохранена до того, как стёрли, — это старая ставка. Новая «MP …» другой суммой,
+                # вписанная на CarMax уже после, — считается.
+                if noted and (not was or round(noted) == round(was) or float(row.get("_saved") or 0) <= float(bid.get("at") or 0)):
+                    row["my_proxy_usd"] = ""
             own = saved_kbb.get(row.get("vin", ""))
             if own:                          # вписан в окне по этому VIN — главнее всего
                 row["kbb_private_party_usd"] = f"{float(own['usd']):.0f}"
@@ -1005,13 +1013,22 @@ def load_bids() -> dict[str, dict]:
         return {}
 
 
-def save_bid(vin: str, usd: float | None) -> None:
-    """Ваша ставка по VIN (вписана в окне); пустое значение — стереть."""
+BID_REMOVED_DAYS = 30                # отметку «ставку стёрли» помним месяц — торги машины давно прошли
+
+
+def save_bid(vin: str, usd: float | None, was: float | None = None) -> None:
+    """Ваша ставка по VIN (вписана в окне); пустое значение — стереть.
+    Стёртую ставку помним (usd: None, was — какая была): строка «MP …» в Notes на CarMax остаётся и на сохранённых
+    страницах, но ставку больше не возвращает. Новая ставка в окне эту отметку заменяет."""
     bids = load_bids()
     if usd:
         bids[vin] = {"usd": round(usd), "date": time.strftime("%Y-%m-%d")}
     else:
-        bids.pop(vin, None)
+        old = bids.get(vin) or {}
+        prev = old.get("usd") or old.get("was") or (round(was) if was else None)
+        bids[vin] = {"usd": None, "removed": time.strftime("%Y-%m-%d"), "at": time.time(), "was": prev}
+    cutoff = time.time() - BID_REMOVED_DAYS * 86400
+    bids = {v: b for v, b in bids.items() if b.get("usd") or float(b.get("at") or 0) > cutoff}
     BIDS_PATH.parent.mkdir(parents=True, exist_ok=True)
     BIDS_PATH.write_text(json.dumps(bids, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -1475,7 +1492,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 rows = search_rows(pages, cache, load_costs(costs_path), "")
                 # Убранным из избранного CarMax заметку не пишем: запись в Notes вернула бы машину в избранное.
-                self._send(json.dumps(notes.notes_for([r for r in rows if not r.get("favorite_removed")]), ensure_ascii=False).encode("utf-8"))
+                # Расширение 2.19+ (?ext=…) умеет убрать из Notes на CarMax строку «MP …» стёртой ставки.
+                self._send(json.dumps(notes.notes_for([r for r in rows if not r.get("favorite_removed")], clear_mp=bool(q.get("ext"))),
+                                      ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/links":
                 self._send(json.dumps(search_links(q.get("q", ""), num("y1"), num("y2")), ensure_ascii=False).encode("utf-8"))
             else:
@@ -1685,7 +1704,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) or (value and not value.replace(".", "", 1).isdigit()):
                     self._send(b'{"error":"need vin and number"}', status=400)
                     return
-                save_bid(vin, float(value) if value else None)
+                was = str(data.get("was", "")).replace("$", "").replace(",", "").strip()
+                save_bid(vin, float(value) if value else None, float(was) if was.replace(".", "", 1).isdigit() else None)
                 self._send(b'{"ok":true}')
                 return
             if urlparse(self.path).path == "/api/bids_ceiling":    # окно: «MP = потолок» для машин списка
@@ -2096,7 +2116,7 @@ function lockedOrder(d){const key=listKey();
 function resort(){orderLock=null;refresh()}
 async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
  keepOrder=shown.map(x=>x.vin);focusVin=el.dataset.vin;
- try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
+ try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,was:(shown.find(x=>x.vin===el.dataset.vin)||{}).my_proxy_usd||''})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 function afterRender(){if(!focusVin)return;const tr=document.querySelector(`#rows tr[data-vin="${CSS.escape(focusVin)}"]`);focusVin='';
  if(tr){tr.scrollIntoView({block:'center'});tr.classList.add('flash');setTimeout(()=>tr.classList.remove('flash'),2500)}}
 /* Пока вписываете цифру — сразу «≈ прибыль при такой цене», без пересчёта и без перестановки списка. */

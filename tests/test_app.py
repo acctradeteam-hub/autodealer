@@ -1589,3 +1589,38 @@ class PhotosStatusTest(unittest.TestCase):
         page = app.PAGE
         self.assertIn("type:'photos-start'", page)
         self.assertIn("function photosLine(s)", page)
+
+
+class RemovedBidTest(unittest.TestCase):
+    """Стёрли ставку в окне — «MP …» из Notes на CarMax (сохранённые страницы) её не возвращает; Notes чистит расширение."""
+
+    def test_removed_bid_stays_removed(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1432.html")
+        old_bids = app.BIDS_PATH.read_bytes() if app.BIDS_PATH.exists() else None
+        app.BIDS_PATH.unlink(missing_ok=True)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        rows = lambda: {r["vin"]: r for r in json.loads(urllib.request.urlopen(base + "/api/rows?passed=1&hours=100000").read())["rows"] if r.get("vin")}
+        post = lambda body: urllib.request.urlopen(urllib.request.Request(base + "/api/bid", data=json.dumps(body).encode(),
+                                                                         headers={"Content-Type": "application/json"})).read()
+        try:
+            before = rows()
+            vin, mp = next((v, r["my_proxy_usd"]) for v, r in before.items() if r.get("my_proxy_usd"))   # «MP …» в Notes на CarMax
+            post({"vin": vin, "usd": "", "was": mp})
+            self.assertEqual(rows()[vin]["my_proxy_usd"], "")                      # не вернулась со страницы
+            saved = json.loads(app.BIDS_PATH.read_text(encoding="utf-8"))[vin]
+            self.assertEqual((saved["usd"], saved["was"]), (None, float(mp)))
+            notes_new = json.loads(urllib.request.urlopen(base + "/api/notes?ext=2.19&hours=100000").read())
+            notes_old = json.loads(urllib.request.urlopen(base + "/api/notes?hours=100000").read())
+            self.assertIn("MP —", notes_new.get(vin, ""))                          # расширению: убрать строку «MP …»
+            self.assertNotIn("MP —", notes_old.get(vin, ""))                       # старое расширение записало бы её на сайт
+            post({"vin": vin, "usd": "7000"})                                       # новая ставка — как обычно
+            self.assertEqual(rows()[vin]["my_proxy_usd"], "7000")
+        finally:
+            server.shutdown()
+            if old_bids is None:
+                app.BIDS_PATH.unlink(missing_ok=True)
+            else:
+                app.BIDS_PATH.write_bytes(old_bids)

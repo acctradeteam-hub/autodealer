@@ -33,8 +33,9 @@
   var merged = function (current, note) {
     var parts = note.split('\n');
     var kbbLine = parts.filter(function (l) { return /^KBB /.test(l); })[0] || '';
-    var mpLine = parts.filter(function (l) { return /^MP /.test(l); })[0] || '';
-    var rest = parts.filter(function (l) { return l !== kbbLine && l !== mpLine; });
+    var mpClear = parts.indexOf('MP —') >= 0;          // ставку стёрли в окне программы — строку «MP …» убрать
+    var mpLine = parts.filter(function (l) { return /^MP \d/.test(l); })[0] || '';
+    var rest = parts.filter(function (l) { return l !== kbbLine && l !== mpLine && l !== 'MP —'; });
     var lines = current.split('\n').filter(function (l) { return !OWN.test(l); });
     var add = [];
     if (kbbLine) {
@@ -45,7 +46,8 @@
       if (!kept) { lines = lines.filter(function (l) { return !same.test(l); }); add.push(kbbLine); }
     }
     /* Ставка из окна программы заменяет прежние строки «MP …». */
-    if (mpLine) { lines = lines.filter(function (l) { return !/^\s*MP\s*\$?\s*[\d,]+\s*\$?\s*$/i.test(l); }); add.push(mpLine); }
+    if (mpLine || mpClear) { lines = lines.filter(function (l) { return !/^\s*MP\s*\$?\s*[\d,]+\s*\$?\s*$/i.test(l); }); }
+    if (mpLine) { add.push(mpLine); }
     var own = lines.join('\n').replace(/\s+$/, '');
     add = add.concat(rest);
     return (own && add.length ? own + '\n' : own) + add.join('\n');

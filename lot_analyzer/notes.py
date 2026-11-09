@@ -44,7 +44,10 @@ def past_sales(row: dict, limit: int = 3) -> list[str]:
     return out[-limit:]
 
 
-def lot_note(row: dict) -> str:
+MP_CLEAR = "MP —"     # не пишется на сайт: расширению — «уберите строку MP …» (ставку стёрли в окне)
+
+
+def lot_note(row: dict, clear_mp: bool = False) -> str:
     """KBB с датой, ваша ставка из окна («MP 5600»), прошлые торги машины и замечания аукциона.
     Пусто, если нет ни KBB, ни ставки, ни прошлых торгов."""
     kbb = str(row.get("kbb_private_party_usd") or "").replace(",", "")
@@ -54,11 +57,14 @@ def lot_note(row: dict) -> str:
     history = past_sales(row)
     voice = str(row.get("voice_notes") or "").strip()        # надиктовано на аукционе (приложение «Голосовые заметки»)
     fax = str(row.get("carfax") or "").strip()               # Carfax коротко (vin-reports-pro.com)
-    if not has_kbb and not has_bid and not history and not voice and not fax:
+    clear = clear_mp and not has_bid and bool(row.get("mp_removed")) and row.get("auction") == "CarMax"
+    if not has_kbb and not has_bid and not history and not voice and not fax and not clear:
         return ""
     lines = [f"KBB {float(kbb):,.0f}$ {_date(row.get('kbb_date', ''))}"] if has_kbb else []
     if has_bid:
         lines.append(f"MP {float(bid):.0f}")
+    elif clear:
+        lines.append(MP_CLEAR)
     lines += history
     remarks = str(row.get("auction_notes") or "").strip()
     if re.fullmatch(r"(no announcements?(\(s\))?|none|-)\.?", remarks, re.I):      # «нет замечаний» — не замечание
@@ -77,12 +83,13 @@ def strip_own(text: str) -> str:
     return "\n".join(line for line in str(text or "").splitlines() if not line.startswith(OWN_PREFIXES)).strip()
 
 
-def notes_for(rows: list[dict]) -> dict[str, str]:
-    """VIN → текст заметки, для машин с настоящим KBB или со ставкой, вписанной в окне."""
+def notes_for(rows: list[dict], clear_mp: bool = False) -> dict[str, str]:
+    """VIN → текст заметки, для машин с настоящим KBB или со ставкой, вписанной в окне.
+    clear_mp — расширение умеет убрать строку «MP …» стёртой ставки (метка MP_CLEAR)."""
     out = {}
     for row in rows:
         vin = row.get("vin", "")
-        note = lot_note(row)
+        note = lot_note(row, clear_mp)
         if vin and note and vin not in out:
             out[vin] = note
     return out
