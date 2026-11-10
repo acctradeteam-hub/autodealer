@@ -58,8 +58,15 @@ def load_many(paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
     bids = pd.concat([b for _, b in parts], ignore_index=True)
     final = (cars["Результат"] != NO_DATA) & (cars["Результат"] != "Не продано / нет финала")
     cars["_score"] = final.astype(int) * 2 + cars["Кол-во ставок"].notna().astype(int)
-    cars = (cars.sort_values("_score", ascending=False).drop_duplicates(KEY)
-            .drop(columns="_score").sort_values(KEY).reset_index(drop=True))
+    cars = cars.sort_values("_score", ascending=False, kind="stable").drop(columns="_score")
+    # лучшая строка по машине; пустые поля (штат, покупатель, лесенка…) дополняются из других файлов
+    text = cars.columns[cars.dtypes == object]
+    cars[text] = cars[text].replace("", pd.NA)
+    cars = cars.groupby(KEY, sort=True, dropna=False).first().reset_index()
+    cars[text] = cars[text].fillna("")
+    # «прошла до запуска логгера» не про машину, у которой покупатель нашёлся в другом файле
+    cars.loc[(cars["Покупатель"] != "") & (cars["Примечание"] == "прошла до запуска логгера"), "Примечание"] = ""
+    cars = cars[[c for c in parts[0][0].columns]]
     bids = bids.drop_duplicates(KEY + ["Время ставки", "Тип ставки", "Бейдж", "Сумма ставки", "Текст"])
     return cars, bids
 
@@ -113,24 +120,33 @@ def coverage(cars: pd.DataFrame, bids: pd.DataFrame, gap_min: int) -> tuple[pd.D
         d = t.diff()
         gaps = [f"{t[i - 1]:%H:%M}–{t[i]:%H:%M}" for i in d[d > pd.Timedelta(minutes=gap_min)].index]
         recorded = g["Результат"] != NO_DATA
+        with_bids = g["Кол-во ставок"].fillna(0) > 0
         last_rec = g.loc[recorded, "Лот #"].max()
         not_run = g[(g["Результат"] == NO_DATA) & (g["Лот #"] > last_rec)] if pd.notna(last_rec) else g
         holes = g[(g["Результат"] == NO_DATA) & (g["Лот #"] < last_rec)] if pd.notna(last_rec) else g.iloc[0:0]
         rows.append({
             "Аукцион": short(auc), "Лейн": lane, "Машин в списке": len(g),
-            "Записано лотов": int(recorded.sum()), "Продано": int((g["Результат"] == SOLD).sum()),
-            "Пропуски внутри прогона": len(holes), "Не дошли / после записи": len(not_run),
+            "Итог известен": int(recorded.sum()), "Продано": int((g["Результат"] == SOLD).sum()),
+            "Ставки записаны": int(with_bids.sum()),
+            "Без итога внутри прогона": len(holes), "Не дошли / после записи": len(not_run),
             "Запись с": t.min().strftime("%H:%M") if len(t) else "—",
             "Запись по": t.max().strftime("%H:%M") if len(t) else "—",
             "Дыры в записи": ", ".join(gaps) or "нет",
         })
     cov = pd.DataFrame(rows)
-    total, rec = cov["Машин в списке"].sum(), cov["Записано лотов"].sum()
-    holes = cov["Пропуски внутри прогона"].sum()
-    notes.append(f"Записано {rec} лотов из {total} в списках ({pct(rec, total)}).")
+    total, rec = cov["Машин в списке"].sum(), cov["Итог известен"].sum()
+    wb, holes = cov["Ставки записаны"].sum(), cov["Без итога внутри прогона"].sum()
+    notes.append(f"Итог известен по {rec} машинам из {total} ({pct(rec, total)}), "
+                 f"ставки записаны по {wb} ({pct(wb, total)}).")
     if holes:
-        notes.append(f"**{holes} лотов пропущено внутри прогона**: лейн шёл, а логгер их не видел. "
-                     "Так бывает, когда Chrome замораживает фоновую вкладку. Цифры ниже — только по записанным лотам.")
+        notes.append(f"**{holes} машин без итога внутри прогона**: лейн шёл, а логгер их не видел. "
+                     "Цифры ниже — только по машинам с известным итогом.")
+    if wb < rec:
+        notes.append(f"По {rec - wb} машинам есть только цена из списка лейна, без ставок и покупателя. "
+                     "Чаще всего это значит, что страница Velocicast потеряла связь и перестала обновляться: "
+                     "если в окошке логгера «Последнее событие» долго не меняется во время торгов, нажмите F5 "
+                     "и вставьте скрипт заново. Покупатели, андербиддеры и ставки ниже посчитаны только по машинам "
+                     "со ставками.")
     nobuyer = cars[(cars["Результат"] == SOLD) & (cars["Примечание"] != "")]
     if len(nobuyer):
         notes.append(f"У {len(nobuyer)} проданных машин покупатель определён неточно "
@@ -146,7 +162,7 @@ def overview(cars: pd.DataFrame) -> pd.DataFrame:
         sold = g[g["Результат"] == SOLD]
         rows.append({
             "Аукцион": short(auc), "Штат": g["Штат"].iloc[0], "Дорога ≈ mi": g["По дороге ≈, mi"].iloc[0],
-            "Записано": len(run), "Продано": len(sold), "Продаваемость": pct(len(sold), len(run)),
+            "Итог известен": len(run), "Продано": len(sold), "Продаваемость": pct(len(sold), len(run)),
             "Оборот": money(sold["Цена продажи"].sum()), "Средняя": money(sold["Цена продажи"].mean()),
             "Медиана": money(sold["Цена продажи"].median()),
             "Дилеров на лот (мед.)": sold["Кол-во дилеров"].median(),
