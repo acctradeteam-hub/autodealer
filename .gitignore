@@ -11,3 +11,6 @@ samples/*.htm
 samples/*.mhtml
 samples/*.mht
 samples/*_files/
+
+# Разборы аукционов: в них имена дилеров и цены — храним локально
+out/auctions/
