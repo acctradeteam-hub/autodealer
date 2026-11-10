@@ -2,6 +2,8 @@
 
 ```bash
 python3 -m auction_analysis ~/Downloads/auction_all_2026-11-10_1326.csv
+# несколько файлов одного дня склеиваются: утренняя запись + повторный снимок
+python3 -m auction_analysis утро.csv снимок.csv
 ```
 
 На вход — файл логгера `auction_all_<дата>_HHMM.csv`. Результат — `out/auctions/<дата>/report.md`

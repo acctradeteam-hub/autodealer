@@ -44,6 +44,26 @@ def load(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return cars, bids
 
 
+KEY = ["Аукцион", "Лейн", "Лот #"]
+
+
+def load_many(paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Несколько файлов одного дня (например, утренняя запись и повторный снимок) → один набор.
+
+    По каждой машине берётся самая полная строка: сначала с известным итогом, затем со ставками.
+    Ставки объединяются без повторов.
+    """
+    parts = [load(p) for p in paths]
+    cars = pd.concat([c for c, _ in parts], ignore_index=True)
+    bids = pd.concat([b for _, b in parts], ignore_index=True)
+    final = (cars["Результат"] != NO_DATA) & (cars["Результат"] != "Не продано / нет финала")
+    cars["_score"] = final.astype(int) * 2 + cars["Кол-во ставок"].notna().astype(int)
+    cars = (cars.sort_values("_score", ascending=False).drop_duplicates(KEY)
+            .drop(columns="_score").sort_values(KEY).reset_index(drop=True))
+    bids = bids.drop_duplicates(KEY + ["Время ставки", "Тип ставки", "Бейдж", "Сумма ставки", "Текст"])
+    return cars, bids
+
+
 def short(name: str) -> str:
     return re.sub(r"^CarMax\s+|\s+Auction Center$", "", name).strip()
 
@@ -251,12 +271,12 @@ def in_box(df: pd.DataFrame, box: dict) -> pd.DataFrame:
 # --------------------------------------------------------------------------- отчёт
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("csv", type=Path)
+    ap.add_argument("csv", type=Path, nargs="+", help="один или несколько файлов логгера за один день")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
     cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
 
-    cars, bids = load(args.csv)
+    cars, bids = load_many(args.csv)
     day = cars["Дата торгов"].iloc[0]
     out = args.out or ROOT / "out" / "auctions" / day
     out.mkdir(parents=True, exist_ok=True)
@@ -271,7 +291,7 @@ def main(argv=None) -> int:
 
     sold = cars[cars["Результат"] == SOLD]
     md = [f"# Аукцион {day}: разбор\n",
-          f"Файл: `{args.csv.name}`. Аукционов: {cars['Аукцион'].nunique()}, лейнов: {len(cov)}, "
+          f"Файлы: {', '.join(f'`{p.name}`' for p in args.csv)}. Аукционов: {cars['Аукцион'].nunique()}, лейнов: {len(cov)}, "
           f"машин в списках: {len(cars)}, продано (записано): {len(sold)} на {money(sold['Цена продажи'].sum())}.\n",
           "## 0. Полнота данных\n", "\n".join(f"- {n}" for n in cov_notes) + "\n\n", md_table(cov),
           "\n## 1. Сводка по аукционам\n", md_table(ov),
