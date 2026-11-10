@@ -60,7 +60,7 @@
   "_transport": "Сейчас забираете сами — 0. Когда начнёте возить перевозчиком, поставьте 250.",
   "transport_usd": 0,
   "_transport_by_location": "Доставка с дальних площадок (перевозчик). Площадка ищется по вхождению названия в «Локацию» лота. Остальные — transport_usd (забираете сами).",
-  "transport_by_location": {"Vegas": 350, "Las Vegas": 350, "Henderson": 350, "Fresno": 300, "Pleasanton": 400, "Fremont": 400, "Sacramento": 450, "Rocklin": 450, "Phoenix": 450, "Chandler": 450, "Tucson": 500, "Reno": 500, "San Francisco": 400},
+  "transport_by_location": {"Vegas": 350, "Las Vegas": 350, "Henderson": 350, "Fresno": 300, "Pleasanton": 400, "Fremont": 400, "Sacramento": 450, "Rocklin": 450, "Roseville": 450, "Phoenix": 450, "Chandler": 450, "Tucson": 500, "Reno": 500, "San Francisco": 400},
   "_out_of_state": "Лот в другом штате, а в transport_by_location его нет — закладывается эта сумма. home_state — ваш штат.",
   "home_state": "CA",
   "transport_out_of_state_usd": 800,

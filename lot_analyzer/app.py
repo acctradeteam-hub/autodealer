@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.22"
-PROGRAM_VERSION = "2026-11-09.7"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-10.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 LOGGER_BACKUP_DIR = DATA_DIR / "auction_backup"   # резервная копия записи торгов днём — не в «Загрузках»
