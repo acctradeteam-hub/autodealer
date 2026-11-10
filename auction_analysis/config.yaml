@@ -6,15 +6,27 @@ us:
   names: [AUTOANTS]
   badges: []
 
-# Ваш buy box — какие машины вам интересны. Пустое значение = без ограничения.
-# Пока не заполнено: разбор «интересных лотов» идёт по всем машинам.
+# Конкуренты: часть имени, как оно пишется в лесенке ставок (без учёта регистра).
+# «ONEAutoDeal» на аукционе выступает как «1 AUTO DEAL LLC» — уточнить.
+competitors:
+  ROMCAR: [ROMCAR]
+  ONEAutoDeal: [1 AUTO DEAL, ONEAUTODEAL]
+  AtlasAuto: [ATLAS AUTO, ATLASAUTO]
+  SNB AutoGroup: [SNB AUTO, S N B AUTO, SNB]
+
+# Ваш buy box. Основной сегмент — KBB Private Party до kbb_max;
+# до kbb_stretch смотрим, если разница KBB − цена не меньше min_spread_stretch.
+# Пока KBB по лоту нет, сегмент оценивается по цене продажи (price_max).
 buy_box:
-  price_min:
-  price_max:
+  kbb_max: 10000
+  kbb_stretch: 15000
+  min_spread_stretch: 5000
+  price_max: 10000
   year_min:
   miles_max:
   max_road_miles:        # дальше этого расстояния от 92620 не везём
   makes: []              # например [Toyota, Honda, Lexus]
+  models: []             # ваша таблица популярных моделей, например [Honda Civic, Toyota Camry]
 
 # Пороги разбора
 gap_minutes: 4           # пауза в записи ставок дольше этого при идущем лейне = дыра в данных

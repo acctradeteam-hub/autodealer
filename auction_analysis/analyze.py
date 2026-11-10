@@ -8,9 +8,12 @@
   0. Полнота данных — можно ли доверять цифрам
   1. Сводка по аукционам
   2. Наше участие
-  3. Покупатели и конкуренты
-  4. Цены по сегментам и моделям
-  5. Лоты, ушедшие дёшево, и непроданные
+  3. Конкуренты (список в config.yaml)
+  4. Ваш сегмент: модели до $10k, с KBB — разница KBB Private Party − цена
+  5. Все покупатели и андербиддеры
+  6. Цены по рынку
+  7. Лоты вашего сегмента, ушедшие дёшево, и непроданные
+  8. Сравнение с прошлыми аукционами (история копится в out/auctions/<дата>/cars.csv)
 """
 
 from __future__ import annotations
@@ -281,49 +284,198 @@ def in_box(df: pd.DataFrame, box: dict) -> pd.DataFrame:
     if box.get("miles_max"): m &= df["Пробег, mi"] <= box["miles_max"]
     if box.get("max_road_miles"): m &= df["По дороге ≈, mi"] <= box["max_road_miles"]
     if box.get("makes"): m &= df["Марка / модель"].str.split().str[0].str.lower().isin([x.lower() for x in box["makes"]])
+    if box.get("models"): m &= df["Модель"].str.lower().isin([x.lower() for x in box["models"]])
     return df[m]
+
+
+# --------------------------------------------------------------------------- KBB
+def load_kbb(path: Path | None) -> pd.Series:
+    """Файл с KBB Private Party: любая таблица (CSV/XLSX), где есть колонка с VIN и колонка с KBB."""
+    if not path:
+        return pd.Series(dtype=float)
+    t = pd.read_excel(path, dtype=str) if path.suffix.lower() in (".xlsx", ".xls") else \
+        pd.read_csv(path, dtype=str, encoding="utf-8-sig", sep=None, engine="python")
+    vin = next((c for c in t.columns if "vin" in c.lower()), None)
+    val = next((c for c in t.columns if "kbb" in c.lower() or "private" in c.lower()), None)
+    if not vin or not val:
+        raise SystemExit(f"В {path.name} нужны колонки с VIN и с KBB; есть: {', '.join(t.columns)}")
+    v = pd.to_numeric(t[val].str.replace(r"[^\d.]", "", regex=True), errors="coerce")
+    return pd.Series(v.values, index=t[vin].str.strip().str.upper()).dropna().groupby(level=0).last()
+
+
+# --------------------------------------------------------------------------- наш сегмент
+def our_segment(cars: pd.DataFrame, box: dict, kbb: pd.Series, top: int) -> tuple[str, pd.DataFrame, pd.DataFrame]:
+    sold = cars[cars["Результат"] == SOLD].copy()
+    sold["KBB PP"] = sold["VIN"].str.upper().map(kbb)
+    sold["KBB − цена"] = sold["KBB PP"] - sold["Цена продажи"]
+    if kbb.empty:
+        seg = in_box(sold, box)
+        note = (f"KBB по лотам пока нет, поэтому сегмент — продажи до {money(box.get('price_max'))}"
+                f"{' среди ваших моделей' if box.get('models') else ''}: {len(seg)} машин из {len(sold)}. "
+                "С файлом KBB (`--kbb`) сегмент считается по KBB Private Party и появляется разница KBB − цена.")
+    else:
+        b = {k: v for k, v in box.items() if k not in ("price_min", "price_max")}
+        base = in_box(sold, b)
+        main_ = base["KBB PP"] <= box.get("kbb_max", 10000)
+        stretch = (base["KBB PP"] <= box.get("kbb_stretch", 15000)) & (base["KBB − цена"] >= box.get("min_spread_stretch", 5000))
+        seg = base[main_ | stretch]
+        note = (f"KBB найден для {sold['KBB PP'].notna().sum()} из {len(sold)} проданных машин. "
+                f"В сегменте (KBB до {money(box.get('kbb_max'))}, до {money(box.get('kbb_stretch'))} "
+                f"при разнице от {money(box.get('min_spread_stretch'))}): {len(seg)} машин.")
+    by_model = (seg.groupby("Модель").agg(
+        Продано=("Лот", "count"), Медиана=("Цена продажи", "median"), Мин=("Цена продажи", "min"),
+        Макс=("Цена продажи", "max"), Пробег=("Пробег, mi", "median"), KBB=("KBB PP", "median"),
+        Разница=("KBB − цена", "median"),
+        Аукционы=("Аукцион", lambda x: ", ".join(sorted(set(map(short, x))))))
+        .query("Продано >= 2").sort_values("Продано", ascending=False).head(top).reset_index())
+    for c in ("Медиана", "Мин", "Макс", "KBB", "Разница"):
+        by_model[c] = by_model[c].map(money)
+    by_model["Пробег"] = by_model["Пробег"].map(lambda v: "—" if pd.isna(v) else f"{v:,.0f}")
+    if kbb.empty:
+        by_model = by_model.drop(columns=["KBB", "Разница"])
+    best = pd.DataFrame()
+    if not kbb.empty:
+        best = seg.sort_values("KBB − цена", ascending=False).head(top)
+        best = pd.DataFrame({
+            "Лот": best["Лот"], "Машина": best["Год"].map(lambda y: f"{y:.0f}") + " " + best["Марка / модель"],
+            "Пробег": best["Пробег, mi"].map(lambda v: "—" if pd.isna(v) else f"{v:,.0f}"),
+            "Цена": best["Цена продажи"].map(money), "KBB PP": best["KBB PP"].map(money),
+            "KBB − цена": best["KBB − цена"].map(money), "Купил": best["Покупатель"]})
+    return note, by_model, best
+
+
+# --------------------------------------------------------------------------- конкуренты
+def competitors(cars: pd.DataFrame, bids: pd.DataFrame, comp: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows, buys = [], []
+    sold = cars[cars["Результат"] == SOLD]
+    for name, pats in (comp or {}).items():
+        rx = "|".join(re.escape(p) for p in pats)
+        b = bids[bids["Дилер"].str.contains(rx, case=False, regex=True)]
+        won = sold[sold["Покупатель"].str.contains(rx, case=False, regex=True)]
+        second = sold[sold["2-й участник (андербиддер)"].str.contains(rx, case=False, regex=True)]
+        rows.append({
+            "Конкурент": name,
+            "Имя на аукционе": ", ".join(sorted(set(b["Дилер"]) | set(won["Покупатель"]))) or "не встречался",
+            "Лотов со ставками": b.groupby(KEY).ngroups, "Ставок": len(b), "Купил": len(won),
+            "Потрачено": money(won["Цена продажи"].sum()) if len(won) else "—",
+            "Средняя": money(won["Цена продажи"].mean()) if len(won) else "—",
+            "Был вторым": len(second), "Аукционы": ", ".join(sorted(set(map(short, won["Аукцион"])))),
+        })
+        for _, c in won.iterrows():
+            buys.append({"Конкурент": name, "Лот": c["Лот"], "Машина": f"{c['Год']:.0f} {c['Марка / модель']}",
+                         "Пробег": f"{c['Пробег, mi']:,.0f}" if pd.notna(c["Пробег, mi"]) else "—",
+                         "Цена": money(c["Цена продажи"]), "Второй": c["2-й участник (андербиддер)"],
+                         "Дилеров": c["Кол-во дилеров"]})
+    return pd.DataFrame(rows), pd.DataFrame(buys)
+
+
+# --------------------------------------------------------------------------- история
+HIST_COLS = ["Дата торгов", "Аукцион", "Лейн", "Лот #", "Год", "Марка / модель", "Модель", "VIN", "Пробег, mi",
+             "Результат", "Цена продажи", "Покупатель", "2-й участник (андербиддер)", "Кол-во дилеров",
+             "Asking (старт)", "По дороге ≈, mi"]
+
+
+def history(cars: pd.DataFrame, hist_dir: Path, day: str, comp: dict, top: int) -> tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Сохраняет итоги дня в hist_dir/<день>/cars.csv и сравнивает с предыдущими днями."""
+    cars[HIST_COLS].to_csv(hist_dir / day / "cars.csv", index=False, encoding="utf-8-sig")
+    prev = []
+    for f in sorted(hist_dir.glob("*/cars.csv")):
+        if f.parent.name < day:
+            prev.append(pd.read_csv(f, encoding="utf-8-sig", keep_default_na=False,
+                                    dtype={"Покупатель": str, "2-й участник (андербиддер)": str}))
+    if not prev:
+        return ("Прошлых аукционов в истории пока нет: каждый разбор сохраняет итоги дня, "
+                "со следующего аукциона здесь появится сравнение.", pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    h = pd.concat(prev, ignore_index=True)
+    for c in ("Цена продажи", "Кол-во дилеров", "Asking (старт)"):
+        h[c] = pd.to_numeric(h[c], errors="coerce")
+    days = sorted(h["Дата торгов"].astype(str).unique())
+    sold_t, sold_h = cars[cars["Результат"] == SOLD], h[h["Результат"] == SOLD]
+
+    a = []
+    for auc in sorted(set(cars["Аукцион"]) | set(h["Аукцион"])):
+        t, p = sold_t[sold_t["Аукцион"] == auc], sold_h[sold_h["Аукцион"] == auc]
+        nd = p["Дата торгов"].nunique()
+        a.append({"Аукцион": short(auc), "Продано сегодня": len(t), "В среднем раньше": round(len(p) / nd) if nd else "—",
+                  "Медиана сегодня": money(t["Цена продажи"].median()), "Медиана раньше": money(p["Цена продажи"].median()),
+                  "Цена/asking сегодня": f"{(t['Цена продажи'] / t['Asking (старт)']).median():.2f}×" if t["Asking (старт)"].notna().any() else "—",
+                  "Цена/asking раньше": f"{(p['Цена продажи'] / p['Asking (старт)']).median():.2f}×" if p["Asking (старт)"].notna().any() else "—"})
+    m = []
+    for model, t in sold_t.groupby("Модель"):
+        p = sold_h[sold_h["Модель"] == model]
+        if len(t) >= 3 and len(p) >= 3:
+            mt, mp = t["Цена продажи"].median(), p["Цена продажи"].median()
+            m.append({"Модель": model, "Сегодня": len(t), "Медиана сегодня": money(mt), "Раньше": len(p),
+                      "Медиана раньше": money(mp), "Изменение": f"{100 * (mt / mp - 1):+.0f}%", "_d": abs(mt / mp - 1)})
+    models = pd.DataFrame(m).sort_values("_d", ascending=False).drop(columns="_d").head(top) if m else pd.DataFrame()
+    c = []
+    for name, pats in (comp or {}).items():
+        rx = "|".join(re.escape(x) for x in pats)
+        row = {"Конкурент": name}
+        for d in days + [day]:
+            src = sold_h[sold_h["Дата торгов"].astype(str) == d] if d != day else sold_t
+            w = src[src["Покупатель"].astype(str).str.contains(rx, case=False, regex=True)]
+            row[d] = f"{len(w)} / {money(w['Цена продажи'].sum())}" if len(w) else "—"
+        c.append(row)
+    return (f"Сравнение с прошлыми аукционами: {', '.join(days)}.", pd.DataFrame(a), models, pd.DataFrame(c))
 
 
 # --------------------------------------------------------------------------- отчёт
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("csv", type=Path, nargs="+", help="один или несколько файлов логгера за один день")
+    ap.add_argument("--kbb", type=Path, default=None, help="таблица с VIN и KBB Private Party")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
     cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
+    top, box, comp = cfg.get("top_n", 15), cfg.get("buy_box") or {}, cfg.get("competitors") or {}
 
     cars, bids = load_many(args.csv)
     day = cars["Дата торгов"].iloc[0]
-    out = args.out or ROOT / "out" / "auctions" / day
+    hist_dir = ROOT / "out" / "auctions"
+    out = args.out or hist_dir / day
     out.mkdir(parents=True, exist_ok=True)
+    (hist_dir / day).mkdir(parents=True, exist_ok=True)
 
     cov, cov_notes = coverage(cars, bids, cfg.get("gap_minutes", 4))
     ov = overview(cars)
     mine, mine_note = our_activity(cars, bids, cfg.get("us", {}))
-    top_b, under, b_note = buyers(cars, cfg.get("top_n", 15))
-    by_price, by_age, models = segments(cars, cfg.get("top_n", 15))
+    comp_t, comp_buys = competitors(cars, bids, comp)
+    seg_note, seg_models, seg_best = our_segment(cars, box, load_kbb(args.kbb), top)
+    top_b, under, b_note = buyers(cars, top)
+    by_price, by_age, models = segments(cars, top)
     cheap, unsold = cheap_and_unsold(cars, cfg.get("cheap_vs_median", 0.8), cfg.get("min_peers", 3),
-                                     cfg.get("buy_box") or {})
+                                     {k: v for k, v in box.items() if k in ("price_max", "models", "makes", "year_min", "miles_max", "max_road_miles")})
+    h_note, h_auc, h_models, h_comp = history(cars, hist_dir, day, comp, top)
 
     sold = cars[cars["Результат"] == SOLD]
     md = [f"# Аукцион {day}: разбор\n",
           f"Файлы: {', '.join(f'`{p.name}`' for p in args.csv)}. Аукционов: {cars['Аукцион'].nunique()}, лейнов: {len(cov)}, "
-          f"машин в списках: {len(cars)}, продано (записано): {len(sold)} на {money(sold['Цена продажи'].sum())}.\n",
+          f"машин в списках: {len(cars)}, продано: {len(sold)} на {money(sold['Цена продажи'].sum())}.\n",
           "## 0. Полнота данных\n", "\n".join(f"- {n}" for n in cov_notes) + "\n\n", md_table(cov),
           "\n## 1. Сводка по аукционам\n", md_table(ov),
           "\n## 2. Наше участие\n", mine_note + "\n\n", md_table(mine),
-          "\n## 3. Покупатели\n", b_note + "\n\n", md_table(top_b),
+          "\n## 3. Конкуренты\n", md_table(comp_t), "\n### Что купили\n", md_table(comp_buys, 50),
+          "\n## 4. Ваш сегмент\n", seg_note + "\n\n### Модели сегмента: почём уходили\n", md_table(seg_models),
+          *(["\n### Самая большая разница KBB − цена\n", md_table(seg_best)] if not seg_best.empty else []),
+          "\n## 5. Все покупатели\n", b_note + "\n\n", md_table(top_b),
           "\n### Кто чаще всего был вторым (поднимает цену)\n", md_table(under),
-          "\n## 4. Цены по сегментам\n### По цене\n", md_table(by_price),
+          "\n## 6. Цены по рынку\n### По цене\n", md_table(by_price),
           "\n### По году выпуска\n", md_table(by_age), "\n### Самые частые модели\n", md_table(models),
-          f"\n## 5. Ушли дешевле похожих (ниже {cfg.get('cheap_vs_median', 0.8):.0%} медианы той же модели: год ±1, пробег ±40 тыс. миль)\n",
-          md_table(cheap), "\n### Не проданы: сколько не дотянули до floor\n", md_table(unsold)]
+          f"\n## 7. Ушли дешевле похожих (ниже {cfg.get('cheap_vs_median', 0.8):.0%} медианы той же модели: год ±1, пробег ±40 тыс. миль)\n",
+          "Только машины вашего сегмента. Состояния (condition report) в данных нет: часть ушла дёшево из-за проблем.\n\n",
+          md_table(cheap), "\n### Не проданы: сколько не дотянули до floor\n", md_table(unsold),
+          "\n## 8. Сравнение с прошлыми аукционами\n", h_note + "\n\n",
+          *(["### По аукционам\n", md_table(h_auc), "\n### Модели: изменение медианы цены\n", md_table(h_models),
+             "\n### Конкуренты по дням (машин / сумма)\n", md_table(h_comp)] if not h_auc.empty else [])]
     (out / "report.md").write_text("".join(md), encoding="utf-8")
 
     with pd.ExcelWriter(out / "tables.xlsx") as xw:
-        for name, t in [("Полнота", cov), ("Сводка", ov), ("Наши ставки", mine), ("Покупатели", top_b),
-                        ("Андербиддеры", under), ("По цене", by_price), ("По году", by_age), ("Модели", models),
-                        ("Дёшево ушли", cheap), ("Не проданы", unsold)]:
+        for name, t in [("Полнота", cov), ("Сводка", ov), ("Наши ставки", mine), ("Конкуренты", comp_t),
+                        ("Покупки конкурентов", comp_buys), ("Сегмент модели", seg_models), ("Сегмент KBB", seg_best),
+                        ("Покупатели", top_b), ("Андербиддеры", under), ("По цене", by_price), ("По году", by_age),
+                        ("Модели", models), ("Дёшево ушли", cheap), ("Не проданы", unsold),
+                        ("История аукционы", h_auc), ("История модели", h_models), ("История конкуренты", h_comp)]:
             (t if not t.empty else pd.DataFrame({"": ["нет данных"]})).to_excel(xw, sheet_name=name, index=False)
     print(f"Готово: {out / 'report.md'}\n        {out / 'tables.xlsx'}")
     return 0
