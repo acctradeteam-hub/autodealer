@@ -7,7 +7,7 @@ us:
   badges: []
 
 # Конкуренты: часть имени, как оно пишется в лесенке ставок (без учёта регистра).
-# «ONEAutoDeal» на аукционе выступает как «1 AUTO DEAL LLC» — уточнить.
+# «ONEAutoDeal» на аукционе выступает как «1 AUTO DEAL LLC» (подтверждено 10.11.2026).
 competitors:
   ROMCAR: [ROMCAR]
   ONEAutoDeal: [1 AUTO DEAL, ONEAUTODEAL]
