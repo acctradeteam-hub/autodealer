@@ -45,10 +45,15 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.22"
-PROGRAM_VERSION = "2026-11-10.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.23"
+PROGRAM_VERSION = "2026-11-11.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
+KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
+KBB_WEEK_STATUS: dict = {}                          # ход «KBB на неделю» от расширения — окну
+KBB_WEEK_TRIES = 2                                  # за две попытки KBB не нашёлся — больше не спрашиваем, впишите вручную
+KBB_WEEK_BATCH = 25                                 # машин на одну вкладку KBB-автопилота
+_SLOW_CACHE: dict[str, tuple[float, object]] = {}   # сводки окна, которые не нужно считать при каждом обновлении
 LOGGER_BACKUP_DIR = DATA_DIR / "auction_backup"   # резервная копия записи торгов днём — не в «Загрузках»
 PHOTOS_STATUS: dict = {}              # «📷 Проверить фото»: как идёт проверка карточек (сообщает расширение 2.18+)
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
@@ -1080,6 +1085,80 @@ def auto_kbb_cars(rows: list[dict], costs: dict, limit: int = 30) -> list[dict]:
     return out[:limit]
 
 
+def _real_kbb(row: dict) -> bool:
+    return bool(parse_money(row.get("kbb_private_party_usd"))) and not row.get("kbb_from_window_field")
+
+
+def kbb_week_pool(row: dict) -> bool:
+    """Кандидаты «KBB на неделю» (чт 18:00 → пт 9:00): популярные машины с торгами впереди, без стоп-факторов
+    (рама, титул, затопление) и без Major Engine/Transmission. Civic и Corolla — все («считаем все»), кроме брендированного титула."""
+    from .inspection import major_defects
+
+    if not row.get("popular") or row.get("passed") or row.get("rejected") or row.get("branded_hidden"):
+        return False
+    if not (row.get("vin") and row.get("year") and row.get("make") and parse_money(row.get("odometer_miles"))):
+        return False
+    if row.get("all_in"):
+        return True
+    return not str(row.get("calc_verdict") or "").startswith(("ПРОПУСТИТЬ", "РИСК")) and not major_defects(row)
+
+
+def load_kbb_week() -> dict[str, dict]:
+    """{VIN: {"n": попыток, "at": когда спрашивали}} за последние 7 дней."""
+    try:
+        data = json.loads(KBB_WEEK_PATH.read_text(encoding="utf-8")) if KBB_WEEK_PATH.exists() else {}
+    except (OSError, ValueError):
+        data = {}
+    since = time.time() - 7 * 86400
+    return {vin: a for vin, a in (data.get("asked") or {}).items() if isinstance(a, dict) and float(a.get("at") or 0) > since}
+
+
+def kbb_week_summary(rows: list[dict], asked: dict[str, dict] | None = None) -> dict:
+    """Для окна: сколько кандидатов, у скольких KBB есть, сколько осталось, где KBB не нашёлся."""
+    asked = load_kbb_week() if asked is None else asked
+    pool = [r for r in rows if kbb_week_pool(r)]
+    have = [r for r in pool if _real_kbb(r)]
+    failed = [r for r in pool if not _real_kbb(r) and int(asked.get(r["vin"], {}).get("n") or 0) >= KBB_WEEK_TRIES]
+    return {"pool": len(pool), "have": len(have), "left": len(pool) - len(have) - len(failed), "failed": len(failed),
+            "failed_cars": [f"{place_of_row(r).replace('CarMax ', '')} {r.get('lot_number', '')} {r.get('year', '')} {r.get('make', '')} {r.get('model', '')}".strip()
+                            for r in failed[:20]]}
+
+
+def kbb_week_batch(rows: list[dict], costs: dict, limit: int = KBB_WEEK_BATCH) -> dict:
+    """Следующая пачка для KBB-автопилота: машины без KBB, сначала ещё не спрошенные, ближайшие торги, бо́льшая выгода."""
+    from .inspection import _day as sale_day
+
+    asked = load_kbb_week()
+    todo = [r for r in rows if kbb_week_pool(r) and not _real_kbb(r) and int(asked.get(r["vin"], {}).get("n") or 0) < KBB_WEEK_TRIES]
+    todo.sort(key=lambda r: (int(asked.get(r["vin"], {}).get("n") or 0), sale_day(r.get("sale_date", "")) or "99", -expected_gain(r)))
+    need = []
+    for r in todo[:limit]:
+        need.append({"v": r["vin"], "y": str(r["year"]), "mk": r["make"], "md": r.get("model", ""), "t": r.get("trim", ""),
+                     "mi": re.sub(r"\D", "", str(r["odometer_miles"]))})
+        mark = asked.setdefault(r["vin"], {"n": 0})
+        mark["n"] = int(mark.get("n") or 0) + 1
+        mark["at"] = time.time()
+    if need:
+        KBB_WEEK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        KBB_WEEK_PATH.write_text(json.dumps({"asked": asked}, ensure_ascii=False), encoding="utf-8")
+    url = ""
+    if need:
+        first = need[0]
+        url = kbb_site.browser_url(costs, first["y"], first["mk"], first["md"], first["mi"]).split("#")[0] + "#la=" + quote(json.dumps(need, ensure_ascii=False))
+    return {"cars": need, "url": url, "cars_json": json.dumps(need, ensure_ascii=False), **kbb_week_summary(rows, asked)}
+
+
+def cached(name: str, ttl: float, make):
+    """Значение не старше ttl секунд: «KBB на неделю» и «уровень победителей» не пересчитываются при каждом обновлении окна
+    (пока идёт KBB-автопилот, окно обновляется каждые несколько секунд)."""
+    hit = _SLOW_CACHE.get(name)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    value = make()
+    _SLOW_CACHE[name] = (time.time(), value)
+    return value
+
+
 def buyable(row: dict) -> bool:
     """«Реально купить»: наш потолок не ниже средней цены, за которую такая машина уходит на аукционе."""
     try:
@@ -1246,7 +1325,7 @@ COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
            "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "calc_bid_goal_usd", "calc_goal_pct", "defects", "source_file", "calc_breakdown", "needs_review",
            "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed", "rejected", "window_note", "carfax", "carfax_url", "carfax_flags", "carfax_pdf", "inspect_manual", "phone_rating", "phone_take",
-           "returned", "returned_price", "returned_times", "high_miles_value", "kbb_prelim_usd", "kbb_prelim_pct",
+           "returned", "returned_price", "returned_times", "high_miles_value", "kbb_prelim_usd", "kbb_prelim_pct", "market_share", "my_bid_share", "share_base", "my_bid_win_pct",
            "photo_wait", "photo_arrived", "owners", "owners_note", "accidents", "accidents_note", "voice_notes", "today_done", "all_in", "phone_smog")
 
 
@@ -1439,6 +1518,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "nottake_total": nottake_total, "nottake_bids": nottake_bids, "take_total": take_total, "take_nobid": take_nobid, "nophoto_total": nophoto_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "photos_status": PHOTOS_STATUS,
+                           "kbb_week": {**cached("kbb_week", 120, lambda: kbb_week_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""))), "status": KBB_WEEK_STATUS},
+                           "win_level": cached("win_level", 300, lambda: review.win_level(review.load(), results.load_history())),
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
                                              for k, v in results.stats(results.load_history()).items()}}
                 self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
@@ -1614,6 +1695,28 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(json.dumps({"ok": True, "path": str(path)}, ensure_ascii=False).encode("utf-8"))
                 else:
                     self._send(b'{"ok":false}')
+                return
+            if urlparse(self.path).path == "/api/kbb_week":
+                # «KBB на неделю» (расширение, чт 18:00 → пт 9:00): batch — следующая пачка машин для KBB-автопилота,
+                # status — ход для окна. Только расширение (X-LA): пачка отмечает машины как «спрошенные».
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(min(length, 1024 * 1024)) or b"{}")
+                if data.get("action") == "status":
+                    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+                    KBB_WEEK_STATUS.clear()
+                    KBB_WEEK_STATUS.update({k: state.get(k) for k in ("week", "started", "batches", "asked", "last", "finished", "note", "manual", "deadline", "busy")})
+                    KBB_WEEK_STATUS["got"] = time.time()
+                    self._send(b'{"ok":true}')
+                    return
+                costs_now = load_costs(costs_path)
+                rows = search_rows(find_pages(folders, 168), cache, costs_now, "")
+                limit = max(1, min(int(data.get("limit") or KBB_WEEK_BATCH), 40))
+                batch = kbb_week_batch(rows, costs_now, limit)
+                _SLOW_CACHE["kbb_week"] = (time.time(), {k: batch[k] for k in ("pool", "have", "left", "failed", "failed_cars")})   # окну — свежий счёт
+                self._send(json.dumps(batch, ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path in ("/api/auction_log", "/api/logger_status", "/api/logger_page"):
                 # Запись торгов (расширение): днём — резервная копия в данных программы (backup), в 16:00 — ОДИН файл итогов
@@ -1949,7 +2052,7 @@ button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.takenobi
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:96px;height:72px;object-fit:cover;border-radius:6px;display:block}td.milescell{white-space:normal;width:96px}td.milescell .pill{white-space:normal;display:inline-block;line-height:1.25}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
-details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}
+details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}.lowbid{color:#b25e00}.winlevel{margin:6px 0;padding:6px 12px;border-radius:8px;background:#eef4ff;border:1px solid #c9d8f5;font-size:13px}
 </style></head><body><main>
 <h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <button type="button" class="btn sec jump" id="vrpbtn" onclick="$('vrpbox').hidden=!$('vrpbox').hidden" title="Логин и пароль vin-reports-pro.com для кнопки «📄 Carfax»: сайт просит войти — расширение входит само">🔑 Вход Carfax</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
@@ -1986,7 +2089,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="joinst" class="muted" style="margin:2px 0 4px"></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="joinst" class="muted" style="margin:2px 0 4px"></div><div id="kbbweek" class="muted" style="margin:2px 0 4px"></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th style="width:290px">Машина</th><th>Пробег</th><th title="Ваша оценка машины на осмотре — из приложения «Аукцион: заметки» (1–5 звёзд), и решение «Беру» / «Не беру»">Моя оценка</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110 sorth" onclick="sortHead()" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов). Нажмите — сортировка по ней: от низкой к высокой, ещё раз — наоборот">Средняя покупка<br>на аукционе <span id="sortmark">⇅</span></th><th class="w110 sorth" onclick="sortProfit()" title="Нажмите — сортировка по прибыли при покупке по средней цене: сверху самая большая, одним списком; ещё раз — наоборот">Прибыль при покупке<br>по средней цене <span id="sortmark2">⇅</span></th><th>Потолок</th><th style="width:230px">Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -2154,7 +2257,7 @@ const CF_TEXT={sent:'⏳ Carfax: открываю vin-reports-pro…',opened:'�
  error:'⚠ Carfax не получен',done:'✓ Carfax получен'};
 function cfStatus(x){const s=CF[x.vin];if(!s||Date.now()/1000-s.at>3600||(s.status==='done'&&x.carfax))return'';
  return `<div class="${/^(login|manual|error)$/.test(s.status)?'neg':'muted'}">${esc(CF_TEXT[s.status]||s.status)}${s.note?': '+esc(s.note):''}</div>`}
-function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
+function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);drawKbbWeek(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
 {const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'));return}}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${placeList().includes(p)?' on':''}" onclick="togglePlace(this.dataset.p)" title="Нажмите ещё площадки — они добавятся в список; нажмите снова — уберётся" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
@@ -2164,7 +2267,7 @@ if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  (d.kbb_learning&&d.kbb_learning.n?`<div class="muted" style="margin:4px 0" title="Каждая машина, у которой была прикидка, а потом пришёл настоящий KBB, — урок для прикидки">Обучение KBB: уточнено ${d.kbb_learning.n} машин; прикидка ошибалась в среднем на ${d.kbb_learning.abs}% и была ${d.kbb_learning.bias>0?'выше':'ниже'} настоящего KBB на ${Math.abs(d.kbb_learning.bias)}%${d.kbb_learning.factor?` → прикидки теперь × ${d.kbb_learning.factor}`:' (поправка — от 5 уточнённых машин)'}</div>`:'')+
 
- notTakeBanner(d)+takeBanner(d)+`<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${$('nophoto')&&$('nophoto').checked?' on':''}" onclick="setNoPhoto(!$('nophoto').checked)" title="Только машины без фотографий (NO PICTURES / Check back for images): конкурентов меньше — смотреть самому на месте. Ещё раз — все машины">📷 Без фото <span class="cnt">${d.nophoto_total||0}</span></button> <button type="button" class="tab${onlyBids?' on':''}" onclick="setBids(${!onlyBids})" title="Только машины, на которые вы поставили ставку (MP в заметке или ставка в окне), сверху — самая большая прибыль при вашей ставке">💰 Мои ставки <span class="cnt">${d.bids_total||0}</span></button> <button type="button" class="tab${onlyNotTake?' on':''}${(d.nottake_bids||[]).length?' bad':''}" onclick="setNotTake(${!onlyNotTake})" title="Машины, на которых вы на осмотре нажали «Не беру» в приложении на телефоне. Сверху — где ваша ставка ещё стоит: снимите её на CarMax, чтобы машина не купилась случайно">📱 Не беру <span class="cnt">${d.nottake_total||0}</span>${(d.nottake_bids||[]).length?` · ⚠ со ставкой ${d.nottake_bids.length}`:''}</button> <button type="button" class="tab${onlyTake?' on':''}${(d.take_nobid||[]).length?' warn':''}" onclick="setTake(${!onlyTake})" title="Машины, на которых вы на осмотре нажали «Беру» в приложении на телефоне. Сверху — где ставки ещё нет: поставьте её до торгов">📱 Беру <span class="cnt">${d.take_total||0}</span>${(d.take_nobid||[]).length?` · ⚠ без ставки ${d.take_nobid.length}`:''}</button> <button type="button" class="tab${showRejected?' on':''}" onclick="setRejected(${!showRejected})" title="Машины, на которые вы нажали «🚫 Отбой» после просмотра лота: в общем списке их нет. Нажмите — покажу только их (там же «↩ вернуть»)">🚫 Отбой <span class="cnt">${d.rejected_total||0}</span></button> <button type="button" class="tab${onlyBuyable?' on':''}" onclick="setBuyable(${!onlyBuyable})" title="Только машины, где наш потолок не ниже средней цены покупки на аукционе: их реально купить. Если средняя выше потолка — такую машину почти всегда забирают дороже, осмотр на неё обычно впустую">✅ Реально купить <span class="cnt">${d.buyable_total||0}</span></button> <button type="button" class="tab${onlyArrived?' on':''}" onclick="setArrived(${!onlyArrived})" title="Машины, у которых при прошлом сохранении не было фото (Wait Pictures), а на свежей странице фото появились — за последние 7 дней. Пересмотрите их">🖼 Фото появились <span class="cnt">${d.arrived_total||0}</span></button> <button type="button" class="tab${showRemoved?' on':''}" onclick="setRemoved(${!showRemoved})" title="Машины, у которых вы сняли звёздочку на CarMax: в общем списке их нет, чтобы не мешали. Нажмите — покажу только их; ещё раз — обратно к общему списку">☆ Убранные из избранного <span class="cnt">${d.removed_total||0}</span></button> <button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
+ winLevelBanner(d)+notTakeBanner(d)+takeBanner(d)+`<div class="sortbar" style="margin:6px 0"><button type="button" class="tab${$('nophoto')&&$('nophoto').checked?' on':''}" onclick="setNoPhoto(!$('nophoto').checked)" title="Только машины без фотографий (NO PICTURES / Check back for images): конкурентов меньше — смотреть самому на месте. Ещё раз — все машины">📷 Без фото <span class="cnt">${d.nophoto_total||0}</span></button> <button type="button" class="tab${onlyBids?' on':''}" onclick="setBids(${!onlyBids})" title="Только машины, на которые вы поставили ставку (MP в заметке или ставка в окне), сверху — самая большая прибыль при вашей ставке">💰 Мои ставки <span class="cnt">${d.bids_total||0}</span></button> <button type="button" class="tab${onlyNotTake?' on':''}${(d.nottake_bids||[]).length?' bad':''}" onclick="setNotTake(${!onlyNotTake})" title="Машины, на которых вы на осмотре нажали «Не беру» в приложении на телефоне. Сверху — где ваша ставка ещё стоит: снимите её на CarMax, чтобы машина не купилась случайно">📱 Не беру <span class="cnt">${d.nottake_total||0}</span>${(d.nottake_bids||[]).length?` · ⚠ со ставкой ${d.nottake_bids.length}`:''}</button> <button type="button" class="tab${onlyTake?' on':''}${(d.take_nobid||[]).length?' warn':''}" onclick="setTake(${!onlyTake})" title="Машины, на которых вы на осмотре нажали «Беру» в приложении на телефоне. Сверху — где ставки ещё нет: поставьте её до торгов">📱 Беру <span class="cnt">${d.take_total||0}</span>${(d.take_nobid||[]).length?` · ⚠ без ставки ${d.take_nobid.length}`:''}</button> <button type="button" class="tab${showRejected?' on':''}" onclick="setRejected(${!showRejected})" title="Машины, на которые вы нажали «🚫 Отбой» после просмотра лота: в общем списке их нет. Нажмите — покажу только их (там же «↩ вернуть»)">🚫 Отбой <span class="cnt">${d.rejected_total||0}</span></button> <button type="button" class="tab${onlyBuyable?' on':''}" onclick="setBuyable(${!onlyBuyable})" title="Только машины, где наш потолок не ниже средней цены покупки на аукционе: их реально купить. Если средняя выше потолка — такую машину почти всегда забирают дороже, осмотр на неё обычно впустую">✅ Реально купить <span class="cnt">${d.buyable_total||0}</span></button> <button type="button" class="tab${onlyArrived?' on':''}" onclick="setArrived(${!onlyArrived})" title="Машины, у которых при прошлом сохранении не было фото (Wait Pictures), а на свежей странице фото появились — за последние 7 дней. Пересмотрите их">🖼 Фото появились <span class="cnt">${d.arrived_total||0}</span></button> <button type="button" class="tab${showRemoved?' on':''}" onclick="setRemoved(${!showRemoved})" title="Машины, у которых вы сняли звёздочку на CarMax: в общем списке их нет, чтобы не мешали. Нажмите — покажу только их; ещё раз — обратно к общему списку">☆ Убранные из избранного <span class="cnt">${d.removed_total||0}</span></button> <button type="button" class="tab${onlyReturned?' on':''}" onclick="setReturned(${!onlyReturned})" title="Машины, которые уже продавались на аукционе (по вашей базе итогов) и снова выставлены: покупатель вернул или перепродаёт. Видно, когда, где и за сколько продана в прошлый раз">↩ Вернулись после продажи <span class="cnt">${d.returned_total||0}</span></button></div>`+
  `<div class="sortbar" style="margin:6px 0"><span class="muted" title="Только машины CarMax с такими замечаниями аукциона">Major-дефекты (CarMax):</span> `+[['','выкл'],['engine','двигатель'],['trans','коробка'],['both','двигатель + коробка'],['any','любой из двух'],['none','без дефекта']].map(([v,t])=>`<button type="button" class="tab${defectBy===v?' on':''}" onclick="setDefect('${v}')">${t}</button>`).join('')+`</div>`+
  `<span class="sortbar"><span class="muted">Сортировка:</span> `+[['','по выгоде: сначала «МОЖНО» с настоящим KBB'],['profit','прибыль ↓ (все вместе, и с прикидкой KBB)'],['lane','лот: A1, A2, A3 …'],['market','средняя цена покупки ↑ (от дешёвых)'],['market_desc','средняя цена покупки ↓']].map(([v,t])=>`<button type="button" class="tab${sortBy===v?' on':''}" onclick="setSort('${v}')">${t}</button>`).join('')+`</span>`+
  `<div class="muted tabnote">${esc((TABS.find(([g])=>g===tab)||[])[2]||'')} · ${SORT_NOTE[sortBy]||'сверху самые выгодные'}${orderLock&&orderLock.key===listKey()?` · порядок закреплён до ${new Date(orderLock.at+ORDER_MIN*60e3).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})} — пришедший KBB строки не двигает <button type="button" class="tab" onclick="resort()" title="Расставить машины заново по текущим цифрам">⇅ Пересортировать сейчас</button>`:''}</div>`;
@@ -2175,10 +2278,10 @@ $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr data-vin="${esc(x.vi
 <div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="В избранном на CarMax — машина в списке на печать">★ избранное</span> ':''}${x.voice_notes?`<div class="voice" title="Надиктовано на аукционе (приложение «Голосовые заметки»)">🎤 ${esc(x.voice_notes)}</div>`:''}${x.photo_wait?`<span class="pill v-mid" title="При сохранении списка ${esc(x.photo_wait)} фото не было — ждём: сохраните список позже, программа отметит, когда фото появятся">📷 NO PICTURES — ждём фото</span> `:''}${x.photo_arrived?`<span class="pill v-ok" title="Фото не было, теперь появились — пересмотрите машину">📷 Фото появились ${esc(x.photo_arrived.slice(5).replace('-','/'))}</span> `:''}${x.owners?`<span class="pill ${Number(x.owners)<=1?'v-ok':Number(x.owners)<=2?'v-mid':'v-bad'}" title="AutoCheck: владельцев ${esc(x.owners)}${x.owners_note?' — '+esc(x.owners_note):''}">👤 ${esc(x.owners)} ${Number(x.owners)===1?'владелец':Number(x.owners)<5?'владельца':'владельцев'}</span> `:''}${x.carfax?`<div><span class="pill ${x.carfax_flags?'v-bad':'v-ok'}" title="Carfax${x.carfax_flags?' — настораживает: '+esc(x.carfax_flags):''}">📄 Carfax: ${esc(x.carfax)}</span>${x.carfax_url?` <a href="${esc(x.carfax_url)}" target="_blank" rel="noopener">открыть ↗</a>`:''}${x.carfax_pdf?` <a href="${esc(x.carfax_pdf)}" target="_blank" rel="noopener" title="PDF отчёта — хранится в программе (~/LotAnalyzer/data/carfax)">PDF ↗</a>`:''}</div>`:''}${cfStatus(x)}${x.accidents!==undefined&&x.accidents!==''?`<div><span class="pill ${Number(x.accidents)===0?'v-ok':Number(x.accidents)===1?'v-mid':'v-bad'}" title="AutoCheck: ${esc(x.accidents_note||'')}">💥 ${Number(x.accidents)===0?'без ДТП':esc(x.accidents)+' ДТП'}</span></div>`:''}${x.returned?`<span class="pill v-mid" title="${esc(x.seen_before||'')}">↩ уже продана ${esc(x.returned)}${Number(x.returned_times)>1?' (продавалась '+esc(x.returned_times)+' раза)':''}${x.returned_price&&x.calc_max_bid_usd?' · наш потолок '+money(Number(x.calc_max_bid_usd)):''}</span> `:''}${x.favorite_removed?'<span class="pill v-mid" title="Убрана из избранного на CarMax: в списке на печать её нет, заметку в Notes программа ей больше не пишет">☆ убрана из избранного</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a>${x.condition_grade?` <span class="pill ${crCls(x.condition_grade)}" title="Condition grade">CR ${esc(x.condition_grade.split(' ')[0])}</span>`:''}${x.cr_url?` <a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a>`:''}</div>`:''}${x.seen_before&&!x.returned?`<div class="seen" title="${esc(x.seen_before)}">был на торгах: ${x.seen_before.split('; ').length} раз(а) — наведите</div>`:''}${x.vin?`<div class="acts"><button type="button" class="tab mic" data-vin="${esc(x.vin)}" onclick="dictate(this)" title="Надиктовать заметку к машине (что не устроило на фото, дефекты …): нажмите и говорите, текст сам допишется в заметку «🎤». Ещё раз — остановить">🎤</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="editNote(this)" title="Написать или поправить заметку руками">✏</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" ${x.carfax?'data-again="1" ':''}onclick="carfaxOrder(this)" title="Заказать Carfax на vin-reports-pro.com: расширение само откроет сайт, впишет VIN и закажет отчёт; готовый PDF придёт сюда — с разбором (ДТП, владельцы, штаты, титул) и в расчёте потолка. Отчёт платный">📄 ${x.carfax?'Carfax ещё раз':'Carfax'}</button> ${x.rejected?`<button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="reject(this,false)" title="Отбой ${esc(x.rejected)} — вернуть машину в общий список">↩ вернуть</button>`:`<button type="button" class="tab bad" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" onclick="reject(this,true)" title="Посмотрели лот — брать не будем: машина уйдёт из списка, из списка на печать и из автозапроса KBB. Найти её — кнопкой «🚫 Отбой» над списком">🚫 Отбой</button>`}</div>`:''}</td>
 <td class="num milescell">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}${x.vin?`<div class="insp">${x.inspect_manual?`<button type="button" class="tab on" data-vin="${esc(x.vin)}" onclick="inspectAdd(this,false)" title="Добавлено вручную ${esc(x.inspect_manual)} — машина в списке на осмотр и на телефоне. Нажмите, чтобы убрать">✓ На осмотре</button>`:`<button type="button" class="tab" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" onclick="inspectAdd(this,true)" title="В список на осмотр: посмотрели лот — машину надо осмотреть самому (повреждения, нет фото …). Сразу попадёт в список на осмотр и на телефон, с пометкой «добавлено вручную»">На осмотр</button>`}</div>`:''}${x.high_miles_value?'<div><span class="pill v-ok" title="Пробег 140–180 тыс. миль: на CarMax такие уходят дешевле всего относительно KBB (≈0,74 за октябрь). У Toyota / Honda / Lexus — хороший запас">🛣 большой пробег — дёшево</span></div>':''}</td>
 <td class="rate">${rateCell(x)}</td>
-<td class="num kbbcell">${x.vin?`<input class="kbb bid" data-vin="${esc(x.vin)}" value="${esc(x.my_proxy_usd)}" placeholder="ставка" inputmode="numeric" title="Ваша ставка (proxy bid). Enter — сохранить и пересчитать" oninput="previewBid(this)" onchange="saveBid(this)"><div class="muted pv" id="pv-${esc(x.vin)}"></div>`:money(x.my_proxy_usd)}${x.profit_at_my_bid_usd?`<div class="muted" title="Прибыль при вашей ставке: ${esc(x.profit_at_my_bid_items||'')}">прибыль <b class="${Number(x.profit_at_my_bid_usd)<0?'neg':'pos'}">${signed(x.profit_at_my_bid_usd)}</b></div>${bidCalc(x.profit_at_my_bid_items)}`:''}${x.current_bid_usd?`<div class="muted">на сайте ${money(x.current_bid_usd)}</div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&x.phone_take==='Не беру'&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg neg" href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="На осмотре — «Не беру»: откройте лот и снимите ставку на CarMax, потом очистите поле ставки здесь">снять ставку на CarMax ↗</a></div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&x.phone_take!=='Не беру'&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg" href="${esc(x.lot_url)}#la-bid=${esc(String(x.my_proxy_usd).replace(/\D/g,''))}" target="_blank" rel="noopener" title="Откроет лот на CarMax и впишет ставку в «Set early bid» (вниз до шага $50). Способ оплаты и «Place bid» — вы сами">поставить на CarMax ↗</a></div>`:''}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
+<td class="num kbbcell">${x.vin?`<input class="kbb bid" data-vin="${esc(x.vin)}" value="${esc(x.my_proxy_usd)}" placeholder="ставка" inputmode="numeric" title="Ваша ставка (proxy bid). Enter — сохранить и пересчитать" oninput="previewBid(this)" onchange="saveBid(this)"><div class="muted pv" id="pv-${esc(x.vin)}"></div>`:money(x.my_proxy_usd)}${bidShare(x)}${x.profit_at_my_bid_usd?`<div class="muted" title="Прибыль при вашей ставке: ${esc(x.profit_at_my_bid_items||'')}">прибыль <b class="${Number(x.profit_at_my_bid_usd)<0?'neg':'pos'}">${signed(x.profit_at_my_bid_usd)}</b></div>${bidCalc(x.profit_at_my_bid_items)}`:''}${x.current_bid_usd?`<div class="muted">на сайте ${money(x.current_bid_usd)}</div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&x.phone_take==='Не беру'&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg neg" href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="На осмотре — «Не беру»: откройте лот и снимите ставку на CarMax, потом очистите поле ставки здесь">снять ставку на CarMax ↗</a></div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&x.phone_take!=='Не беру'&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg" href="${esc(x.lot_url)}#la-bid=${esc(String(x.my_proxy_usd).replace(/\D/g,''))}" target="_blank" rel="noopener" title="Откроет лот на CarMax и впишет ставку в «Set early bid» (вниз до шага $50). Способ оплаты и «Place bid» — вы сами">поставить на CarMax ↗</a></div>`:''}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
 ${!x.kbb_private_party_usd&&x.kbb_estimate_usd?`<div class="muted" title="${esc(x.kbb_estimate_source)}">≈ ${money(x.kbb_estimate_usd)} <span class="pill v-mid">предварительно</span></div>`:''}${x.kbb_prelim_usd?`<div class="muted" title="Предварительная цена, которую программа показывала до настоящего KBB. По таким парам она учится: следующие прикидки поправляются">прикидка была ≈ ${money(x.kbb_prelim_usd)} <b class="${Math.abs(Number(x.kbb_prelim_pct))<=10?'pos':'neg'}">${esc(x.kbb_prelim_pct)}%</b></div>`:''}<div class="muted" title="${esc(x.kbb_entered)}">${x.kbb_url?`<a class="muted" href="${esc(x.kbb_url)}" target="_blank" rel="noopener" title="Открыть страницу KBB, откуда взята цена: ${esc(x.kbb_entered)}">${esc(kbbShort(x.kbb_entered))} ↗</a>`:esc(kbbShort(x.kbb_entered))}</div>${(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles?`<div><a class="muted" href="${esc(laUrl([x]))}" onclick="openKbb([shown[${i}]]);return false" title="Откроется kbb.com и сам получит KBB (расширение «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»): комплектация, пробег ${esc(x.odometer_miles)}, 92620, Private Party, Good">${x.kbb_private_party_usd?'обновить ↗':'получить KBB ↗'}</a></div>`:''}</td>
 
-<td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}</td>
+<td class="num" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит (Manheim — от MMR, CarMax — от KBB; медиана по итогам торгов)">${money(x.market_estimate_usd)}${x.market_share?`<div class="muted" title="Средняя покупка — доля от ${esc(x.share_base)}: столько обычно платят победители за такую машину">${shareTxt(x.market_share)} ${esc(x.share_base)}</div>`:''}</td>
 <td class="num" title="Прибыль, если купить по средней цене покупки на аукционе: продажа − расходы − (средняя цена покупки + сборы аукциона)"><b class="${Number(x.calc_profit_market_usd)<0?'neg':'pos'}">${signed(x.calc_profit_market_usd)}</b>${profitItems(x)}</td>
 <td class="num" title="Потолок — предел: выше не ставить, прибыль при нём ≈ 10% от цены продажи (KBB). Ниже — ставка на 15% прибыли: с неё начинать">${ceilCell(x)}${x.calc_profit_usd?`<div class="muted">прибыль ${money(x.calc_profit_usd)}</div>`:''}${x.calc_bid_goal_usd?`<div class="goal" title="Ставка, при которой прибыль ≈ ${esc(x.calc_goal_pct)} от цены продажи (KBB)">${esc(x.calc_goal_pct)}: ${money(x.calc_bid_goal_usd)}</div>`:''}</td>
 <td>${x.passed?`<span class="pill v-bad" title="Аукцион этой машины уже прошёл">⏱ ${esc(x.passed)}</span> ${passedPrice(x)}`:''}${x.today_done?`<span class="pill v-mid" title="Торги сегодня — машина в списке до конца дня, для разбора">⏱ торги сегодня прошли</span> ${passedPrice(x)}`:''}<span class="pill ${cls(x.calc_verdict||'')}">${esc(vHead(x.calc_verdict))}</span><div class="muted">${esc(vRest(x.calc_verdict))}</div>
@@ -2207,7 +2310,32 @@ function afterRender(){if(!focusVin)return;const tr=document.querySelector(`#row
 function previewBid(el){const x=shown.find(r=>r.vin===el.dataset.vin),out=document.getElementById('pv-'+el.dataset.vin);if(!x||!out)return;
  const p=Number(el.value.replace(/[$,\s]/g,'')),pm=Number(x.calc_profit_market_usd),me=Number(x.market_estimate_usd);
  if(!p||!x.calc_profit_market_usd||!me){out.textContent='';return}
- const v=Math.round((pm+me-p)/10)*10;out.innerHTML=`при $${p.toLocaleString('en-US')}:<br>прибыль <b class="${v<0?'neg':'pos'}">≈${signed(v)}</b>`}
+ const v=Math.round((pm+me-p)/10)*10,base=Number(x.kbb_private_party_usd||x.kbb_estimate_usd),sh=x.share_base==='KBB'&&base?` · ${shareTxt(p/base)} KBB`:'';
+ out.innerHTML=`при $${p.toLocaleString('en-US')}${sh}:<br>прибыль <b class="${v<0?'neg':'pos'}">≈${signed(v)}</b>`}
+/* 1 машина, 3 машины, 121 машина, 12 машин. */
+function carsWord(n){const a=n%100,b=n%10;return a>=11&&a<=14?'машин':b===1?'машина':b>=2&&b<=4?'машины':'машин'}
+/* Доля от KBB: 0.76 → «0,76». */
+function shareTxt(v){const n=Number(v);return n?n.toFixed(2).replace('.',','):''}
+/* Под ставкой: «= 0,70 KBB · шанс ~25%»; оранжевым — ставка ниже средней покупки (обычно такую машину забирают дороже). */
+function bidShare(x){if(!x.my_bid_share)return '';const low=x.market_share&&Number(x.my_bid_share)<Number(x.market_share);
+ return `<div class="muted${low?' lowbid':''}" title="Ваша ставка — доля от ${esc(x.share_base)}.${x.market_share?` Средняя покупка — ${shareTxt(x.market_share)} ${esc(x.share_base)}.`:''}${x.my_bid_win_pct?' Шанс — сколько похожих лотов уходило не дороже вашей ставки.':''}${low?' Ставка ниже средней покупки: такие машины обычно забирают дороже.':''}">= ${shareTxt(x.my_bid_share)} ${esc(x.share_base)}${x.my_bid_win_pct?` · шанс ~${x.my_bid_win_pct}%`:''}</div>`}
+/* Над списком: за какую долю KBB уходили машины на последних торгах (машины с вашим KBB), сколько ждала программа, ваши MP. */
+function winLevelBanner(d){const w=d.win_level;if(!w||!w.n)return '';const day=String(w.day||'').slice(5).split('-').reverse().join('.');
+ const k=Math.round((w.split||10000)/1000);
+ return `<div class="winlevel" title="Торги ${esc(day)}: цена продажи ÷ ваш настоящий KBB, медиана по ${w.n} машинам. Дорогие машины уходят ближе к KBB. «Программа ждала» — средняя покупка ÷ KBB у тех же машин до торгов; «ваши MP» — ваши ставки ÷ KBB">📈 Торги ${esc(day)}: победители платили <b>${shareTxt(w.median)} от KBB</b> (${w.n} ${carsWord(w.n)} с вашим KBB`+
+  (w.lo&&w.hi?`; KBB до $${k}k — ${shareTxt(w.lo.median)}, от $${k}k — ${shareTxt(w.hi.median)}`:'')+`)`+
+  (w.program?` · программа ждала ${shareTxt(w.program.median)}`:'')+(w.mp?` · ваши MP — <b class="${w.mp.median<w.median?'lowbid':''}">${shareTxt(w.mp.median)}</b> (${w.mp.n})`:'')+`</div>`}
+/* «KBB на неделю»: с четверга 18:00 до пятницы 9:00 расширение берёт KBB всех кандидатов (популярные без дефектов). */
+function drawKbbWeek(d){const e=$('kbbweek'),k=d.kbb_week;if(!e||!k)return;const s=k.status||{};
+ const t=x=>x?new Date(x).toLocaleString('ru-RU',{weekday:'short',hour:'2-digit',minute:'2-digit'}):'';
+ const now=new Date(),late=now.getDay()===5&&now.getHours()>=9||now.getDay()===6||now.getDay()===0;
+ let line=`кандидатов ${k.pool}: KBB есть у <b>${k.have}</b>, осталось <b>${k.left}</b>`+(k.failed?`, <span title="${esc((k.failed_cars||[]).join('; '))}">на KBB не нашлось ${k.failed} — впишите вручную</span>`:'');
+ if(s.busy)line+=` · <b>идёт</b>: пачек ${s.batches||0}, спрошено машин ${s.asked||0}`;else if(s.finished)line+=` · готово ${t(s.finished)}`;else if(s.started)line+=` · начато ${t(s.started)}`;
+ if(s.note)line+=` — ${esc(s.note)}`;
+ if(late&&k.left>0)line+=` · <b class="neg">⚠ к пятнице 9:00 не успели: осталось ${k.left}</b>`;
+ e.innerHTML=`🔎 KBB на неделю (чт 18:00 → пт 9:00): ${line} <button type="button" class="tab" onclick="kbbWeekRun()" title="Взять KBB для всех кандидатов сейчас: популярные машины с торгами впереди, без стоп-факторов и Major Engine/Transmission (Civic и Corolla — все). Вкладка kbb.com в фоне, по 25 машин, закрывается сама">▶ Взять KBB сейчас</button>`}
+function kbbWeekRun(){if(!hasExt()||extV()<2.23){alert('Нужно расширение «Lot Analyzer KBB» 2.23 или новее: chrome://extensions → ⟳, потом обновите это окно.');return}
+ window.postMessage({source:'lot-analyzer',type:'kbbweek-run'},'*');setTimeout(refresh,3000)}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
 try{await fetch('/api/kbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,miles:el.dataset.miles})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 let shown=[];
@@ -2277,7 +2405,7 @@ $('stat').textContent=why+`KBB для ${list.length} машин: на вклад
    и тогда ссылки открываются обычной вкладкой, а не «пропадают». */
 let extPong=0;
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='pong'){const first=!extPong;extPong=Date.now();if(e.data.v)document.documentElement.dataset.laExtV=e.data.v;if(first)extState()}});
-/* Автосбор CarMax (расширение, по пятницам утром): что собрано для аукционов понедельника и вторника. */
+/* Автосбор CarMax (расширение, с четверга 18:00 и ещё раз в пятницу 7:00): что собрано для аукционов понедельника и вторника. */
 const AUTO_WHY={empty:'машин пока нет',short:'загрузилось не всё',login:'войдите на CarMax в Chrome',error:'ошибка'};
 function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML='';return}
  if(a.busy)setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),5000);
@@ -2288,8 +2416,8 @@ function drawAuto(a){const e=$('auto');if(!e)return;if(!a||!a.state){e.innerHTML
   const cars=got.reduce((n,p)=>n+(d.places[p].cars||0),0),bad=pl.filter(p=>!d.places[p]||d.places[p].status!=='ok').map(p=>d.places[p]?`${p} — ${AUTO_WHY[d.places[p].status]||d.places[p].status}${d.places[p].note?': '+d.places[p].note:''}`:`${p} — не собрано`);
   const seen=inWin(k),lost=cars&&seen<cars*0.5?(activeFilters().length?` — <b>в окне их не видно: включены фильтры</b> <button type="button" class="tab" onclick="resetFilters()">показать все машины</button>`
    :` — <b>⚠ в окне их нет:</b> программа не нашла эти файлы. Она смотрит папки: ${esc(((lastData&&lastData.folders)||[]).join('; '))}. Проверьте, куда Chrome сохраняет скачанное (Настройки → Загрузки)`):'';
-  return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(seen?` (в окне ${seen})`:'')+lost+(bad.length?` <span title="Ещё попытка — через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
- e.innerHTML=`🤖 Автосбор CarMax (пятница с 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'аукционы этой недели ещё не собраны')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
+  return `<b>${dayLabel(k.slice(5))}</b>: площадок ${got.length} из ${pl.length}, машин ${cars}`+(seen?` (в окне ${seen})`:'')+lost+(bad.length?` <span title="Ещё попытка — ночью с четверга на пятницу через час, иначе через 3 часа, пока не начались торги">(${esc(bad.join('; '))})</span>`:'')});
+ e.innerHTML=`🤖 Автосбор CarMax (четверг с 18:00, ещё раз пятница 7:00): `+(a.busy?'<b>идёт сбор…</b> ':'')+(parts.join(' · ')||'аукционы этой недели ещё не собраны')+`<div style="margin-top:4px">`+[['mon','понедельника'],['tue','вторника']].map(([w,t])=>`<button type="button" class="tab" onclick="autoRun('${w}')"${a.busy?' disabled':''} title="Одна кнопка — все площадки аукциона ${t} (${esc((a.places[w]||[]).join(', '))}): расширение само откроет поиск каждой, дождётся всех машин и сохранит в «Загрузки», программа подхватит. Окна Chrome открываются и закрываются сами, 3–6 минут. Нужен вход на carmaxauctions.com">⬇ Собрать аукцион ${t}</button>`).join(' ')+`</div>`}
 /* Запись торгов CarMax: понедельник 7:55 — Join Auction, все линии Velocicast, логгер; итоги — файлом в программу. */
 const JOIN_STEP={open:'открываю CarMax…',join:'нажал «Join Auction», жду Velocicast…',lanes:'выбираю все линии Velocicast…',logging:'идёт запись',done:'записано',lost:'вкладку Velocicast закрыли',error:'не вышло'};
 function drawJoin(a){const e=$('joinst');if(!e)return;const s=a&&a.state;if(!s){e.innerHTML='';return}

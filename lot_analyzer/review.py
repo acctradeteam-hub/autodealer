@@ -97,6 +97,48 @@ def _result_for(fc: dict, by_vin: dict[str, list[dict]]) -> dict | None:
     return best
 
 
+def win_level(forecasts: dict[str, dict], history: dict[str, dict], today: dt.date | None = None,
+              days: int = 30, minimum: int = 10, split: float = 10000) -> dict:
+    """«Уровень победителей»: за какую долю вашего настоящего KBB уходили машины на последних торгах
+    (последний день, где таких продаж не меньше minimum). Рядом — сколько ждала программа (средняя покупка ÷ KBB)
+    и ваши MP ÷ KBB на тех же машинах; отдельно — машины с KBB до split и от split (дорогие уходят ближе к KBB)."""
+    today = today or dt.date.today()
+    by_vin: dict[str, list[dict]] = {}
+    for rec in history.values():
+        if rec.get("vin"):
+            by_vin.setdefault(rec["vin"], []).append(rec)
+    per_day: dict[str, list[tuple[dict, float, float]]] = {}
+    for fc in forecasts.values():
+        kbb = _num(fc.get("kbb_private_party_usd"))
+        if fc.get("kbb_kind") != "KBB" or not kbb:
+            continue
+        try:
+            day = dt.date.fromisoformat(fc.get("sale_day", ""))
+        except ValueError:
+            continue
+        if day > today or (today - day).days > days:
+            continue
+        rec = _result_for(fc, by_vin)
+        price = _num(rec.get("price")) if rec and rec.get("outcome") == "Sold" else None
+        if price:
+            per_day.setdefault(fc["sale_day"], []).append((fc, kbb, price))
+    ready = [d for d, items in per_day.items() if len(items) >= minimum]
+    if not ready:
+        return {}
+    day = max(ready)
+    items = per_day[day]
+
+    def summary(values: list[float]) -> dict | None:
+        return {"n": len(values), "median": round(statistics.median(values), 2)} if values else None
+
+    ratio = [price / kbb for _, kbb, price in items]
+    return {"day": day, "split": split, **summary(ratio),
+            "lo": summary([price / kbb for _, kbb, price in items if kbb < split]),
+            "hi": summary([price / kbb for _, kbb, price in items if kbb >= split]),
+            "program": summary([_num(fc["market_estimate_usd"]) / kbb for fc, kbb, _ in items if _num(fc.get("market_estimate_usd"))]),
+            "mp": summary([_num(fc["my_proxy_usd"]) / kbb for fc, kbb, _ in items if _num(fc.get("my_proxy_usd"))])}
+
+
 def compare(forecasts: dict[str, dict], history: dict[str, dict]) -> list[dict]:
     """По каждой площадке и дню торгов, где есть и прогноз, и итоги: сводка и списки машин."""
     by_vin: dict[str, list[dict]] = {}

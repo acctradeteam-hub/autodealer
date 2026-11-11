@@ -1730,3 +1730,149 @@ class AuctionRecorderTest(unittest.TestCase):
         # Нажимаются только Join Auction, выбор линий и подтверждение — ничего со «bid» / «buy».
         for name in ("carmax_join.js", "velocicast_join.js"):
             self.assertIn("bid", (ext / name).read_text(encoding="utf-8").split("NEVER = ")[1].split(";")[0])
+
+
+class KbbWeekTest(unittest.TestCase):
+    """«KBB на неделю» (расширение 2.23, чт 18:00 → пт 9:00): кандидаты, пачки, попытки, ход для окна."""
+
+    def car(self, vin: str, **extra) -> dict:
+        row = {"vin": vin, "year": "2018", "make": "Honda", "model": "Accord", "trim": "LX", "odometer_miles": "90000", "popular": "да",
+               "auction": "CarMax", "location": "Murrieta, CA", "lot_number": "A/1", "sale_date": "Nov 16, 9:00am PT",
+               "calc_verdict": "НУЖЕН KBB: предварительно до $9,000"}
+        row.update(extra)
+        return row
+
+    def setUp(self) -> None:
+        if app.KBB_WEEK_PATH.exists():
+            app.KBB_WEEK_PATH.unlink()
+
+    def test_pool(self) -> None:
+        self.assertTrue(app.kbb_week_pool(self.car("V1")))
+        self.assertFalse(app.kbb_week_pool(self.car("V1", popular="")))                                   # не популярная
+        self.assertFalse(app.kbb_week_pool(self.car("V1", passed="торги прошли")))
+        self.assertFalse(app.kbb_week_pool(self.car("V1", rejected="да")))
+        self.assertFalse(app.kbb_week_pool(self.car("V1", calc_verdict="ПРОПУСТИТЬ: повреждение рамы / кузова")))
+        self.assertFalse(app.kbb_week_pool(self.car("V1", auction_notes="Major Engine Defect")))
+        self.assertFalse(app.kbb_week_pool(self.car("V1", odometer_miles="")))
+        # Civic / Corolla — считаем все, даже с рамой; брендированный титул — нет
+        self.assertTrue(app.kbb_week_pool(self.car("V1", all_in="1", calc_verdict="РИСК: повреждение рамы / кузова")))
+        self.assertFalse(app.kbb_week_pool(self.car("V1", all_in="1", branded_hidden="1")))
+
+    def test_batches_and_tries(self) -> None:
+        costs = load_costs(COSTS)
+        rows = [self.car(f"VIN{i}") for i in range(5)] + [self.car("HAVE", kbb_private_party_usd="12000"), self.car("SKIP", popular="")]
+        first = app.kbb_week_batch(rows, costs, limit=2)
+        self.assertEqual(len(first["cars"]), 2)
+        self.assertIn("#la=", first["url"])
+        self.assertEqual(first["cars"][0]["mi"], "90000")
+        self.assertEqual((first["pool"], first["have"], first["left"], first["failed"]), (6, 1, 5, 0))
+        second = app.kbb_week_batch(rows, costs, limit=2)
+        self.assertFalse({c["v"] for c in first["cars"]} & {c["v"] for c in second["cars"]})          # сначала ещё не спрошенные
+        # KBB пришёл у первой машины — её больше не спрашиваем
+        rows[0]["kbb_private_party_usd"] = "11000"
+        for _ in range(6):
+            app.kbb_week_batch(rows, costs, limit=10)
+        last = app.kbb_week_batch(rows, costs, limit=10)
+        self.assertEqual(last["cars"], [])                                               # две попытки — и хватит
+        self.assertEqual((last["have"], last["left"], last["failed"]), (2, 0, 4))
+        self.assertEqual(len(last["failed_cars"]), 4)
+
+    def test_endpoint_only_for_extension(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        post = lambda body, xla=True: urllib.request.urlopen(urllib.request.Request(
+            base + "/api/kbb_week", data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **({"X-LA": "1"} if xla else {})})).read()
+        try:
+            with self.assertRaises(urllib.error.HTTPError):                       # без заголовка расширения — нельзя
+                post({"action": "batch"}, xla=False)
+            got = json.loads(post({"action": "batch", "limit": 25}))
+            self.assertEqual((got["cars"], got["pool"]), ([], 0))                # пустая папка — машин нет
+            post({"action": "status", "state": {"week": "2026-11-12", "batches": 3, "asked": 60, "busy": True, "secret": "x"}})
+            self.assertEqual(app.KBB_WEEK_STATUS["batches"], 3)
+            self.assertNotIn("secret", app.KBB_WEEK_STATUS)
+            rows = json.loads(urllib.request.urlopen(base + "/api/rows").read())
+            self.assertEqual(rows["kbb_week"]["status"]["asked"], 60)
+            self.assertIn("win_level", rows)
+        finally:
+            server.shutdown()
+
+    def test_extension_schedule(self) -> None:
+        """Расширение: окно «KBB на неделю» чт 18:00 → пт 12:00 (срок 9:00); автосбор — чт 18:00 и ещё раз пт 7:00."""
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("нет node")
+        ext = ROOT / "tools" / "kbb_extension"
+        code = ("var chrome={storage:{local:{},session:{}},alarms:{get(){},onAlarm:{addListener(){}}},runtime:{onMessage:{addListener(){}}},tabs:{onRemoved:{addListener(){}}}};"
+                + (ext / "auto_collect.js").read_text(encoding="utf-8").split("chrome.runtime.onMessage.addListener")[0]
+                + (ext / "kbb_week.js").read_text(encoding="utf-8").split("/* Вкладка пачки закрылась")[0] + """
+const D=(d,h,m)=>new Date(2026,10,d,h,m||0);   // ноябрь 2026: 12 — четверг, 13 — пятница, 16 — понедельник
+const out={
+ thu17:!!kwWeekStart(D(12,17,59)), thu18:!!kwWeekStart(D(12,18)), fri8:!!kwWeekStart(D(13,8,59)), fri12:!!kwWeekStart(D(13,12)), mon:!!kwWeekStart(D(16,10)),
+ deadline:kwDeadline(kwWeekStart(D(12,20))).getHours(), deadlineDay:kwDeadline(kwWeekStart(D(13,1))).getDate(),
+ targetsThu17:Object.keys(autoTargets(D(12,17))).length, targetsThu18:autoTargets(D(12,18)),
+ passThu:new Date(autoPassStart('2026-11-16',D(12,23))).getHours(), passFri:new Date(autoPassStart('2026-11-16',D(13,7,30))).getHours(),
+ retryNight:autoRetryMs(D(12,22)), retryDay:autoRetryMs(D(13,11))};
+console.log(JSON.stringify(out));""")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
+            handle.write(code)
+        result = subprocess.run([node, handle.name], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        got = json.loads(result.stdout)
+        self.assertEqual((got["thu17"], got["thu18"], got["fri8"], got["fri12"], got["mon"]), (False, True, True, False, False))
+        self.assertEqual((got["deadline"], got["deadlineDay"]), (9, 13))
+        self.assertEqual(got["targetsThu17"], 0)
+        self.assertEqual(got["targetsThu18"], {"mon": "2026-11-16", "tue": "2026-11-17"})
+        self.assertEqual((got["passThu"], got["passFri"]), (18, 7))
+        self.assertEqual((got["retryNight"], got["retryDay"]), (3600000, 3 * 3600000))
+        self.assertIn("'kbb_week.js'", (ext / "background.js").read_text(encoding="utf-8"))
+        self.assertIn("kbbweek-run", (ext / "app_bridge.js").read_text(encoding="utf-8"))
+
+
+class KbbShareTest(unittest.TestCase):
+    """Доля от KBB: средняя покупка и ставка — «0,76 KBB»; шанс при ставке; уровень победителей прошлых торгов."""
+
+    def test_row_shares(self) -> None:
+        from lot_analyzer.bid import apply_to_rows
+        costs = load_costs(COSTS)
+        row = {"auction": "CarMax", "location": "Murrieta, CA", "year": "2018", "make": "Honda", "model": "Accord", "trim": "LX",
+               "odometer_miles": "90000", "kbb_private_party_usd": "12000", "my_proxy_usd": "8400"}
+        apply_to_rows([row], costs, estimator=None)
+        self.assertEqual(row["share_base"], "KBB")
+        self.assertAlmostEqual(float(row["market_share"]), float(row["market_estimate_usd"]) / 12000, places=2)
+        self.assertEqual(row["my_bid_share"], "0.70")
+        self.assertTrue(0 <= int(row["my_bid_win_pct"]) <= 100)
+        higher = {**row, "my_proxy_usd": "11000"}
+        apply_to_rows([higher], costs, estimator=None)
+        self.assertGreater(int(higher["my_bid_win_pct"]), int(row["my_bid_win_pct"]))       # выше ставка — больше шанс
+        nobid = {k: v for k, v in row.items() if k != "my_proxy_usd"}
+        apply_to_rows([nobid], costs, estimator=None)
+        self.assertEqual((nobid["my_bid_share"], nobid["my_bid_win_pct"]), ("", ""))
+
+    def test_win_level(self) -> None:
+        import datetime as dt
+        from lot_analyzer import review
+        forecasts, history = {}, {}
+        for i in range(12):
+            kbb = 8000 if i < 6 else 14000
+            price = kbb * (0.70 if i < 6 else 0.86)
+            vin = f"VIN{i:014d}"
+            forecasts[f"{vin}|2026-11-09"] = {"vin": vin, "sale_day": "2026-11-09", "kbb_kind": "KBB", "kbb_private_party_usd": str(kbb),
+                                              "market_estimate_usd": str(kbb * 0.76), "my_proxy_usd": str(kbb * 0.7) if i % 2 else ""}
+            history[f"k{i}"] = {"vin": vin, "date": "2026-11-09", "outcome": "Sold", "price": str(price)}
+        forecasts["X|2026-11-09"] = {"vin": "X", "sale_day": "2026-11-09", "kbb_kind": "≈", "kbb_estimate_usd": "9000"}     # прикидка — не считаем
+        got = review.win_level(forecasts, history, today=dt.date(2026, 11, 11))
+        self.assertEqual((got["day"], got["n"]), ("2026-11-09", 12))
+        self.assertEqual((got["lo"]["median"], got["hi"]["median"]), (0.70, 0.86))
+        self.assertEqual(got["program"]["median"], 0.76)
+        self.assertEqual((got["mp"]["n"], got["mp"]["median"]), (6, 0.70))
+        self.assertEqual(review.win_level(forecasts, history, today=dt.date(2026, 11, 11), minimum=20), {})     # мало машин — не показываем
+        self.assertEqual(review.win_level(forecasts, history, today=dt.date(2027, 1, 30)), {})                  # старые торги — не показываем
+
+    def test_window_shows_shares(self) -> None:
+        for want in ("function bidShare(x)", "function winLevelBanner(d)", "function drawKbbWeek(d)", "winLevelBanner(d)+notTakeBanner(d)", "${bidShare(x)}",
+                     "x.market_share?", 'id="kbbweek"', "kbbweek-run"):
+            self.assertIn(want, app.PAGE)

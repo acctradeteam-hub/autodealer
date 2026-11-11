@@ -1,17 +1,21 @@
-/* Автосбор CarMax: в пятницу утром расширение само открывает поиск каждой площадки (ваши «Favorite auctions»
+/* Автосбор CarMax: с четверга вечера расширение само открывает поиск каждой площадки (ваши «Favorite auctions»
    с Member Dashboard), ждёт, пока загрузятся все машины, и сохраняет страницу в «Загрузки/Lot Analyzer» — как закладка
    «💾 Сохранить для анализа». Программа берёт файлы из «Загрузок» как обычно.
-   — Аукционы понедельника и вторника собираются в пятницу с 7:00; компьютер или Chrome был выключен —
-     соберёт при первом включении, пока торги не начались (понедельник / вторник до 6:00).
-   — Площадка без машин («Check back for cars»), неполная загрузка или ошибка — ещё попытка через 3 часа.
+   — Аукционы понедельника и вторника собираются в четверг с 18:00 — сразу за ними «KBB на неделю» (kbb_week.js)
+     берёт KBB всех кандидатов к пятнице 9:00. В пятницу в 7:00 — ещё раз все площадки: машины, добавленные за ночь.
+     Компьютер или Chrome был выключен — соберёт при первом включении, пока торги не начались (пн / вт до 6:00).
+   — Площадка без машин («Check back for cars»), неполная загрузка или ошибка — ещё попытка: ночью с четверга
+     на пятницу через час, в остальное время через 3 часа.
    — Нужен вход на carmaxauctions.com в этом Chrome; не вошли — в окне программы будет «войдите на CarMax». */
 var AUTO_PLACES = {
   mon: ['Sacramento', 'Murrieta', 'Oceanside', 'Roseville', 'El Mirage'],
   tue: ['Las Vegas', 'Chino', 'Fresno', 'Oxnard', 'Fremont', 'Pleasanton']
 };
-var AUTO_START_HOUR = 7;          // пятница, с этого часа
+var AUTO_START_HOUR = 18;         // четверг, с этого часа
+var AUTO_REPASS_HOUR = 7;         // пятница: ещё раз все площадки — новые машины за ночь
 var AUTO_DEADLINE_HOUR = 6;       // день торгов, до этого часа
 var AUTO_RETRY_MS = 3 * 3600 * 1000;
+var AUTO_RETRY_NIGHT_MS = 3600 * 1000;   // четверг 18:00 → пятница 9:00: пустые площадки — раз в час, KBB надо успеть к 9:00
 var AUTO_PAGE_MS = 5 * 60 * 1000; // на одну площадку, не дольше
 var autoBusy = false;
 var autoWaiting = {};             // tabId → функция, которой вкладка отдаст файл
@@ -30,10 +34,23 @@ function autoTargets(now) {
     sale.setDate(sale.getDate() + ((pair[1] - sale.getDay() + 7) % 7));
     var deadline = new Date(sale.getFullYear(), sale.getMonth(), sale.getDate(), AUTO_DEADLINE_HOUR);
     if (now >= deadline) { sale.setDate(sale.getDate() + 7); deadline.setDate(deadline.getDate() + 7); }
-    var start = new Date(sale.getFullYear(), sale.getMonth(), sale.getDate() - ((sale.getDay() + 2) % 7), AUTO_START_HOUR);   // пятница перед торгами
+    var start = autoStart(sale);
     if (now >= start && now < deadline) { out[pair[0]] = autoIso(sale); }
   });
   return out;
+}
+
+/* Четверг перед торгами, 18:00 (понедельник — за 4 дня, вторник — за 5). */
+function autoStart(sale) { return new Date(sale.getFullYear(), sale.getMonth(), sale.getDate() - ((sale.getDay() + 3) % 7), AUTO_START_HOUR); }
+/* С какого времени площадку надо собрать заново: четверг 18:00, а с пятницы 7:00 — ещё раз (новые машины за ночь). */
+function autoPassStart(saleIso, now) {
+  var p = saleIso.split('-'), sale = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  var thu = autoStart(sale), fri = new Date(thu.getFullYear(), thu.getMonth(), thu.getDate() + 1, AUTO_REPASS_HOUR);
+  return now >= fri ? fri.getTime() : thu.getTime();
+}
+function autoRetryMs(now) {
+  var d = now.getDay(), h = now.getHours();
+  return (d === 4 && h >= AUTO_START_HOUR) || (d === 5 && h < 9) ? AUTO_RETRY_NIGHT_MS : AUTO_RETRY_MS;
 }
 
 function autoState(cb) { chrome.storage.local.get('auto-state', function (got) { cb((got || {})['auto-state'] || {}); }); }
@@ -129,7 +146,7 @@ function autoOne(place, focused) {
 }
 
 /* Собрать то, что пора: все площадки открытых окон сбора, кроме уже собранных (и пустых / неполных — не чаще раза в 3 часа).
-   force — кнопка окна программы «Собрать …»: ближайшие торги, даже если сейчас не пятница; only — 'mon' / 'tue' (иначе оба дня). */
+   force — кнопка окна программы «Собрать …»: ближайшие торги, даже если окно сбора ещё не открыто; only — 'mon' / 'tue' (иначе оба дня). */
 function autoRun(force, only) {
   if (autoBusy) { return Promise.resolve(false); }
   var now = new Date(), targets = autoTargets(now);
@@ -156,7 +173,7 @@ function autoRun(force, only) {
         state[sale] = state[sale] || { which: which, places: {} };
         for (var place of AUTO_PLACES[which]) {
           var prev = state[sale].places[place];
-          if (!force && prev && (prev.status === 'ok' || Date.now() - (prev.at || 0) < AUTO_RETRY_MS)) { continue; }
+          if (!force && prev && ((prev.status === 'ok' && (prev.at || 0) >= autoPassStart(sale, now)) || (prev.status !== 'ok' && Date.now() - (prev.at || 0) < autoRetryMs(now)))) { continue; }
           var tries = (prev && prev.tries) || 0;
           var res = await autoOne(place, tries >= 1);                 // вторая попытка — окно на переднем плане
           res.at = Date.now(); res.tries = tries + 1;

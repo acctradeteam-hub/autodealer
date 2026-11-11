@@ -473,6 +473,16 @@ def _unprofitable(verdict: str, result: "BidResult") -> str:
     return head
 
 
+def win_chance_at(bid: float, data: BidInput, costs: dict) -> float | None:
+    """Шанс выиграть при этой ставке: доля похожих лотов, ушедших не дороже неё (та же база и кривая, что у потолка)."""
+    market = market_config(data.auction, costs, data.location)
+    base_kind = _market_base(data, market)
+    base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
+    heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
+    points = market.get(f"{base_kind}_{'heavy' if heavy else 'clean'}_curve") or []
+    return win_chance(bid, base_value, points) if base_value and bid else None
+
+
 def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
     """Для «Major Engine/Transmission Defect» — два сценария и пометка «личный осмотр»."""
     inspect: list[str] = []
@@ -871,6 +881,16 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         row["market_estimate_usd"] = f"{result.market_price:.0f}" if result.market_price else ""
         row["calc_win_chance_pct"] = f"{result.win_chance * 100:.0f}" if result.win_chance is not None and result.max_bid else ""
         row["calc_verdict"] = result.verdict + _proxy_note(parse_money(row.get("my_proxy_usd")), result.max_bid)
+        # Доля от KBB: «средняя покупка 0,76 KBB», «ваша MP 0,70 KBB» — видно, дотягивает ли ставка до обычной цены торгов.
+        mmr_based = result.market_source.startswith("MMR") or not data.kbb_private_party
+        share_base = (data.mmr if mmr_based else data.kbb_private_party) or None
+        share_name = "MMR" if mmr_based else "KBB"
+        proxy_now = parse_money(row.get("my_proxy_usd"))
+        row["market_share"] = f"{result.market_price / share_base:.2f}" if result.market_price and share_base else ""
+        row["my_bid_share"] = f"{proxy_now / share_base:.2f}" if proxy_now and share_base else ""
+        row["share_base"] = share_name if share_base else ""
+        chance = win_chance_at(proxy_now, data, costs) if proxy_now else None
+        row["my_bid_win_pct"] = f"{chance * 100:.0f}" if chance is not None else ""
         # Прибыль при вашей ставке: цена продажи (KBB) − ставка − сбор аукциона при ставке − дилер, смог и прочие расходы
         # (ремонт по объявлению, доставка, DMV) − скидка за историю. Считается и у «НЕВЫГОДНО» — ставку вы поставили сами.
         proxy = parse_money(row.get("my_proxy_usd"))

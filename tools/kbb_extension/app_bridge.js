@@ -19,7 +19,8 @@
       return;
     }
     /* Автосбор CarMax: состояние для окна и кнопка «Собрать сейчас». */
-    if (e.data.type === 'auto-status' || e.data.type === 'auto-run' || e.data.type === 'join-status' || e.data.type === 'join-run' || e.data.type === 'join-enable') {
+    if (e.data.type === 'auto-status' || e.data.type === 'auto-run' || e.data.type === 'join-status' || e.data.type === 'join-run' || e.data.type === 'join-enable' ||
+        e.data.type === 'kbbweek-run' || e.data.type === 'kbbweek-status') {
       try {
         chrome.runtime.sendMessage({ type: e.data.type, which: String(e.data.which || ''), on: !!e.data.on }, function (a) {
           void chrome.runtime.lastError;
