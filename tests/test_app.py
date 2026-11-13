@@ -1904,6 +1904,31 @@ class RemoteAccessTest(unittest.TestCase):
         except urllib.error.HTTPError as err:
             return err.code, dict(err.headers), err.read()
 
+    def test_without_pin(self) -> None:
+        """Без PIN: одна кнопка «Включить» — телефон из вашей сети Tailscale заходит сразу; PIN — по желанию."""
+        r = self.remote
+        tmp = Path(tempfile.mkdtemp())
+        phone = self.serve(app.make_remote_handler([tmp], COSTS, app.PageCache()))
+        mac = self.serve(app.make_handler([tmp], COSTS, app.PageCache()))
+        self.assertEqual(self.call(phone + "/")[0], 302)                                   # выключено — не пускает
+        got = json.loads(self.call(mac + "/api/remote_settings", {"enabled": True})[2])
+        self.assertTrue(got["enabled"] and not got["pin"])
+        self.assertTrue(r.enabled())
+        status, _, page = self.call(phone + "/")
+        self.assertEqual(status, 200)                                                      # без PIN — сразу окно
+        self.assertIn(b"const REMOTE=", page)
+        self.assertEqual(self.call(phone + "/api/rows")[0], 200)
+        self.assertEqual(self.call(phone + "/api/remote_settings", {"enabled": False})[0], 403)   # выключить — только на Mac
+        self.call(mac + "/api/remote_settings", {"pin": "246813"})                          # PIN по желанию — тогда спросит
+        self.assertEqual(self.call(phone + "/api/rows")[0], 401)
+        self.call(mac + "/api/remote_settings", {"pin": ""})                                # убрали PIN — снова без него
+        self.assertEqual(self.call(phone + "/api/rows")[0], 200)
+        self.call(mac + "/api/remote_settings", {"enabled": False})
+        self.assertFalse(r.enabled())
+        self.assertEqual(self.call(phone + "/api/rows")[0], 401)
+        for want in ('id="ron" onclick="remoteOn(true)"', "PIN — по желанию", "button[hidden],.btn[hidden],.tab[hidden]{display:none!important}"):
+            self.assertIn(want, app.PAGE)
+
     def test_pin(self) -> None:
         r = self.remote
         self.assertEqual(r.set_pin("12a4"), "PIN — от 6 до 12 цифр")

@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.25"
-PROGRAM_VERSION = "2026-11-13.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-13.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1790,7 +1790,11 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(json.dumps({"commands": remote.take_commands(data.get("status"))}, ensure_ascii=False).encode("utf-8"))
                     return
                 if path == "/api/remote_settings":
+                    if "enabled" in data:
+                        remote.set_enabled(bool(data.get("enabled")))
                     error = remote.set_pin(str(data.get("pin") or "")) if "pin" in data else ""
+                    if "pin" in data and not error and data.get("pin"):
+                        remote.set_enabled(True)
                     self._send(json.dumps({**remote.status(), "ok": not error, "pin_error": error}, ensure_ascii=False).encode("utf-8"),
                                status=400 if error else 200)
                     return
@@ -2086,6 +2090,11 @@ def make_remote_handler(folders: list[Path], costs_path: Path, cache: PageCache)
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path == "/login":
+                if remote.authorized(self.headers.get("Cookie")):          # без PIN (или уже вошли) — сразу окно
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.end_headers()
+                    return
                 self._send(LOGIN_PAGE.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if not remote.authorized(self.headers.get("Cookie")):
@@ -2230,7 +2239,7 @@ button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.takenobi
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:96px;height:72px;object-fit:cover;border-radius:6px;display:block}td.milescell{white-space:normal;width:96px}td.milescell .pill{white-space:normal;display:inline-block;line-height:1.25}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
-details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}.lowbid{color:#b25e00}.cfx-look{margin-top:3px;font-size:12px;color:#9a3412}
+details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}button[hidden],.btn[hidden],.tab[hidden]{display:none!important}.lowbid{color:#b25e00}.cfx-look{margin-top:3px;font-size:12px;color:#9a3412}
 /* Телефон: карточки машин вместо широкой таблицы; кнопки и поля — под палец. */
 .remote .maconly,.remote #extstate{display:none!important}
 @media (max-width:760px){
@@ -2254,9 +2263,11 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 </style></head><body><main>
 <h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump maconly" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump maconly" id="remotebtn" onclick="$('remotebox').hidden=!$('remotebox').hidden" title="Это же окно на телефоне, когда вы далеко от Mac: через Tailscale, вход по PIN">📱 Доступ с телефона</button> <button type="button" class="btn sec jump maconly" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <button type="button" class="btn sec jump maconly" hidden id="vrpbtn" onclick="$('vrpbox').hidden=!$('vrpbox').hidden" title="Логин и пароль vin-reports-pro.com для кнопки «📄 Carfax»: сайт просит войти — расширение входит само">🔑 Вход Carfax</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="remoteline" class="muted" style="margin:4px 0"></div><div id="remotebox" class="card maconly" hidden><b>Доступ с телефона</b> — это же окно на телефоне, когда вы далеко от Mac: все машины, KBB, ставки, «Отбой», список на осмотр, и кнопки «Собрать аукцион», «Взять KBB», «Проверить фото», «Carfax», «Запись торгов» — их выполнит расширение здесь, на Mac.
 <ol class="muted" style="margin:6px 0 6px 18px;padding:0"><li>Поставьте Tailscale на Mac (tailscale.com/download) и на телефон (Google Play → Tailscale), войдите в обоих одним аккаунтом. Это закрытая сеть только ваших устройств: в интернет программа не открывается.</li>
-<li>Задайте здесь PIN (6–12 цифр).</li><li>На телефоне откройте адрес ниже в Chrome (или «🖥 Программа на Mac» в приложении «Аукцион: заметки») и введите PIN — телефон запомнит вход.</li>
+<li>Нажмите здесь «Включить доступ с телефона».</li><li>На телефоне откройте адрес ниже в Chrome (или «🖥 Программа на Mac» в приложении «Аукцион: заметки»).</li>
 <li>Mac не засыпает, пока работает программа (экран гаснет как обычно). Крышку MacBook без внешнего монитора не закрывайте — тогда он уснёт.</li></ol>
-<form onsubmit="event.preventDefault();saveRemote()"><label>PIN<input id="rpin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="6–12 цифр; пусто — выключить"></label><button>Сохранить</button></form>
+<button type="button" class="btn" id="ron" onclick="remoteOn(true)">Включить доступ с телефона</button> <button type="button" class="tab" id="roff" onclick="remoteOn(false)" hidden>Выключить</button>
+<details style="margin-top:8px"><summary class="muted">PIN — по желанию</summary><div class="muted">Без PIN окно открывается на любом вашем устройстве из сети Tailscale (вход в Tailscale — ваш аккаунт). PIN — ещё один замок на случай, если телефон окажется в чужих руках: телефон спросит его один раз.</div>
+<form onsubmit="event.preventDefault();saveRemote()"><label>PIN<input id="rpin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="6–12 цифр; пусто — без PIN"></label><button>Сохранить PIN</button></form></details>
 <div id="rstate" class="muted" style="margin-top:6px">—</div></div><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
@@ -2658,9 +2669,12 @@ async function loadRemote(){try{remoteSt=await (await fetch('/api/remote_status'
 function showRemote(s){const ext=s.ext||{};
  if(REMOTE){const e=$('remoteline');if(e)e.innerHTML=`📱 Вы с телефона. Mac: `+(ext.fresh?`<span class="pos">расширение на связи — кнопки выполнит за 30 секунд</span>`:`<b class="neg">расширение не на связи</b> — на Mac закрыт Chrome или он спит; список и ставки работают, кнопки сбора/KBB/Carfax — нет`)+(s.queued?` · в очереди команд: ${s.queued}`:'');return}
  if(!$('remotebtn'))return;$('remotebtn').textContent='📱 Доступ с телефона: '+(s.enabled?(s.bound?'вкл ✓':'нет Tailscale'):'выкл');
- $('rstate').innerHTML=[s.enabled?(s.bound?`Адрес для телефона: <b>${esc(s.bound)}</b> (только в вашей сети Tailscale)`:'⚠ '+esc(s.error||'жду Tailscale…')):'Выключен — задайте PIN.',
+ $('ron').hidden=!!s.enabled;$('roff').hidden=!s.enabled;
+ $('rstate').innerHTML=[s.enabled?(s.bound?`Адрес для телефона: <b>${esc(s.bound)}</b> (только в вашей сети Tailscale)${s.pin?' · с PIN':' · без PIN'}`:'⚠ '+esc(s.error||'жду Tailscale…')):'Выключен.',
   s.phones?`телефонов вошло: ${s.phones}`:'',s.awake?esc(s.awake):'',
   ext.fresh?'расширение на связи: кнопки с телефона выполнит за 30 секунд':'расширение ещё не на связи (нужно 2.24: chrome://extensions → ⟳)'].filter(Boolean).join(' · ')}
+async function remoteOn(on){const r=await fetch('/api/remote_settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});
+ showRemote(await r.json());setTimeout(loadRemote,3000)}
 async function saveRemote(){const r=await fetch('/api/remote_settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:$('rpin').value})});
  const d=await r.json();if(!d.ok){alert(d.pin_error||'Не сохранилось');return}$('rpin').value='';showRemote(d);setTimeout(loadRemote,1500)}
 loadRemote();setInterval(loadRemote,REMOTE?15000:30000);

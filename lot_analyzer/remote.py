@@ -1,8 +1,8 @@
 """Окно программы с телефона: Mac ↔ телефон через Tailscale (закрытая сеть только ваших устройств).
 
-— Программа, как и раньше, слушает 127.0.0.1 (окно на Mac, расширение). Когда в окне задан PIN «доступа с телефона»
+— Программа, как и раньше, слушает 127.0.0.1 (окно на Mac, расширение). Когда в окне включён «доступ с телефона»
   и на Mac работает Tailscale, она слушает ещё и свой адрес Tailscale (100.x.y.z): в интернет не открывается ничего,
-  зайти может только ваше устройство из вашей сети Tailscale — и только с PIN (вход запоминается на телефоне).
+  зайти может только ваше устройство из вашей сети Tailscale. PIN — по желанию: задан — телефон спросит его один раз.
 — С телефона нельзя: менять настройки (PIN, отправку Claude, вход Carfax) и адреса, которые принадлежат расширению.
 — Кнопки, которые на Mac выполняет расширение Chrome (собрать аукцион, KBB, проверка фото, Carfax, запись торгов),
   с телефона кладутся в очередь; расширение на Mac забирает её раз в 30 секунд и выполняет у себя.
@@ -66,8 +66,19 @@ def _hash(pin: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), 200_000).hex()
 
 
+def set_enabled(on: bool) -> None:
+    """Доступ с телефона: включить (без PIN — пускает любое ваше устройство из сети Tailscale) или выключить совсем."""
+    data = load()
+    data["open"] = bool(on)
+    if not on:
+        data.pop("pin_hash", None)
+        data.pop("salt", None)
+        data["tokens"] = {}
+    _save(data)
+
+
 def set_pin(pin: str) -> str:
-    """PIN доступа с телефона: 6–12 цифр. Пусто — доступ с телефона выключен. Новый PIN выходит из всех телефонов."""
+    """PIN — по желанию: 6–12 цифр (телефон спросит его один раз). Пусто — без PIN. Новый PIN выходит из всех телефонов."""
     pin = str(pin or "").strip()
     data = load()
     if not pin:
@@ -85,6 +96,11 @@ def set_pin(pin: str) -> str:
 
 
 def enabled() -> bool:
+    data = load()
+    return bool(data.get("pin_hash") or data.get("open"))
+
+
+def pin_required() -> bool:
     return bool(load().get("pin_hash"))
 
 
@@ -110,6 +126,9 @@ def login(pin: str) -> str | None:
 
 
 def authorized(cookie_header: str | None) -> bool:
+    data = load()
+    if data.get("open") and not data.get("pin_hash"):
+        return True                                   # без PIN: пускает любое ваше устройство из сети Tailscale
     if not cookie_header:
         return False
     try:
@@ -183,7 +202,8 @@ def take_commands(status: dict | None = None) -> list[dict]:
 def status() -> dict:
     data = load()
     fresh = bool(EXT_STATUS.get("at") and time.time() - EXT_STATUS["at"] < 90)
-    return {"enabled": bool(data.get("pin_hash")), "phones": len([1 for v in (data.get("tokens") or {}).values() if v > time.time()]),
+    return {"enabled": bool(data.get("pin_hash") or data.get("open")), "pin": bool(data.get("pin_hash")),
+            "phones": len([1 for v in (data.get("tokens") or {}).values() if v > time.time()]),
             "ip": STATE["ip"], "bound": STATE["bound"], "error": STATE["error"], "awake": STATE["awake"],
             "ext": {**EXT_STATUS, "fresh": fresh}, "queued": len(_queue)}
 
