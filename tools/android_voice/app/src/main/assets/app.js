@@ -17,9 +17,16 @@ let notes = store.get("vn-notes", {}), dirty = store.get("vn-dirty", false), sen
 const hhmm = t => new Date(t).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
 
 $("repo").value = store.get("vn-repo", $("repo").value);
+$("macurl").value = store.get("vn-mac", "");
+/* «🖥 Программа на Mac»: окно программы в Chrome (на телефоне должен быть включён Tailscale). */
+$("macbtn").addEventListener("click", () => {
+  const url = (store.get("vn-mac", "") || "").trim();
+  if (!/^https?:\/\/[^\s]+$/.test(url)) { $("cfg").open = true; $("macurl").focus(); $("cfgstate").textContent = "Впишите адрес программы на Mac."; return; }
+  if (window.Native && window.Native.open) window.Native.open(url); else window.open(url, "_blank");
+});
 $("token").value = store.get("vn-token", "");
 $("savecfg").addEventListener("click", () => {
-  store.set("vn-repo", $("repo").value.trim()); store.set("vn-token", $("token").value.trim());
+  store.set("vn-repo", $("repo").value.trim()); store.set("vn-token", $("token").value.trim()); store.set("vn-mac", $("macurl").value.trim());
   $("cfgstate").textContent = "Сохранено."; $("cfg").open = false; loadList();
 });
 if (!store.get("vn-token", "")) $("cfg").open = true;
@@ -57,6 +64,7 @@ async function loadList() {
     else {
       const data = JSON.parse(f.text);
       cars = Array.isArray(data.cars) ? data.cars : []; made = data.made || "";
+      if (/^http:\/\/100\.[\d.]+:\d+$/.test(data.mac_url || "")) { store.set("vn-mac", data.mac_url); $("macurl").value = data.mac_url; }   // адрес Mac — сам
       store.set("vn-cars", cars); store.set("vn-made", made); $("emptywhy").textContent = "";
     }
     await pullNotes();

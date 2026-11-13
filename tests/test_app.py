@@ -1876,3 +1876,124 @@ class KbbShareTest(unittest.TestCase):
         for want in ("function bidShare(x)", "function winLevelBanner(d)", "function drawKbbWeek(d)", "winLevelBanner(d)+notTakeBanner(d)", "${bidShare(x)}",
                      "x.market_share?", 'id="kbbweek"', "kbbweek-run"):
             self.assertIn(want, app.PAGE)
+
+
+class RemoteAccessTest(unittest.TestCase):
+    """Окно с телефона (Tailscale): вход по PIN, настройки и адреса расширения — только на Mac, кнопки — очередью расширению."""
+
+    def setUp(self) -> None:
+        from lot_analyzer import remote
+        self.remote = remote
+        remote._fails.clear()
+        remote.take_commands()
+        if remote.SETTINGS_PATH.exists():
+            remote.SETTINGS_PATH.unlink()
+
+    def serve(self, handler) -> str:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def call(self, url, body=None, headers=None):
+        req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), headers={"Content-Type": "application/json", **(headers or {})})
+        opener = urllib.request.build_opener(type("NoRedirect", (urllib.request.HTTPRedirectHandler,), {"redirect_request": lambda *a, **k: None}))
+        try:
+            with opener.open(req) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as err:
+            return err.code, dict(err.headers), err.read()
+
+    def test_pin(self) -> None:
+        r = self.remote
+        self.assertEqual(r.set_pin("12a4"), "PIN — от 6 до 12 цифр")
+        self.assertFalse(r.enabled())
+        self.assertEqual(r.set_pin("246813"), "")
+        self.assertTrue(r.enabled())
+        self.assertNotIn("246813", r.SETTINGS_PATH.read_text(encoding="utf-8"))          # PIN не хранится открыто
+        self.assertIsNone(r.login("111111"))
+        token = r.login("246813")
+        self.assertTrue(r.authorized(f"x=1; {r.COOKIE}={token}"))
+        self.assertFalse(r.authorized(f"{r.COOKIE}=nope"))
+        r.set_pin("135791")                                                               # новый PIN — старые входы недействительны
+        self.assertFalse(r.authorized(f"{r.COOKIE}={token}"))
+        self.assertEqual(r.set_pin(""), "")
+        self.assertFalse(r.enabled())
+        self.assertIn(r.tailscale_ip(), ("",) if not r.tailscale_ip() else (r.tailscale_ip(),))
+        self.assertTrue(r.tailscale_ip() == "" or r.tailscale_ip().startswith("100."))
+
+    def test_commands(self) -> None:
+        r = self.remote
+        self.assertEqual(r.add_command({"type": "rm -rf"}), "такой команды нет")
+        self.assertTrue(r.add_command({"type": "open-bg", "url": "https://evil.example.com/"}))
+        self.assertTrue(r.add_command({"type": "carfax-order", "vin": "123"}))
+        self.assertEqual(r.add_command({"type": "auto-run", "which": "mon"}), "")
+        self.assertEqual(r.add_command({"type": "open-bg", "url": "https://www.kbb.com/honda/accord/2018/#la=%5B%5D", "cars": "[]"}), "")
+        got = r.take_commands({"version": "2.24", "auto": {"busy": False}, "secret": "x"})
+        self.assertEqual([c["type"] for c in got], ["auto-run", "open-bg"])
+        self.assertEqual(got[0]["which"], "mon")
+        self.assertEqual(r.take_commands(), [])
+        self.assertEqual(r.EXT_STATUS["version"], "2.24")
+        self.assertNotIn("secret", r.EXT_STATUS)
+        self.assertTrue(r.status()["ext"]["fresh"])
+
+    def test_phone_window(self) -> None:
+        r = self.remote
+        tmp = Path(tempfile.mkdtemp())
+        phone = self.serve(app.make_remote_handler([tmp], COSTS, app.PageCache()))
+        mac = self.serve(app.make_handler([tmp], COSTS, app.PageCache()))
+        status, headers, _ = self.call(phone + "/")
+        self.assertEqual((status, headers.get("Location")), (302, "/login"))             # без входа — страница PIN
+        self.assertEqual(self.call(phone + "/api/rows")[0], 401)
+        self.assertEqual(self.call(phone + "/login")[0], 200)
+        self.assertEqual(self.call(phone + "/api/login", {"pin": "000000"})[0], 401)       # PIN не задан
+        r.set_pin("246813")
+        self.assertEqual(self.call(phone + "/api/login", {"pin": "999999"})[0], 401)
+        status, headers, _ = self.call(phone + "/api/login", {"pin": "246813"})
+        self.assertEqual(status, 200)
+        cookie = {"Cookie": headers["Set-Cookie"].split(";")[0]}
+        self.assertIn("HttpOnly", headers["Set-Cookie"])
+        status, _, page = self.call(phone + "/", headers=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"const REMOTE=", page)
+        self.assertEqual(self.call(phone + "/api/rows", headers=cookie)[0], 200)
+        # С телефона нельзя: настройки (PIN, отправка Claude, вход Carfax) и адреса расширения.
+        self.assertEqual(self.call(phone + "/api/remote_settings", {"pin": ""}, cookie)[0], 403)
+        self.assertEqual(self.call(phone + "/api/inbox", {"repo": "x"}, cookie)[0], 403)
+        self.assertEqual(self.call(phone + "/api/vrp", {"email": "x"}, cookie)[0], 403)
+        self.assertEqual(self.call(phone + "/api/kbb_week", {"action": "batch"}, {**cookie, "X-LA": "1"})[0], 403)
+        self.assertEqual(self.call(phone + "/api/remote_poll", {}, {**cookie, "X-LA": "1"})[0], 403)
+        self.assertTrue(r.enabled())
+        # Кнопка с телефона → очередь → расширение на Mac забирает (только X-LA, только Mac).
+        self.assertEqual(self.call(phone + "/api/remote_cmd", {"type": "kbbweek-run"}, cookie)[0], 200)
+        self.assertEqual(self.call(mac + "/api/remote_poll", {"status": {"version": "2.24"}})[0], 403)
+        status, _, body = self.call(mac + "/api/remote_poll", {"status": {"version": "2.24", "auto": {"state": {}, "busy": False, "places": {}}}}, {"X-LA": "1"})
+        self.assertEqual([c["type"] for c in json.loads(body)["commands"]], ["kbbweek-run"])
+        got = json.loads(self.call(phone + "/api/remote_status", headers=cookie)[2])
+        self.assertTrue(got["ext"]["fresh"] and got["enabled"])
+        # PIN задаётся только в окне на Mac
+        status, _, body = self.call(mac + "/api/remote_settings", {"pin": "12"})
+        self.assertEqual((status, json.loads(body)["pin_error"]), (400, "PIN — от 6 до 12 цифр"))
+
+    def test_window_and_extension(self) -> None:
+        for want in ("const REMOTE=", "if(REMOTE)window.addEventListener('message'", "/api/remote_cmd", 'id="remotebox"', "@media (max-width:760px)",
+                     "#rows tr{display:grid", ".remote .maconly,.remote #extstate{display:none!important}", "if(!a||REMOTE||"):
+            self.assertIn(want, app.PAGE)
+        ext = ROOT / "tools" / "kbb_extension"
+        self.assertIn("'remote_cmd.js'", (ext / "background.js").read_text(encoding="utf-8"))
+        self.assertIn("function laCarfaxOrder(vin)", (ext / "background.js").read_text(encoding="utf-8"))
+        code = (ext / "remote_cmd.js").read_text(encoding="utf-8")
+        for fn in ("autoRun", "kwTick", "photosStart", "laCarfaxOrder", "joinRun", "joinGet", "joinPut"):
+            self.assertIn(fn, code)
+        self.assertNotRegex(code.split("RC_OPEN = ")[1].split(";")[0], r"\.\*")         # с телефона открываются только kbb.com и CarMax
+        manifest = json.loads((ext / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], app.EXTENSION_VERSION)
+        android = ROOT / "tools" / "android_voice" / "app" / "src" / "main"
+        self.assertIn('id="macbtn"', (android / "assets" / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("public void open(String url)", (android / "java" / "com" / "lotanalyzer" / "voice" / "MainActivity.java").read_text(encoding="utf-8"))
+
+    def test_tacoma_popular(self) -> None:
+        from lot_analyzer import popular
+        costs = load_costs(COSTS)
+        self.assertTrue(popular.is_popular({"make": "Toyota", "model": "Tacoma", "trim": "SR5 Double Cab", "year": "2016"}, costs))
+        self.assertFalse(popular.is_popular({"make": "Toyota", "model": "Tundra", "year": "2016"}, costs))

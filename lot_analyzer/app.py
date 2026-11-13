@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs
 from .normalize import parse_money
 from .inspection import render_html
-from . import analytics, carfax, inbox, kbb_learning, kbb_page, photo_wait, voice, review, schedule, kbb_site, manheim_csv, notes, popular, results
+from . import analytics, carfax, inbox, kbb_learning, kbb_page, photo_wait, voice, review, schedule, kbb_site, manheim_csv, notes, popular, remote, results
 from .pages import read_page
 from .parsers import parse_page
 from .paths import DATA_DIR
@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.23"
-PROGRAM_VERSION = "2026-11-11.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.24"
+PROGRAM_VERSION = "2026-11-13.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1535,6 +1535,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 extra += [f"carfax-status:{v.get('at', 0)}" for v in CARFAX_STATUS.values()]
                 voice.pull_soon()                     # заметки с телефона — раз в пару минут, в фоне
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages] + extra).encode("utf-8"))
+            elif url.path == "/api/remote_status":      # окно: доступ с телефона, расширение на Mac (для телефона)
+                self._send(json.dumps(remote.status(), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/auto_kbb":           # окно: популярные без фото — KBB сразу, без кнопки
                 costs_now = load_costs(costs_path)
                 rows = search_rows(find_pages(folders, 168), cache, costs_now, "")
@@ -1695,6 +1697,29 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(json.dumps({"ok": True, "path": str(path)}, ensure_ascii=False).encode("utf-8"))
                 else:
                     self._send(b'{"ok":false}')
+                return
+            if urlparse(self.path).path in ("/api/remote_cmd", "/api/remote_poll", "/api/remote_settings"):
+                # Телефон: кнопка, которую выполняет расширение, — в очередь (remote_cmd). Расширение на Mac раз в 30 с
+                # забирает очередь и отдаёт своё состояние (remote_poll, только X-LA). PIN — только в окне на Mac.
+                path = urlparse(self.path).path
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    data = json.loads(self.rfile.read(min(length, 200_000)) or b"{}")
+                except ValueError:
+                    data = {}
+                if path == "/api/remote_poll":
+                    if self.headers.get("X-LA") != "1":
+                        self._send(b"{}", status=403)
+                        return
+                    self._send(json.dumps({"commands": remote.take_commands(data.get("status"))}, ensure_ascii=False).encode("utf-8"))
+                    return
+                if path == "/api/remote_settings":
+                    error = remote.set_pin(str(data.get("pin") or "")) if "pin" in data else ""
+                    self._send(json.dumps({**remote.status(), "ok": not error, "pin_error": error}, ensure_ascii=False).encode("utf-8"),
+                               status=400 if error else 200)
+                    return
+                error = remote.add_command(data)
+                self._send(json.dumps({"ok": not error, "error": error}, ensure_ascii=False).encode("utf-8"), status=400 if error else 200)
                 return
             if urlparse(self.path).path == "/api/kbb_week":
                 # «KBB на неделю» (расширение, чт 18:00 → пт 9:00): batch — следующая пачка машин для KBB-автопилота,
@@ -1960,6 +1985,71 @@ def _stop_running(port: int) -> None:
         pass
 
 
+LOGIN_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вход — Lot Analyzer</title><style>body{font-family:-apple-system,system-ui,sans-serif;background:#f4f6fb;margin:0;padding:24px 16px;color:#1d2433}
+.card{max-width:360px;margin:40px auto;background:#fff;border-radius:14px;padding:22px;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+input{width:100%;box-sizing:border-box;font-size:22px;padding:12px;border:1px solid #c9d1e3;border-radius:10px;letter-spacing:4px;text-align:center}
+button{width:100%;margin-top:12px;font-size:18px;padding:12px;border:0;border-radius:10px;background:#1f3864;color:#fff}.err{color:#c0392b;margin-top:10px}</style></head>
+<body><div class="card"><h2 style="margin-top:0">Одно окно — с телефона</h2><p>PIN, который вы задали в программе на Mac («📱 Доступ с телефона»).</p>
+<form onsubmit="event.preventDefault();go()"><input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" autofocus><button>Войти</button></form>
+<div id="err" class="err"></div></div><script>
+async function go(){const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:document.getElementById('pin').value})});
+ if(r.ok){location.href='/'}else{document.getElementById('err').textContent=r.status===429?'Слишком много попыток — подождите 15 минут':'Неверный PIN'}}
+</script></body></html>"""
+
+
+def make_remote_handler(folders: list[Path], costs_path: Path, cache: PageCache):
+    """Окно для телефона (адрес Tailscale): то же окно, но с PIN; без настроек и без адресов расширения."""
+    base = make_handler(folders, costs_path, cache)
+
+    class Remote(base):
+        def _deny(self, status: int = 403) -> None:
+            self._send(json.dumps({"ok": False, "error": "это можно только в окне на Mac"}, ensure_ascii=False).encode("utf-8"), status=status)
+
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+            if path == "/login":
+                self._send(LOGIN_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if not remote.authorized(self.headers.get("Cookie")):
+                if path.startswith("/api/"):
+                    self._send(b'{"ok":false,"error":"login"}', status=401)
+                else:
+                    self.send_response(302)
+                    self.send_header("Location", "/login")
+                    self.end_headers()
+                return
+            super().do_GET()
+
+        def do_POST(self) -> None:
+            path = urlparse(self.path).path
+            if path == "/api/login":
+                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    pin = json.loads(self.rfile.read(min(length, 4096)) or b"{}").get("pin", "")
+                except ValueError:
+                    pin = ""
+                token = remote.login(pin)
+                if not token:
+                    self._send(b'{"ok":false}', status=401)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Set-Cookie", remote.cookie_header(token))
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+                return
+            if not remote.authorized(self.headers.get("Cookie")):
+                self._send(b'{"ok":false,"error":"login"}', status=401)
+                return
+            if path not in remote.REMOTE_POST or self.headers.get("X-LA"):
+                self._deny()
+                return
+            super().do_POST()
+
+    return Remote
+
+
 def _take_port(port: int, handler, open_browser: bool):
     """Занимает порт программы. Если там уже работает эта же версия — открывает её окно и выходит (None);
     если старая — закрывает её и запускается вместо неё (иначе браузер показывал бы старое окно)."""
@@ -2009,6 +2099,9 @@ def main(argv: list[str] | None = None) -> int:
     if server is None:
         return 0
     warm_vin_search(folders, page_cache, Path(args.costs))     # поиск по VIN — без ожидания
+    remote.keep_awake()                                       # Mac не засыпает, пока работает программа
+    # Доступ с телефона (задан PIN в окне): ещё и адрес Tailscale этого Mac — только ваши устройства, вход по PIN.
+    remote.start(lambda ip: ThreadingHTTPServer((ip, args.port), make_remote_handler(folders, Path(args.costs), page_cache)))
     # Отправка Claude (если включена в окне): новые файлы из «Загрузок» — в ваш закрытый репозиторий GitHub.
     inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")]      # + PDF Carfax за 3 дня
                 + [p for p in (sorted(carfax.PDF_DIR.glob("*.pdf")) + sorted(carfax.PDF_DIR.glob("vrp_order_page_*.html")) if carfax.PDF_DIR.is_dir() else [])
@@ -2052,9 +2145,34 @@ button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.takenobi
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:96px;height:72px;object-fit:cover;border-radius:6px;display:block}td.milescell{white-space:normal;width:96px}td.milescell .pill{white-space:normal;display:inline-block;line-height:1.25}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
-details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}.lowbid{color:#b25e00}.winlevel{margin:6px 0;padding:6px 12px;border-radius:8px;background:#eef4ff;border:1px solid #c9d8f5;font-size:13px}
+details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}.lowbid{color:#b25e00}
+/* Телефон: карточки машин вместо широкой таблицы; кнопки и поля — под палец. */
+.remote .maconly,.remote #extstate{display:none!important}
+@media (max-width:760px){
+ body{font-size:15px}main{padding:6px!important;max-width:none!important}.card{padding:10px!important;margin:8px 0!important}
+ h1{font-size:19px;line-height:1.6}h1 .btn,h1 .pill{font-size:12px!important;padding:4px 7px!important}
+ .wrap{max-height:none!important;overflow:visible!important}table thead{display:none}
+ #rows tr{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;border:1px solid var(--line);border-radius:14px;margin:12px 0;padding:10px;background:var(--card);box-shadow:0 1px 4px rgba(0,0,0,.06)}
+ #rows td{border:0;padding:0;text-align:left!important;white-space:normal!important;min-width:0}
+ #rows td:nth-child(1),#rows td:nth-child(2),#rows td:nth-child(10),#rows td:nth-child(11){grid-column:1/3}
+ #rows td:nth-child(1) img{width:100%;max-width:none;height:auto;border-radius:10px}
+ #rows td:nth-child(n+3)::before{display:block;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+ #rows td:nth-child(3)::before{content:"Пробег"}#rows td:nth-child(4)::before{content:"Моя оценка"}#rows td:nth-child(5)::before{content:"Наша ставка"}
+ #rows td:nth-child(6)::before{content:"KBB"}#rows td:nth-child(7)::before{content:"Средняя покупка"}#rows td:nth-child(8)::before{content:"Прибыль по средней"}
+ #rows td:nth-child(9)::before{content:"Потолок"}#rows td:nth-child(10)::before{content:"Вердикт"}#rows td:nth-child(11)::before{content:"Торги / итог"}
+ #rows td[colspan]::before{content:none}#rows tr:has(td[colspan]){display:block}
+ input.kbb{width:120px!important;font-size:17px!important;padding:8px!important}
+ .tab,.btn,button{min-height:36px}.tabs{gap:6px}.sortbar{display:flex;flex-wrap:wrap;gap:6px}
+ form label{display:inline-block;margin:4px 6px 4px 0}form input{font-size:16px}
+ details.calc table{min-width:0!important}
+}.winlevel{margin:6px 0;padding:6px 12px;border-radius:8px;background:#eef4ff;border:1px solid #c9d8f5;font-size:13px}
 </style></head><body><main>
-<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <button type="button" class="btn sec jump" id="vrpbtn" onclick="$('vrpbox').hidden=!$('vrpbox').hidden" title="Логин и пароль vin-reports-pro.com для кнопки «📄 Carfax»: сайт просит войти — расширение входит само">🔑 Вход Carfax</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
+<h1 id="top">Одно окно <a class="btn sec jump" href="/analytics" target="_blank" title="Своя база: KBB, итоги торгов, за сколько уходят машины на каждой площадке">📊 Наша аналитика</a> <a class="btn sec jump fg" href="/review" target="_blank" title="Разбор торгов: наш прогноз до торгов (KBB, средняя цена покупки, потолок, ставки) против итогов — где ошиблись, что упустили">🔍 Разбор торгов</a> <a class="btn sec jump maconly" href="/install" target="_blank" title="Установить или обновить закладку «💾 Сохранить для анализа» и расширение">🔖 Закладка</a> <button type="button" class="btn sec jump maconly" id="remotebtn" onclick="$('remotebox').hidden=!$('remotebox').hidden" title="Это же окно на телефоне, когда вы далеко от Mac: через Tailscale, вход по PIN">📱 Доступ с телефона</button> <button type="button" class="btn sec jump maconly" id="inboxbtn" onclick="$('inboxbox').hidden=!$('inboxbox').hidden">📤 Отправка Claude</button> <button type="button" class="btn sec jump maconly" id="vrpbtn" onclick="$('vrpbox').hidden=!$('vrpbox').hidden" title="Логин и пароль vin-reports-pro.com для кнопки «📄 Carfax»: сайт просит войти — расширение входит само">🔑 Вход Carfax</button> <span class="muted" title="Версия программы: если она не совпадает с последней, скачайте программу заново">версия __PROG_V__</span> <span id="extstate" class="pill v-mid" title="Расширение «Lot Analyzer KBB»: ссылки и KBB открываются в фоне, вы остаётесь здесь">расширение: проверяю…</span></h1><div id="remoteline" class="muted" style="margin:4px 0"></div><div id="remotebox" class="card maconly" hidden><b>Доступ с телефона</b> — это же окно на телефоне, когда вы далеко от Mac: все машины, KBB, ставки, «Отбой», список на осмотр, и кнопки «Собрать аукцион», «Взять KBB», «Проверить фото», «Carfax», «Запись торгов» — их выполнит расширение здесь, на Mac.
+<ol class="muted" style="margin:6px 0 6px 18px;padding:0"><li>Поставьте Tailscale на Mac (tailscale.com/download) и на телефон (Google Play → Tailscale), войдите в обоих одним аккаунтом. Это закрытая сеть только ваших устройств: в интернет программа не открывается.</li>
+<li>Задайте здесь PIN (6–12 цифр).</li><li>На телефоне откройте адрес ниже в Chrome (или «🖥 Программа на Mac» в приложении «Аукцион: заметки») и введите PIN — телефон запомнит вход.</li>
+<li>Mac не засыпает, пока работает программа (экран гаснет как обычно). Крышку MacBook без внешнего монитора не закрывайте — тогда он уснёт.</li></ol>
+<form onsubmit="event.preventDefault();saveRemote()"><label>PIN<input id="rpin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="6–12 цифр; пусто — выключить"></label><button>Сохранить</button></form>
+<div id="rstate" class="muted" style="margin-top:6px">—</div></div><div id="inboxbox" class="card" hidden><b>Отправка Claude</b> — каждый файл «Сохранить для анализа» сам уходит в ваш <b>закрытый</b> репозиторий GitHub, Claude читает его оттуда.
 <div class="muted">В открытый (Public) репозиторий программа не отправляет никогда. Токен хранится только на этом компьютере (~/LotAnalyzer/data/inbox.json).</div>
 <form onsubmit="event.preventDefault();saveInbox()" style="margin-top:8px"><label>Репозиторий<input id="inrepo" placeholder="acctradeteam-hub/autodealer-inbox"></label>
 <label>Токен GitHub<input id="intoken" type="password" placeholder="github_pat_… (пусто — оставить прежний)"></label>
@@ -2230,7 +2348,7 @@ function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 /* Показываем только ответ на последний запрос: опоздавший старый (без нового фильтра) не затирает таблицу. */
 let refreshNo=0;
 /* Вкладки: в каждой — только свои машины, сверху самые выгодные. Выбранная вкладка запоминается. */
-const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Mazda6, Highlander, Avalon, Prius, Camry / CR-V / RAV4 / Avalon Hybrid, Honda Clarity, Honda Insight, Chevrolet Volt, все Lexus, Model 3 2022 SR'],
+const TABS=[['popular','★ Популярные','Corolla, Civic, Civic Hybrid, Camry, Accord, Mazda3 (с 2012), CR-V, RAV4, CX-5, Mazda6, Highlander, Avalon, Tacoma, Prius, Camry / CR-V / RAV4 / Avalon Hybrid, Honda Clarity, Honda Insight, Chevrolet Volt, все Lexus, Model 3 2022 SR'],
  ['ev','⚡ Электромобили','без смог-теста'],['truck','🛻 Пикапы','F-150, Silverado, Sierra, Ram, Tacoma, Tundra, Colorado, Frontier, Ranger, Ridgeline, Gladiator, Maverick …'],['other','Остальные','все прочие марки и модели']];
 let tab='popular',lastData=null;try{tab=localStorage.getItem('la-tab')||'popular'}catch(e){}
 function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastData)render(lastData);window.scrollTo({top:$('tabs').getBoundingClientRect().top+window.scrollY-10})}
@@ -2378,7 +2496,8 @@ function askedKbb(){let a={};try{a=JSON.parse(localStorage.getItem('la-kbb-asked
 function rememberAsked(list){const a=askedKbb();const now=Date.now();list.forEach(x=>{a[x.vin||x.lot_number]=now});try{localStorage.setItem('la-kbb-asked',JSON.stringify(a))}catch(e){}}
 /* Популярные без фото — KBB сам: раз в 5 минут окно спрашивает программу, для каких ещё не запрошен (помним 2 дня). */
 let autoKbbAt=0;
-async function autoKbb(){if(!hasExt()||Date.now()-autoKbbAt<5*60e3)return;autoKbbAt=Date.now();
+/* С телефона — нет: KBB для машин без фото берёт окно на Mac и «KBB на неделю» (иначе запросы двоились бы). */
+async function autoKbb(){if(REMOTE||!hasExt()||Date.now()-autoKbbAt<5*60e3)return;autoKbbAt=Date.now();
  let a={};try{a=JSON.parse(localStorage.getItem('la-kbb-auto')||'{}')}catch(e){}const since=Date.now()-2*864e5;for(const k in a)if(a[k]<since)delete a[k];
  let cars=[];try{cars=(await (await fetch('/api/auto_kbb')).json()).cars||[]}catch(e){return}
  const asked=askedKbb(),list=cars.filter(x=>!a[x.vin||x.lot_number]&&!asked[x.vin||x.lot_number]).slice(0,15);if(!list.length)return;
@@ -2438,6 +2557,30 @@ setInterval(()=>{if(hasExt()&&extV()>=2.2)window.postMessage({source:'lot-analyz
 function autoRun(w){window.postMessage({source:'lot-analyzer',type:'auto-run',which:w||''},'*');setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),1500)}
 window.addEventListener('message',e=>{if(e.source===window&&e.data&&e.data.source==='lot-analyzer-ext'&&e.data.type==='auto-status')drawAuto(e.data.answer)});
 setInterval(()=>{if(hasExt())window.postMessage({source:'lot-analyzer',type:'auto-status'},'*')},20000);setTimeout(()=>window.postMessage({source:'lot-analyzer',type:'auto-status'},'*'),2500);
+/* Окно с телефона (через Tailscale): расширения Chrome здесь нет — кнопки, которые выполняет расширение
+   (собрать аукцион, KBB, проверка фото, Carfax, запись торгов), уходят программе, а расширение на Mac забирает их
+   раз в 30 секунд. Состояние автосбора и записи торгов — тоже от расширения на Mac. Обычные ссылки — на телефоне. */
+const REMOTE=!/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+if(REMOTE)document.documentElement.classList.add('remote');
+let remoteSt=null;
+async function loadRemote(){try{remoteSt=await (await fetch('/api/remote_status')).json()}catch(e){return}showRemote(remoteSt)}
+function showRemote(s){const ext=s.ext||{};
+ if(REMOTE){const e=$('remoteline');if(e)e.innerHTML=`📱 Вы с телефона. Mac: `+(ext.fresh?`<span class="pos">расширение на связи — кнопки выполнит за 30 секунд</span>`:`<b class="neg">расширение не на связи</b> — на Mac закрыт Chrome или он спит; список и ставки работают, кнопки сбора/KBB/Carfax — нет`)+(s.queued?` · в очереди команд: ${s.queued}`:'');return}
+ if(!$('remotebtn'))return;$('remotebtn').textContent='📱 Доступ с телефона: '+(s.enabled?(s.bound?'вкл ✓':'нет Tailscale'):'выкл');
+ $('rstate').innerHTML=[s.enabled?(s.bound?`Адрес для телефона: <b>${esc(s.bound)}</b> (только в вашей сети Tailscale)`:'⚠ '+esc(s.error||'жду Tailscale…')):'Выключен — задайте PIN.',
+  s.phones?`телефонов вошло: ${s.phones}`:'',s.awake?esc(s.awake):'',
+  ext.fresh?'расширение на связи: кнопки с телефона выполнит за 30 секунд':'расширение ещё не на связи (нужно 2.24: chrome://extensions → ⟳)'].filter(Boolean).join(' · ')}
+async function saveRemote(){const r=await fetch('/api/remote_settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:$('rpin').value})});
+ const d=await r.json();if(!d.ok){alert(d.pin_error||'Не сохранилось');return}$('rpin').value='';showRemote(d);setTimeout(loadRemote,1500)}
+loadRemote();setInterval(loadRemote,REMOTE?15000:30000);
+if(REMOTE)window.addEventListener('message',async e=>{if(e.source!==window||!e.data||e.data.source!=='lot-analyzer')return;const m=e.data,t=m.type;
+ const reply=(type,answer,extra)=>window.postMessage({source:'lot-analyzer-ext',type,answer,...(extra||{})},'*');
+ if(t==='ping'){const ext=(remoteSt&&remoteSt.ext)||{};if(ext.fresh)reply('pong',null,{v:ext.version});return}
+ if(t==='auto-status'||t==='join-status'){const ext=(remoteSt&&remoteSt.ext)||{};const a=t==='auto-status'?ext.auto:ext.join;if(a)reply(t,a);return}
+ if(t==='open-bg'&&!/^https:\/\/www\.(kbb|carmaxauctions)\.com\/.*#la(=|-owners|-photos)/.test(m.url||'')){window.open(m.url,'_blank');return}
+ if(!['auto-run','kbbweek-run','photos-start','carfax-order','join-run','join-enable','open-bg'].includes(t))return;
+ try{const r=await fetch('/api/remote_cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:t,which:m.which||'',on:!!m.on,vin:m.vin||'',url:m.url||'',cars:m.cars||''})});
+  const d=await r.json();toast(d.ok?'Отправлено на Mac: расширение выполнит в течение 30 секунд':'Не отправилось: '+(d.error||r.status),!d.ok);setTimeout(loadRemote,2000)}catch(err){toast('Нет связи с Mac: '+err,true)}});
 function pingExt(){window.postMessage({source:'lot-analyzer',type:'ping'},'*');if(extPong&&Date.now()-extPong>4000){extPong=0;extState()}}
 pingExt();setInterval(pingExt,1500);
 const hasExt=()=>extPong>0&&Date.now()-extPong<4000;
@@ -2447,7 +2590,7 @@ function extState(){const e=$('extstate');if(!e)return;if(hasExt()&&extOld()){e.
  else{e.className='pill v-bad';e.textContent='расширение не подключено — вкладки откроются поверх: обновите его (⟳ на chrome://extensions) и эту страницу'}}
 window.addEventListener('la-ext',()=>pingExt());setTimeout(extState,1500);
 function showInbox(st){$('inboxbtn').textContent='📤 Отправка Claude: '+(st.enabled&&st.status==='включена'?'вкл ✓ ('+st.sent+')':st.enabled?st.status:'выкл');
- $('inboxbtn').className='btn sec jump'+(st.error?' bad':'');if(!$('inrepo').value)$('inrepo').value=st.repo||'';$('inon').checked=!!st.enabled;
+ $('inboxbtn').className='btn sec jump maconly'+(st.error?' bad':'');if(!$('inrepo').value)$('inrepo').value=st.repo||'';$('inon').checked=!!st.enabled;
  $('instate').textContent=(st.enabled?'Включено':'Выключено')+(st.repo?' · '+st.repo:'')+(st.has_token?' · токен сохранён':' · токена нет')+' · отправлено файлов: '+(st.sent||0)+(st.error?' · ⚠ '+st.error:'')}
 async function loadNotesReport(){try{const all=await (await fetch('/api/notes_report')).json();const e=$('notesstate');if(!e)return;
  const line=(site,r)=>{if(!r)return '';const field=site==='CarMax'?'полей Notes':'машин с кнопкой «Add Note»';
@@ -2468,7 +2611,7 @@ loadInbox();setInterval(loadInbox,15000);loadNotesReport();setInterval(loadNotes
 function openBg(url,cars){if(!hasExt())return false;window.postMessage({source:'lot-analyzer',type:'open-bg',id:Date.now()+'-'+Math.random(),url,cars:cars||''},'*');return true}
 /* «поставить на CarMax» (a.fg) открывается обычно — там вы сами нажимаете «Place bid». */
 document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[target="_blank"]:not(.fg)');
- if(!a||e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0||!/^https:/.test(a.href)||!hasExt())return;e.preventDefault();openBg(a.href)},true);
+ if(!a||REMOTE||e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0||!/^https:/.test(a.href)||!hasExt())return;e.preventDefault();openBg(a.href)},true);
 async function bidsCeiling(){
  const list=((lastData&&lastData.rows)||[]).filter(x=>x.vin&&!x.passed&&x.phone_take!=='Не беру'&&(x.calc_max_bid_usd||x.calc_max_bid_if_defect_usd)&&!/^(ПРОПУСТИТЬ|НЕВЫГОДНО)/.test(x.calc_verdict||''));
  if(!list.length){$('stat').textContent='В этом списке нет машин с потолком (кроме «ПРОПУСТИТЬ» и прошедших торгов).';return}

@@ -3,6 +3,7 @@ package com.lotanalyzer.voice;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.speech.RecognizerIntent;
 import android.webkit.JavascriptInterface;
@@ -57,6 +58,21 @@ public class MainActivity extends Activity {
     }
 
     private class Bridge {
+        /** «🖥 Программа на Mac»: адрес программы (Tailscale) — в Chrome: там вход по PIN, PDF и печать списка. */
+        @JavascriptInterface
+        public void open(String url) {
+            if (url == null || !url.matches("^https?://\\S+$")) {
+                return;
+            }
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                } catch (ActivityNotFoundException e) {
+                    send("onVoiceError", "Не нашлось браузера, чтобы открыть " + url);
+                }
+            });
+        }
+
         @JavascriptInterface
         public void voice(String vin) {
             runOnUiThread(() -> {

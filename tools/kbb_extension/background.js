@@ -3,7 +3,7 @@
      запоминает машины автопилота — вкладка спросит их сама;
    — закрывает вкладку kbb.com, когда автопилот закончил (просит сама вкладка);
    — берёт у окна программы (только 127.0.0.1:8765, ваш компьютер) тексты заметок для CarMax и Manheim. */
-importScripts('auto_collect.js', 'photo_check.js', 'auction_join.js', 'kbb_week.js');   // автосбор CarMax (чт 18:00, пт 7:00); «📷 Проверить фото»; запись торгов по понедельникам; KBB на неделю (чт 18:00 → пт 9:00)
+importScripts('auto_collect.js', 'photo_check.js', 'auction_join.js', 'kbb_week.js', 'remote_cmd.js');   // + команды с телефона   // автосбор CarMax (чт 18:00, пт 7:00); «📷 Проверить фото»; запись торгов по понедельникам; KBB на неделю (чт 18:00 → пт 9:00)
 
 var favQueue = [];
 var favTimer = null;
@@ -140,12 +140,17 @@ function laCarfaxStatus(vin, status, note) {
   fetch('http://127.0.0.1:8765/api/carfax_status', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
     body: JSON.stringify({ vin: vin, status: status, note: note || '' }) }).catch(function () {});
 }
+/* Заказ Carfax по VIN: кнопка «📄 Carfax» в окне на Mac или с телефона (remote_cmd.js). */
+function laCarfaxOrder(vin) {
+  vin = String(vin || '').toUpperCase();
+  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) { return; }
+  chrome.tabs.create({ url: 'https://www.vin-reports-pro.com/pro#la-carfax=' + vin, active: false }, function () { void chrome.runtime.lastError; });
+  laCarfaxStatus(vin, 'opened');
+}
 chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   if (!msg) { return; }
   if (msg.type === 'carfax-order' && /^[A-HJ-NPR-Z0-9]{17}$/.test(String(msg.vin || '').toUpperCase())) {
-    var vin = String(msg.vin).toUpperCase();
-    chrome.tabs.create({ url: 'https://www.vin-reports-pro.com/pro#la-carfax=' + vin, active: false }, function () { void chrome.runtime.lastError; });
-    laCarfaxStatus(vin, 'opened');
+    laCarfaxOrder(msg.vin);
     return;
   }
   /* Сайт просит войти: логин и пароль — из программы (хранятся только на этом компьютере). */

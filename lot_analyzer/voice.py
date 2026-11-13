@@ -65,7 +65,9 @@ def push_list(rows: list[dict]) -> dict:
         return {"ok": False, "error": "Включите «Отправка Claude» (закрытый репозиторий и токен) — через него список уходит на телефон."}
     repo, token = target
     cars = [car_of(r) for r in inspection_rows([r for r in rows if not r.get("passed")]) if r.get("vin")]
-    body = json.dumps({"made": time.strftime("%Y-%m-%d %H:%M"), "cars": cars}, ensure_ascii=False).encode("utf-8")
+    from . import remote                       # адрес программы для «🖥 Программа на Mac» — только адрес Tailscale (100.x)
+    mac = remote.STATE.get("bound", "") if remote.enabled() else ""
+    body = json.dumps({"made": time.strftime("%Y-%m-%d %H:%M"), "cars": cars, **({"mac_url": mac} if mac else {})}, ensure_ascii=False).encode("utf-8")
     code, info = inbox._request("GET", _url(repo, LIST_PATH), token)
     put = {"message": f"voice: список на телефон ({len(cars)} машин)", "content": base64.b64encode(body).decode()}
     if code == 200 and info.get("sha"):

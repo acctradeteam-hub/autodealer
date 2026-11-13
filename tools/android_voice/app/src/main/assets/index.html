@@ -75,20 +75,23 @@ textarea{width:100%;box-sizing:border-box;min-height:84px;padding:10px 12px;bord
   padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
   display:flex;gap:10px;align-items:center;z-index:5}
 .bar .status{flex:1;min-width:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-details.cfg{font-size:14px;color:var(--muted)}
+details.cfg{font-size:14px;color:var(--muted)}.macbtn{width:100%;margin:6px 0 8px;padding:12px;font-size:17px;border:0;border-radius:10px;background:#1f3864;color:#fff}
 details.cfg input,details.cfg button{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);margin-top:4px}
 @media (prefers-reduced-motion:no-preference){.car{transition:border-color .2s}}
 </style>
 </head><body>
 <div class="top">
   <h1>Аукцион: заметки</h1>
+  <button type="button" id="macbtn" class="macbtn" title="Окно программы с Mac: все машины, KBB, ставки, сбор аукциона — через Tailscale">🖥 Программа на Mac</button>
   <div class="status" id="liststate">Загружаю список машин…</div>
   <div class="row">
     <input type="search" id="q" placeholder="Лот, модель или конец VIN" autocomplete="off">
     <button type="button" id="reload">Обновить список</button>
   </div>
   <div class="chips" id="places"></div>
-  <details class="cfg" id="cfg"><summary>Настройки GitHub</summary>
+  <details class="cfg" id="cfg"><summary>Настройки</summary>
+    <label for="macurl">Адрес программы на Mac (приходит сам со списком; иначе — из окна на Mac, «📱 Доступ с телефона»)</label>
+    <input id="macurl" placeholder="http://100.x.y.z:8765" autocomplete="off" inputmode="url">
     <label for="repo">Закрытый репозиторий (владелец/имя)</label>
     <input id="repo" value="acctradeteam-hub/autodealer-inbox" autocomplete="off">
     <label for="token">Токен GitHub (только этот репозиторий, Contents: Read and write)</label>
