@@ -2,8 +2,7 @@
 
 Пути в программу:
 — кнопка «📄 Carfax» в окне (на Mac или с телефона): расширение открывает отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>,
-  Carfax for Dealers) с вашим входом в Chrome и присылает его текст (POST /api/carfax); копия текста — data/carfax/<VIN>.txt
-  («текст ↗» в окне — читается и с телефона);
+  Carfax for Dealers) с вашим входом в Chrome и присылает его текст (POST /api/carfax);
 — отчёт, открытый на сайте вручную, — так же; PDF отчёта (раньше — vin-reports-pro) — POST /api/carfax_pdf.
 Разбор — по обычным фразам Carfax («CARFAX 1-Owner», «Accident reported», «Damage Severity: Moderate», «Point of
 Impact: Front», «Owned in: Ohio», «Personal vehicle», «Salvage title» …). data/carfax.json: VIN → {url, at, summary}.
@@ -187,6 +186,44 @@ def flags(s: dict) -> list[str]:
     return out
 
 
+# Куда смотреть на осмотре по месту удара из Carfax.
+LOOK = {
+    "спереди": "бампер, капот, фары, решётка, радиатор, кондиционер, лонжероны, зазоры капота и крыльев",
+    "сзади": "бампер, багажник, фонари, пол багажника (сварка), задние лонжероны",
+    "слева": "левые двери, крылья, порог, стойки, колёса и подвеска",
+    "справа": "правые двери, крылья, порог, стойки, колёса и подвеска",
+    "сбоку": "двери, крылья, пороги, стойки, колёса и подвеска с той стороны",
+    "днище": "днище, рычаги, подвеска, выхлоп, подтёки",
+    "крыша": "крыша, стойки, лобовое стекло, потолок",
+    "опрокидывание": "крыша, все стойки, стёкла, потолок, геометрия кузова",
+}
+
+
+def inspect_points(s: dict) -> list[str]:
+    """Повреждения по Carfax — коротко «что и куда смотреть» для списка на осмотр, телефона и окна."""
+    out = []
+    sev = ", ".join(s.get("severity") or [])
+    if s.get("accidents"):
+        areas = [a for a in (s.get("impact") or []) if a in LOOK]
+        out += [f"Удар {a}{f' ({sev})' if sev else ''}: {LOOK[a]}; перекрас, шпаклёвка" for a in areas]
+        if not areas:
+            out.append(f"ДТП: {s['accidents']}{f' ({sev})' if sev else ''}, место удара не указано: весь кузов — зазоры, перекрас, сварка")
+        if "сильное" in (s.get("severity") or []):
+            out.append("Сильный удар: геометрия — руль ровно, не уводит, шины изношены ровно")
+    if s.get("airbags"):
+        out.append("Подушки сработали: лампа SRS, руль, торпедо, ремни")
+    if s.get("structural"):
+        out.append("Рама / кузов: лонжероны, следы стапеля и сварки, зазоры дверей и капота")
+    if s.get("title"):
+        title = ", ".join(s["title"])
+        out.append(f"Титул: {title}" + ("; салон — запах сырости, ржавчина под сиденьями, электрика" if "flood" in title.lower() else ""))
+    if s.get("salt"):
+        out.append(f"Соль на дорогах ({', '.join(s['salt'][:3])}): ржавчина — днище, рама, тормозные трубки")
+    if s.get("rollback"):
+        out.append("Пробег под вопросом: износ педалей, руля, сиденья")
+    return out
+
+
 def history_text(s: dict) -> str:
     """Находки Carfax словами, которые понимает расчёт (bid.assess_history): только то, что есть, — без «No …»."""
     parts = []
@@ -228,12 +265,6 @@ def save(vin: str, url: str, text: str, source: str = "text", pdf: str = "") -> 
                  "source": source, "pdf": pdf or (old.get("pdf", "") if source != "pdf" else "")}
     PATH.parent.mkdir(parents=True, exist_ok=True)
     PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
-    if source != "pdf":                                # текст отчёта — копией: «текст ↗» в окне, читается и с телефона
-        try:
-            PDF_DIR.mkdir(parents=True, exist_ok=True)
-            (PDF_DIR / f"{vin}.txt").write_text(f"{url}\n\n{text}", encoding="utf-8")
-        except OSError:
-            pass
     return data[vin]
 
 
@@ -275,7 +306,7 @@ def attach(rows: list[dict]) -> None:
             row["carfax_url"] = rec.get("url", "")
             row["carfax_flags"] = "; ".join(rec.get("flags") or [])
             row["carfax_pdf"] = f"/carfax/{vin}.pdf" if rec.get("pdf") and Path(rec["pdf"]).exists() else ""
-            row["carfax_txt"] = f"/carfax/{vin}.txt" if (PDF_DIR / f"{vin}.txt").exists() else ""
+            row["carfax_check"] = "\n".join(inspect_points(rec.get("summary") or {}))    # что смотреть на осмотре
             found = history_text(rec.get("summary") or {})
             if found and found not in row.get("carfax_autocheck", ""):          # в расчёт: скидки и стоп-факторы истории
                 row["carfax_autocheck"] = " | ".join(x for x in (row.get("carfax_autocheck", ""), found) if x)

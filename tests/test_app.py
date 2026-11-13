@@ -2000,30 +2000,23 @@ class RemoteAccessTest(unittest.TestCase):
 
 
 class CarfaxOnlineTest(unittest.TestCase):
-    """Carfax напрямую: отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>) с входом в Chrome; текст — в программу, копия — «текст ↗»."""
+    """Carfax напрямую: отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>) с входом в Chrome; текст — в программу."""
 
     REPORT = ("CARFAX Vehicle History Report for this 2016 HONDA CIVIC EX: 19XFC2F7XGE000001\nCARFAX 1-Owner vehicle\n"
               "No accidents or damage reported to CARFAX\nPersonal vehicle\nOwned in: California\n"
               + "\n".join(f"{m}/2019 Vehicle serviced - Oil and filter changed, Honda dealer, Los Angeles, CA" for m in range(1, 30)))
 
-    def test_text_copy_and_route(self) -> None:
+    def test_report_text(self) -> None:
         from lot_analyzer import carfax
         vin = "19XFC2F7XGE000001"
         rec = carfax.save(vin, "https://www.carfaxonline.com/vhr/" + vin, self.REPORT)
         self.assertIn("без ДТП", rec["line"])
-        self.assertTrue((carfax.PDF_DIR / f"{vin}.txt").exists())
+        self.assertFalse((carfax.PDF_DIR / f"{vin}.txt").exists())                     # копии текста больше нет
         row = {"vin": vin}
         carfax.attach([row])
-        self.assertEqual(row["carfax_txt"], f"/carfax/{vin}.txt")
-        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([Path(tempfile.mkdtemp())], COSTS, app.PageCache()))
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            base = f"http://127.0.0.1:{server.server_address[1]}"
-            self.assertIn("CARFAX 1-Owner", urllib.request.urlopen(f"{base}/carfax/{vin}.txt").read().decode("utf-8"))
-            with self.assertRaises(urllib.error.HTTPError):
-                urllib.request.urlopen(f"{base}/carfax/../../etc.txt")
-        finally:
-            server.shutdown()
+        self.assertEqual(row["carfax_url"], "https://www.carfaxonline.com/vhr/" + vin)
+        self.assertNotIn("carfax_txt", row)
+        self.assertNotIn("текст ↗", app.PAGE)
 
     def test_extension_uses_carfax_online(self) -> None:
         ext = ROOT / "tools" / "kbb_extension"
@@ -2041,3 +2034,70 @@ class CarfaxOnlineTest(unittest.TestCase):
         self.assertNotRegex(page, r"\.click\(\)")                                       # на сайте ничего не нажимает
         self.assertIn("Carfax Online", app.PAGE.split("const CF_TEXT=")[1].split(";")[0])
         self.assertIn('hidden id="vrpbtn"', app.PAGE)
+
+
+class CarfaxInspectTest(unittest.TestCase):
+    """Повреждения по Carfax — в списке на осмотр, на телефоне и в окне: что и куда смотреть."""
+
+    REPORT = ("CARFAX Vehicle History Report for this 2018 HONDA ACCORD LX: 1HGCV1F10JA000003\n2 Previous owners\n"
+              "Accident reported: Moderate damage\nPoint of Impact: Front\nAirbags were deployed\n"
+              "Owned in the following states/provinces Ohio California Estimated miles per year\n"
+              + "\n".join(f"{m}/2020 Vehicle serviced, Honda dealer, Columbus, OH" for m in range(1, 30)))
+
+    def test_points_everywhere(self) -> None:
+        from lot_analyzer import carfax, inspection, voice
+        vin = "1HGCV1F10JA000003"
+        rec = carfax.save(vin, "https://www.carfaxonline.com/vhr/" + vin, self.REPORT)
+        points = carfax.inspect_points(rec["summary"])
+        self.assertTrue(any("Удар спереди" in p and "капот" in p for p in points))
+        self.assertTrue(any("Подушки сработали" in p for p in points))
+        self.assertTrue(any("Ohio" in p and "ржавчина" in p for p in points))
+        row = {"vin": vin, "year": "2018", "make": "Honda", "model": "Accord", "lot_number": "A/3", "auction": "CarMax", "location": "Murrieta, CA",
+               "sale_date": "Nov 16, 9:00am PT", "inspect_manual": "да", "odometer_miles": "90000"}
+        carfax.attach([row])
+        self.assertEqual(row["carfax_check"].split("\n"), points)
+        page = inspection.render_html([row])
+        self.assertIn("Carfax — смотреть:", page)
+        self.assertIn("Удар спереди", page)
+        self.assertEqual(voice.car_of(row)["carfax_check"], points)
+        self.assertIn("carfax_check", app.COLUMNS)
+        self.assertIn("x.carfax_check?", app.PAGE)
+        android = ROOT / "tools" / "android_voice" / "app" / "src" / "main" / "assets"
+        self.assertIn("c.carfax_check", (android / "app.js").read_text(encoding="utf-8"))
+        clean = carfax.parse("CARFAX Vehicle History Report\nCARFAX 1-Owner\nNo accidents or damage reported to CARFAX\nOwned in: California\n" + "x " * 800)
+        self.assertEqual(carfax.inspect_points(clean), [])                               # чистая машина — ничего лишнего
+
+
+class FastBidTest(unittest.TestCase):
+    """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""
+
+    def test_one_car_recalc(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html")
+        pages = app.find_pages([tmp], 10 ** 6)
+        costs = load_costs(COSTS)
+        cache = app.PageCache()
+        app._ROWS_MEMO.clear()
+        app._ROWS_COSTS.clear()
+        rows = app.search_rows(pages, cache, costs, "")
+        car = next(r for r in rows if r.get("vin") and (r.get("kbb_private_party_usd") or r.get("kbb_estimate_usd") or r.get("retail_estimate_usd")))
+        vin = car["vin"]
+        app.save_bid(vin, 5000.0)
+        fresh = app.recalc_bid(vin, 5000.0)
+        self.assertEqual(fresh["my_proxy_usd"], "5000")
+        real = app._search_rows
+        app._search_rows = lambda *a, **k: (_ for _ in ()).throw(AssertionError("пересчёт всех машин"))
+        try:
+            again = app.search_rows(pages, cache, costs, "")                  # из памяти, с новой ставкой
+        finally:
+            app._search_rows = real
+        self.assertEqual(next(r for r in again if r.get("vin") == vin)["my_proxy_usd"], "5000")
+        app._ROWS_MEMO.clear()
+        app._ROWS_COSTS.clear()
+        full = next(r for r in app.search_rows(pages, cache, costs, "") if r.get("vin") == vin)
+        for field in ("my_proxy_usd", "profit_at_my_bid_usd", "calc_verdict", "my_bid_share", "calc_max_bid_usd"):
+            self.assertEqual(str(fresh.get(field, "")), str(full.get(field, "")), field)
+        app.save_bid(vin, None, 5000.0)
+        self.assertEqual(app.recalc_bid(vin, None)["my_proxy_usd"], "")
+        self.assertIsNone(app.recalc_bid("1HGCV1F10JA999999", 1000.0))                    # машины нет в расчёте — окно обновится целиком
+        self.assertIn("const i=d.row&&lastData?", app.PAGE)

@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.25"
-PROGRAM_VERSION = "2026-11-13.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-13.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -308,6 +308,17 @@ def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> N
         if reason and end and end.date() == now.date() and now.time() < schedule.NOON:
             row["today_done"], reason = reason, ""
         row["passed"] = reason
+
+
+def _owners_note(r: dict, owners: dict) -> None:
+    rec = owners.get(r.get("vin", "")) or {}
+    if "accidents" in rec:
+        r["accidents"], r["accidents_note"] = str(rec["accidents"]), rec.get("accidents_note", "")
+    if rec.get("owners"):
+        r["owners"], r["owners_note"] = str(rec["owners"]), rec.get("note", "")
+        if rec["owners"] >= OWNERS_WARN and not r.get("calc_verdict", "").startswith("ПРОПУСТИТЬ"):
+            word = "владельца" if rec["owners"] < 5 else "владельцев"
+            r["calc_verdict"] = f"{r.get('calc_verdict', '')}; {rec['owners']} {word} по AutoCheck — продать сложнее".lstrip("; ")
 
 
 def lot_status_notes(rows: list[dict[str, str]]) -> None:
@@ -790,6 +801,8 @@ def set_favorite(row: dict, saved_at: float, card: dict | None) -> None:
 
 
 _ROWS_MEMO: dict = {}
+_ROWS_COSTS: dict = {}          # ключ расчёта → настройки, с которыми считали (с поправками рынка по итогам торгов)
+MEMO_EVERY = 600                # полный расчёт не чаще раза в 10 минут, если файлы не менялись («торги прошли» — каждый раз)
 _ROWS_LOCKS: dict = {}
 _ROWS_GUARD = threading.Lock()
 
@@ -843,27 +856,98 @@ def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwarg
         except OSError:
             return 0.0
     key = (tuple((str(p), stamp(p)) for p in pages), json.dumps(costs, sort_keys=True, default=str), args, tuple(sorted(kwargs.items())),
-           tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH)),
-           int(time.time() // 60))                    # раз в минуту — заново: «торги прошли» зависит от времени
+           _memo_stamps(), int(time.time() // MEMO_EVERY))
     with _ROWS_GUARD:
         lock = _ROWS_LOCKS.setdefault(key, threading.Lock())
     with lock:
         if key in _ROWS_MEMO:
-            return [dict(r) for r in _ROWS_MEMO[key]]
-        rows = _search_rows(pages, cache, costs, *args, **kwargs)
+            rows = [dict(r) for r in _ROWS_MEMO[key]]
+            for r in rows:                             # «торги прошли» зависит от времени — отмечаем заново (это быстро)
+                r.pop("today_done", None)
+            mark_passed(rows)
+            return rows
+        box: dict = {}
+        rows = _search_rows(pages, cache, costs, *args, _out=box, **kwargs)
         with _ROWS_GUARD:
             if len(_ROWS_MEMO) > 8:
                 _ROWS_MEMO.clear()
                 _ROWS_LOCKS.clear()
+                _ROWS_COSTS.clear()
             # Ключ — с временем файлов базы после расчёта: сам расчёт мог дописать итоги / журнал KBB.
-            after = key[:4] + (tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH)), key[5])
+            after = key[:4] + (_memo_stamps(), key[5])
             _ROWS_MEMO[after] = rows
+            _ROWS_COSTS[after] = box.get("costs", costs)
         return [dict(r) for r in rows]
+
+
+def _memo_stamps() -> tuple:
+    """Время файлов базы: что-то поменялось (KBB, ставки, итоги, избранное …) — расчёт заново."""
+    def stamp(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+    return tuple(stamp(p) for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH, FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH,
+                                    voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH))
+
+
+class _SameKbb:
+    """Пересчёт одной машины: прикидка KBB — та же, что в общем расчёте (базу похожих машин заново не строим)."""
+
+    def __init__(self, row: dict) -> None:
+        self.row = row
+
+    def add_rows(self, rows: list[dict]) -> None:
+        pass
+
+    def estimate(self, *args, **kwargs):
+        from types import SimpleNamespace
+        value = parse_money(self.row.get("kbb_estimate_usd"))
+        if not value:
+            return None
+        return SimpleNamespace(value=value, raw=parse_money(self.row.get("kbb_estimate_raw_usd")) or None,
+                               source=self.row.get("kbb_estimate_source", ""), n=10 ** 6)
+
+
+def _with_bid(row: dict, usd: float | None, costs: dict, owners: dict) -> dict:
+    """Машина с новой ставкой: тот же расчёт, что в общем списке, — но только для неё."""
+    r = dict(row)
+    r.pop("my_bid_from_window", None)
+    r.pop("mp_removed", None)
+    if usd:
+        r["my_proxy_usd"], r["my_bid_from_window"] = f"{usd:.0f}", "1"
+    else:
+        r["my_proxy_usd"], r["mp_removed"] = "", "1"
+    apply_to_rows([r], costs, estimator=_SameKbb(row))
+    goal_bids([r], costs)
+    _owners_note(r, owners)
+    return r
+
+
+def recalc_bid(vin: str, usd: float | None) -> dict | None:
+    """Ставку вписали в окне: пересчитать только эту машину (доли секунды, а не 5–10 с на все машины) — в уже
+    посчитанных списках (они остаются в силе) и для окна. Машины нет в посчитанном — None (окно обновится целиком)."""
+    vin = vin.upper()
+    owners = load_owners()
+    fresh = None
+    with _ROWS_GUARD:
+        for key in list(_ROWS_MEMO):
+            rows, costs = _ROWS_MEMO[key], _ROWS_COSTS.get(key)
+            places = [i for i, r in enumerate(rows) if str(r.get("vin", "")).upper() == vin]
+            if not places or costs is None:
+                continue                                 # машины в этом списке нет (фильтр «Потолок до») — посчитается заново
+            for i in places:
+                rows[i] = fresh = _with_bid(rows[i], usd, costs, owners)
+            new_key = key[:4] + (_memo_stamps(),) + key[5:]
+            _ROWS_MEMO[new_key] = _ROWS_MEMO.pop(key)
+            _ROWS_COSTS[new_key] = _ROWS_COSTS.pop(key)
+            _ROWS_LOCKS.setdefault(new_key, threading.Lock())
+    return fresh
 
 
 def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
                 year_to: int | None = None, max_miles: int | None = None, kbb: float | None = None,
-                only_no_photos: bool = False, max_bid: float | None = None) -> list[dict[str, str]]:
+                only_no_photos: bool = False, max_bid: float | None = None, _out: dict | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     latest: list[dict[str, str]] = []
@@ -954,6 +1038,8 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     if analytics.record_kbb(rows, kbb_log):            # каждый настоящий KBB — в свою базу
         analytics.save_kbb_log(kbb_log)
     costs = attach_results(rows, pages, cache, costs)
+    if _out is not None:
+        _out["costs"] = costs                          # с этими настройками считаем — для пересчёта одной машины (ставка)
     lot_status_notes(rows)
     mark_passed(rows)
     try:
@@ -1000,14 +1086,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
             r["site_notes"] = live.get("text", "")
     owners = load_owners()
     for r in rows:                                   # AutoCheck: владельцев много — продать сложнее, видно сразу
-        rec = owners.get(r.get("vin", "")) or {}
-        if "accidents" in rec:
-            r["accidents"], r["accidents_note"] = str(rec["accidents"]), rec.get("accidents_note", "")
-        if rec.get("owners"):
-            r["owners"], r["owners_note"] = str(rec["owners"]), rec.get("note", "")
-            if rec["owners"] >= OWNERS_WARN and not r.get("calc_verdict", "").startswith("ПРОПУСТИТЬ"):
-                word = "владельца" if rec["owners"] < 5 else "владельцев"
-                r["calc_verdict"] = f"{r.get('calc_verdict', '')}; {rec['owners']} {word} по AutoCheck — продать сложнее".lstrip("; ")
+        _owners_note(r, owners)
     rows.sort(key=lambda r: (GROUPS.index(r["group"]), verdict_rank(r.get("calc_verdict", "")), -expected_gain(r)))
     return rows
 
@@ -1324,7 +1403,7 @@ COLUMNS = ("auction", "location", "lot_number", "year", "make", "model", "trim",
            "kbb_private_party_usd", "kbb_estimate_usd", "kbb_estimate_source", "market_estimate_usd", "calc_max_bid_usd", "calc_profit_usd", "calc_win_chance_pct", "calc_verdict",
            "sale_estimate_usd", "calc_profit_market_usd", "calc_profit_items", "auction_result", "auction_result_price", "condition_grade", "cr_url", "photo_main_url",
            "sale_date", "lot_url", "vin", "my_proxy_usd", "lot_status", "no_photos", "inspect", "calc_max_bid_if_defect_usd", "calc_bid_goal_usd", "calc_goal_pct", "defects", "source_file", "calc_breakdown", "needs_review",
-           "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed", "rejected", "window_note", "carfax", "carfax_url", "carfax_flags", "carfax_pdf", "carfax_txt", "inspect_manual", "phone_rating", "phone_take",
+           "auction_notes", "site_notes", "odometer_brand", "auction_light", "favorite", "favorite_known", "favorite_removed", "rejected", "window_note", "carfax", "carfax_url", "carfax_flags", "carfax_pdf", "carfax_check", "inspect_manual", "phone_rating", "phone_take",
            "returned", "returned_price", "returned_times", "high_miles_value", "kbb_prelim_usd", "kbb_prelim_pct", "market_share", "my_bid_share", "share_base", "my_bid_win_pct",
            "photo_wait", "photo_arrived", "owners", "owners_note", "accidents", "accidents_note", "voice_notes", "today_done", "all_in", "phone_smog")
 
@@ -1511,10 +1590,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                        + (f"PP Good ${pp:,}" if pp else "") + warn)
                     files.append(item)
                 costs_now = load_costs(costs_path)
-                payload = {"rows": [{**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""), "group": r.get("group", "other"),
-                                     "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "profit_at_my_bid_items": r.get("profit_at_my_bid_items", ""), "seen_before": r.get("seen_before", ""), "passed": r.get("passed", ""),
-                                     "kbb_open": kbb_site.browser_url(costs_now, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
-                                    for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
+                payload = {"rows": [window_row(r, costs_now) for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "nottake_total": nottake_total, "nottake_bids": nottake_bids, "take_total": take_total, "take_nobid": take_nobid, "nophoto_total": nophoto_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "photos_status": PHOTOS_STATUS,
@@ -1547,13 +1623,6 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             elif url.path == "/api/owners_needed":      # расширение: для каких машин открыть AutoCheck
                 rows = search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")
                 self._send(json.dumps({"vins": owners_needed(rows)}).encode("utf-8"))
-            elif url.path.startswith("/carfax/") and url.path.endswith(".txt"):     # текст отчёта Carfax («текст ↗»)
-                vin = url.path[len("/carfax/"):-len(".txt")].upper()
-                path = carfax.PDF_DIR / f"{vin}.txt"
-                if carfax.VIN_RE.fullmatch(vin) and path.is_file():
-                    self._send(path.read_bytes(), "text/plain; charset=utf-8")
-                else:
-                    self._send(b"not found", "text/plain; charset=utf-8", status=404)
             elif url.path.startswith("/carfax/") and url.path.endswith(".pdf"):     # PDF Carfax из окна («PDF ↗»)
                 vin = url.path[len("/carfax/"):-len(".pdf")].upper()
                 path = carfax.PDF_DIR / f"{vin}.pdf"
@@ -1917,7 +1986,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     return
                 was = str(data.get("was", "")).replace("$", "").replace(",", "").strip()
                 save_bid(vin, float(value) if value else None, float(was) if was.replace(".", "", 1).isdigit() else None)
-                self._send(b'{"ok":true}')
+                row = recalc_bid(vin, float(value) if value else None)        # только эта машина — окно не ждёт пересчёта всех
+                self._send(json.dumps({"ok": True, "row": window_row(row, load_costs(costs_path)) if row else None}, ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/bids_ceiling":    # окно: «MP = потолок» для машин списка
                 length = int(self.headers.get("Content-Length") or 0)
@@ -2057,6 +2127,14 @@ def make_remote_handler(folders: list[Path], costs_path: Path, cache: PageCache)
     return Remote
 
 
+def window_row(r: dict, costs: dict) -> dict:
+    """Машина — для окна (список и ответ на новую ставку)."""
+    return {**{k: r.get(k, "") for k in COLUMNS}, "kbb_entered": r.get("kbb_entered", ""), "kbb_url": r.get("kbb_url", ""), "popular": r.get("popular", ""),
+            "group": r.get("group", "other"), "profit_at_my_bid_usd": r.get("profit_at_my_bid_usd", ""), "profit_at_my_bid_items": r.get("profit_at_my_bid_items", ""),
+            "seen_before": r.get("seen_before", ""), "passed": r.get("passed", ""),
+            "kbb_open": kbb_site.browser_url(costs, r.get("year", ""), r.get("make", ""), r.get("model", ""), r.get("odometer_miles", ""))}
+
+
 def _take_port(port: int, handler, open_browser: bool):
     """Занимает порт программы. Если там уже работает эта же версия — открывает её окно и выходит (None);
     если старая — закрывает её и запускается вместо неё (иначе браузер показывал бы старое окно)."""
@@ -2152,7 +2230,7 @@ button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.takenobi
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:96px;height:72px;object-fit:cover;border-radius:6px;display:block}td.milescell{white-space:normal;width:96px}td.milescell .pill{white-space:normal;display:inline-block;line-height:1.25}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
-details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}.lowbid{color:#b25e00}
+details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}.lowbid{color:#b25e00}.cfx-look{margin-top:3px;font-size:12px;color:#9a3412}
 /* Телефон: карточки машин вместо широкой таблицы; кнопки и поля — под палец. */
 .remote .maconly,.remote #extstate{display:none!important}
 @media (max-width:760px){
@@ -2400,7 +2478,7 @@ $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab
  if(keepOrder)orderLock={key:listKey(),vins:d.rows.map(x=>x.vin),at:orderLock?orderLock.at:Date.now()}}
 $('rows').innerHTML=d.rows.map((x,i)=>x.group!==tab?'':`<tr data-vin="${esc(x.vin||'')}"><td>${x.photo_main_url?`<a href="${esc(x.lot_url||x.photo_main_url)}" target="_blank" rel="noopener" title="Открыть лот: все фото, CR, ставка"><img class="thumb" src="${esc(x.photo_main_url)}" loading="lazy" alt=""></a>`:(x.no_photos?'<span class="pill v-mid">нет фото</span>':'')}</td>
 <td>${esc([x.year,x.make,x.model,x.trim].join(' '))}${x.exterior_color?` <span class="muted">· ${esc(x.exterior_color)}</span>`:''}${x.inspect?` <span class="pill v-mid">осмотр: ${esc(x.inspect)}</span>`:''}
-<div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="В избранном на CarMax — машина в списке на печать">★ избранное</span> ':''}${x.voice_notes?`<div class="voice" title="Надиктовано на аукционе (приложение «Голосовые заметки»)">🎤 ${esc(x.voice_notes)}</div>`:''}${x.photo_wait?`<span class="pill v-mid" title="При сохранении списка ${esc(x.photo_wait)} фото не было — ждём: сохраните список позже, программа отметит, когда фото появятся">📷 NO PICTURES — ждём фото</span> `:''}${x.photo_arrived?`<span class="pill v-ok" title="Фото не было, теперь появились — пересмотрите машину">📷 Фото появились ${esc(x.photo_arrived.slice(5).replace('-','/'))}</span> `:''}${x.owners?`<span class="pill ${Number(x.owners)<=1?'v-ok':Number(x.owners)<=2?'v-mid':'v-bad'}" title="AutoCheck: владельцев ${esc(x.owners)}${x.owners_note?' — '+esc(x.owners_note):''}">👤 ${esc(x.owners)} ${Number(x.owners)===1?'владелец':Number(x.owners)<5?'владельца':'владельцев'}</span> `:''}${x.carfax?`<div><span class="pill ${x.carfax_flags?'v-bad':'v-ok'}" title="Carfax${x.carfax_flags?' — настораживает: '+esc(x.carfax_flags):''}">📄 Carfax: ${esc(x.carfax)}</span>${x.carfax_url?` <a href="${esc(x.carfax_url)}" target="_blank" rel="noopener">открыть ↗</a>`:''}${x.carfax_pdf?` <a href="${esc(x.carfax_pdf)}" target="_blank" rel="noopener" title="PDF отчёта — хранится в программе (~/LotAnalyzer/data/carfax)">PDF ↗</a>`:''}${x.carfax_txt&&!x.carfax_pdf?` <a href="${esc(x.carfax_txt)}" target="_blank" rel="noopener" title="Текст отчёта — копия в программе: читается и с телефона, без входа на Carfax Online">текст ↗</a>`:''}</div>`:''}${cfStatus(x)}${x.accidents!==undefined&&x.accidents!==''?`<div><span class="pill ${Number(x.accidents)===0?'v-ok':Number(x.accidents)===1?'v-mid':'v-bad'}" title="AutoCheck: ${esc(x.accidents_note||'')}">💥 ${Number(x.accidents)===0?'без ДТП':esc(x.accidents)+' ДТП'}</span></div>`:''}${x.returned?`<span class="pill v-mid" title="${esc(x.seen_before||'')}">↩ уже продана ${esc(x.returned)}${Number(x.returned_times)>1?' (продавалась '+esc(x.returned_times)+' раза)':''}${x.returned_price&&x.calc_max_bid_usd?' · наш потолок '+money(Number(x.calc_max_bid_usd)):''}</span> `:''}${x.favorite_removed?'<span class="pill v-mid" title="Убрана из избранного на CarMax: в списке на печать её нет, заметку в Notes программа ей больше не пишет">☆ убрана из избранного</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a>${x.condition_grade?` <span class="pill ${crCls(x.condition_grade)}" title="Condition grade">CR ${esc(x.condition_grade.split(' ')[0])}</span>`:''}${x.cr_url?` <a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a>`:''}</div>`:''}${x.seen_before&&!x.returned?`<div class="seen" title="${esc(x.seen_before)}">был на торгах: ${x.seen_before.split('; ').length} раз(а) — наведите</div>`:''}${x.vin?`<div class="acts"><button type="button" class="tab mic" data-vin="${esc(x.vin)}" onclick="dictate(this)" title="Надиктовать заметку к машине (что не устроило на фото, дефекты …): нажмите и говорите, текст сам допишется в заметку «🎤». Ещё раз — остановить">🎤</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="editNote(this)" title="Написать или поправить заметку руками">✏</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" ${x.carfax?'data-again="1" ':''}onclick="carfaxOrder(this)" title="Заказать Carfax на vin-reports-pro.com: расширение само откроет сайт, впишет VIN и закажет отчёт; готовый PDF придёт сюда — с разбором (ДТП, владельцы, штаты, титул) и в расчёте потолка. Отчёт платный">📄 ${x.carfax?'Carfax ещё раз':'Carfax'}</button> ${x.rejected?`<button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="reject(this,false)" title="Отбой ${esc(x.rejected)} — вернуть машину в общий список">↩ вернуть</button>`:`<button type="button" class="tab bad" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" onclick="reject(this,true)" title="Посмотрели лот — брать не будем: машина уйдёт из списка, из списка на печать и из автозапроса KBB. Найти её — кнопкой «🚫 Отбой» над списком">🚫 Отбой</button>`}</div>`:''}</td>
+<div class="muted">${esc(x.vin)} · ${esc(x.auction)} ${esc(x.location)}${x.lot_number?' · лот '+esc(x.lot_number):''}</div>${x.favorite?'<span class="pill v-ok" title="В избранном на CarMax — машина в списке на печать">★ избранное</span> ':''}${x.voice_notes?`<div class="voice" title="Надиктовано на аукционе (приложение «Голосовые заметки»)">🎤 ${esc(x.voice_notes)}</div>`:''}${x.photo_wait?`<span class="pill v-mid" title="При сохранении списка ${esc(x.photo_wait)} фото не было — ждём: сохраните список позже, программа отметит, когда фото появятся">📷 NO PICTURES — ждём фото</span> `:''}${x.photo_arrived?`<span class="pill v-ok" title="Фото не было, теперь появились — пересмотрите машину">📷 Фото появились ${esc(x.photo_arrived.slice(5).replace('-','/'))}</span> `:''}${x.owners?`<span class="pill ${Number(x.owners)<=1?'v-ok':Number(x.owners)<=2?'v-mid':'v-bad'}" title="AutoCheck: владельцев ${esc(x.owners)}${x.owners_note?' — '+esc(x.owners_note):''}">👤 ${esc(x.owners)} ${Number(x.owners)===1?'владелец':Number(x.owners)<5?'владельца':'владельцев'}</span> `:''}${x.carfax?`<div><span class="pill ${x.carfax_flags?'v-bad':'v-ok'}" title="Carfax${x.carfax_flags?' — настораживает: '+esc(x.carfax_flags):''}">📄 Carfax: ${esc(x.carfax)}</span>${x.carfax_url?` <a href="${esc(x.carfax_url)}" target="_blank" rel="noopener">открыть ↗</a>`:''}${x.carfax_pdf?` <a href="${esc(x.carfax_pdf)}" target="_blank" rel="noopener" title="PDF отчёта — хранится в программе (~/LotAnalyzer/data/carfax)">PDF ↗</a>`:''}${x.carfax_check?`<div class="cfx-look" title="Повреждения по Carfax — на что смотреть на осмотре (то же — в списке на осмотр и на телефоне)">${x.carfax_check.split('\n').map(p=>'⚠ '+esc(p)).join('<br>')}</div>`:''}</div>`:''}${cfStatus(x)}${x.accidents!==undefined&&x.accidents!==''?`<div><span class="pill ${Number(x.accidents)===0?'v-ok':Number(x.accidents)===1?'v-mid':'v-bad'}" title="AutoCheck: ${esc(x.accidents_note||'')}">💥 ${Number(x.accidents)===0?'без ДТП':esc(x.accidents)+' ДТП'}</span></div>`:''}${x.returned?`<span class="pill v-mid" title="${esc(x.seen_before||'')}">↩ уже продана ${esc(x.returned)}${Number(x.returned_times)>1?' (продавалась '+esc(x.returned_times)+' раза)':''}${x.returned_price&&x.calc_max_bid_usd?' · наш потолок '+money(Number(x.calc_max_bid_usd)):''}</span> `:''}${x.favorite_removed?'<span class="pill v-mid" title="Убрана из избранного на CarMax: в списке на печать её нет, заметку в Notes программа ей больше не пишет">☆ убрана из избранного</span> ':''}${lightPill(x.auction_light)}${x.odometer_brand==='TMU'?'<span class="pill v-bad" title="True Mileage Unknown — пробег не подтверждён (у CarMax — «Not actual miles»): цена продажи заметно ниже, многие покупатели такие не берут">TMU — пробег не подтверждён</span>':''}${remarksCell(x)}${x.lot_url?`<div><a href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="Открыть эту машину на аукционе: все фото, Condition Report, ставка">Открыть лот ↗</a>${x.condition_grade?` <span class="pill ${crCls(x.condition_grade)}" title="Condition grade">CR ${esc(x.condition_grade.split(' ')[0])}</span>`:''}${x.cr_url?` <a class="muted" href="${esc(x.cr_url)}" target="_blank" rel="noopener" title="Condition Report на Manheim: повреждения, фото дефектов, шины">CR ↗</a>`:''}</div>`:''}${x.seen_before&&!x.returned?`<div class="seen" title="${esc(x.seen_before)}">был на торгах: ${x.seen_before.split('; ').length} раз(а) — наведите</div>`:''}${x.vin?`<div class="acts"><button type="button" class="tab mic" data-vin="${esc(x.vin)}" onclick="dictate(this)" title="Надиктовать заметку к машине (что не устроило на фото, дефекты …): нажмите и говорите, текст сам допишется в заметку «🎤». Ещё раз — остановить">🎤</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="editNote(this)" title="Написать или поправить заметку руками">✏</button> <button type="button" class="tab" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" ${x.carfax?'data-again="1" ':''}onclick="carfaxOrder(this)" title="Заказать Carfax на vin-reports-pro.com: расширение само откроет сайт, впишет VIN и закажет отчёт; готовый PDF придёт сюда — с разбором (ДТП, владельцы, штаты, титул) и в расчёте потолка. Отчёт платный">📄 ${x.carfax?'Carfax ещё раз':'Carfax'}</button> ${x.rejected?`<button type="button" class="tab" data-vin="${esc(x.vin)}" onclick="reject(this,false)" title="Отбой ${esc(x.rejected)} — вернуть машину в общий список">↩ вернуть</button>`:`<button type="button" class="tab bad" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" onclick="reject(this,true)" title="Посмотрели лот — брать не будем: машина уйдёт из списка, из списка на печать и из автозапроса KBB. Найти её — кнопкой «🚫 Отбой» над списком">🚫 Отбой</button>`}</div>`:''}</td>
 <td class="num milescell">${x.odometer_miles?Number(x.odometer_miles).toLocaleString('en-US'):'—'}${x.vin?`<div class="insp">${x.inspect_manual?`<button type="button" class="tab on" data-vin="${esc(x.vin)}" onclick="inspectAdd(this,false)" title="Добавлено вручную ${esc(x.inspect_manual)} — машина в списке на осмотр и на телефоне. Нажмите, чтобы убрать">✓ На осмотре</button>`:`<button type="button" class="tab" data-vin="${esc(x.vin)}" data-car="${esc(x.year+' '+x.make+' '+x.model)}" onclick="inspectAdd(this,true)" title="В список на осмотр: посмотрели лот — машину надо осмотреть самому (повреждения, нет фото …). Сразу попадёт в список на осмотр и на телефон, с пометкой «добавлено вручную»">На осмотр</button>`}</div>`:''}${x.high_miles_value?'<div><span class="pill v-ok" title="Пробег 140–180 тыс. миль: на CarMax такие уходят дешевле всего относительно KBB (≈0,74 за октябрь). У Toyota / Honda / Lexus — хороший запас">🛣 большой пробег — дёшево</span></div>':''}</td>
 <td class="rate">${rateCell(x)}</td>
 <td class="num kbbcell">${x.vin?`<input class="kbb bid" data-vin="${esc(x.vin)}" value="${esc(x.my_proxy_usd)}" placeholder="ставка" inputmode="numeric" title="Ваша ставка (proxy bid). Enter — сохранить и пересчитать" oninput="previewBid(this)" onchange="saveBid(this)"><div class="muted pv" id="pv-${esc(x.vin)}"></div>`:money(x.my_proxy_usd)}${bidShare(x)}${x.profit_at_my_bid_usd?`<div class="muted" title="Прибыль при вашей ставке: ${esc(x.profit_at_my_bid_items||'')}">прибыль <b class="${Number(x.profit_at_my_bid_usd)<0?'neg':'pos'}">${signed(x.profit_at_my_bid_usd)}</b></div>${bidCalc(x.profit_at_my_bid_items)}`:''}${x.current_bid_usd?`<div class="muted">на сайте ${money(x.current_bid_usd)}</div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&x.phone_take==='Не беру'&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg neg" href="${esc(x.lot_url)}" target="_blank" rel="noopener" title="На осмотре — «Не беру»: откройте лот и снимите ставку на CarMax, потом очистите поле ставки здесь">снять ставку на CarMax ↗</a></div>`:''}${x.auction==='CarMax'&&x.my_proxy_usd&&x.phone_take!=='Не беру'&&/vehicledetail\/\d+/.test(x.lot_url||'')?`<div><a class="fg" href="${esc(x.lot_url)}#la-bid=${esc(String(x.my_proxy_usd).replace(/\D/g,''))}" target="_blank" rel="noopener" title="Откроет лот на CarMax и впишет ставку в «Set early bid» (вниз до шага $50). Способ оплаты и «Place bid» — вы сами">поставить на CarMax ↗</a></div>`:''}</td><td class="num kbbcell">${x.vin?`<input class="kbb" data-vin="${esc(x.vin)}" data-miles="${esc(x.odometer_miles)}" data-year="${esc(x.year)}" data-make="${esc(x.make)}" data-model="${esc(x.model)}" data-trim="${esc(x.trim)}" value="${esc(x.kbb_private_party_usd)}" placeholder="KBB PP" inputmode="numeric" title="KBB Private Party, 92620, Good — из приложения. Enter — пересчитать" onchange="saveKbb(this)">`:money(x.kbb_private_party_usd)}
@@ -2428,7 +2506,13 @@ function lockedOrder(d){const key=listKey();
 function resort(){orderLock=null;refresh()}
 async function saveBid(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;
  keepOrder=shown.map(x=>x.vin);focusVin=el.dataset.vin;
- try{await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,was:(shown.find(x=>x.vin===el.dataset.vin)||{}).my_proxy_usd||''})});await refresh()}catch(e){alert('Не сохранилось: '+e)}}
+ try{const r=await fetch('/api/bid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vin:el.dataset.vin,usd:v,was:(shown.find(x=>x.vin===el.dataset.vin)||{}).my_proxy_usd||''})});
+  const d=await r.json();
+  /* Программа пересчитала только эту машину — меняем её строку сразу, без полного обновления окна. */
+  const i=d.row&&lastData?lastData.rows.findIndex(x=>x.vin===d.row.vin):-1;
+  if(i>=0){const had=!!lastData.rows[i].my_proxy_usd,now=!!d.row.my_proxy_usd;lastData.rows[i]={...lastData.rows[i],...d.row};
+   if(lastData.bids_total!=null)lastData.bids_total+=(now?1:0)-(had?1:0);render(lastData);return}
+  await refresh()}catch(e){alert('Не сохранилось: '+e)}}
 function afterRender(){if(!focusVin)return;const tr=document.querySelector(`#rows tr[data-vin="${CSS.escape(focusVin)}"]`);focusVin='';
  if(tr){tr.scrollIntoView({block:'center'});tr.classList.add('flash');setTimeout(()=>tr.classList.remove('flash'),2500)}}
 /* Пока вписываете цифру — сразу «≈ прибыль при такой цене», без пересчёта и без перестановки списка. */

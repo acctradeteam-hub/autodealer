@@ -53,7 +53,8 @@ def car_of(row: dict) -> dict:
             "mine": row.get("calc_max_bid_usd", ""), "mine_defect": row.get("calc_max_bid_if_defect_usd", ""),
             "market": row.get("market_estimate_usd", ""), "mp": row.get("my_proxy_usd", ""), "no_pics": row.get("no_photos") == "да",
             "notes": notes, "own": own, "url": row.get("lot_url", ""), "manual": bool(row.get("inspect_manual")),
-            "major": major_defects(row)}             # «Major Engine / Transmission Defect» — крупно на телефоне
+            "major": major_defects(row),             # «Major Engine / Transmission Defect» — крупно на телефоне
+            "carfax_check": [p for p in str(row.get("carfax_check") or "").split("\n") if p.strip()]}   # Carfax: куда смотреть
 
 
 def push_list(rows: list[dict]) -> dict:
