@@ -96,11 +96,17 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
       .catch(function () { reply({ ok: false }); });
     return true;
   }
-  /* Отчёт Carfax (vin-reports-pro.com) — в программу. */
-  if (msg && msg.type === 'carfax' && sender.tab && /^https:\/\/(www\.)?(vin-reports-pro|carfax)\.com\//.test(sender.url || sender.tab.url || '')) {
+  /* Отчёт Carfax (Carfax Online, vin-reports-pro.com, carfax.com) — в программу; ответ — вкладке (заказ закрывает её). */
+  if (msg && msg.type === 'carfax' && sender.tab && /^https:\/\/(www\.)?(vin-reports-pro|carfax|carfaxonline|carfaxfordealers)\.com\//.test(sender.url || sender.tab.url || '')) {
     fetch('http://127.0.0.1:8765/api/carfax', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vin: msg.vin, url: msg.url, text: msg.text }) }).catch(function () {});
-    return false;
+      body: JSON.stringify({ vin: msg.vin, url: msg.url, text: msg.text }) })
+      .then(function (r) { return r.json(); }).then(reply, function () { reply({ ok: false }); });
+    return true;
+  }
+  /* Вкладка Carfax Online спрашивает: её открыли по кнопке «📄 Carfax»? Какой VIN? */
+  if (msg && msg.type === 'cfo-job' && sender.tab) {
+    chrome.storage.session.get('cfo-' + sender.tab.id, function (got) { reply({ vin: (got || {})['cfo-' + sender.tab.id] || '' }); });
+    return true;
   }
   /* Фото на карточке лота CarMax — в программу: машина больше не «без фото», если CarMax их добавил. */
   if (msg && msg.type === 'photos' && sender.tab && /^https:\/\/www\.carmaxauctions\.com\//.test(sender.tab.url || '')) {
@@ -140,12 +146,17 @@ function laCarfaxStatus(vin, status, note) {
   fetch('http://127.0.0.1:8765/api/carfax_status', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
     body: JSON.stringify({ vin: vin, status: status, note: note || '' }) }).catch(function () {});
 }
-/* Заказ Carfax по VIN: кнопка «📄 Carfax» в окне на Mac или с телефона (remote_cmd.js). */
+/* Carfax по VIN: кнопка «📄 Carfax» в окне на Mac или с телефона (remote_cmd.js). Отчёт — на Carfax Online
+   (carfaxonline.com/vhr/<VIN>) с вашим входом в этом Chrome; вкладка в фоне, carfax_online.js отдаёт текст и закрывает её. */
+var CFO_REPORT = 'https://www.carfaxonline.com/vhr/';
 function laCarfaxOrder(vin) {
   vin = String(vin || '').toUpperCase();
   if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) { return; }
-  chrome.tabs.create({ url: 'https://www.vin-reports-pro.com/pro#la-carfax=' + vin, active: false }, function () { void chrome.runtime.lastError; });
-  laCarfaxStatus(vin, 'opened');
+  chrome.tabs.create({ url: CFO_REPORT + vin, active: false }, function (tab) {
+    void chrome.runtime.lastError;
+    if (tab) { var item = {}; item['cfo-' + tab.id] = vin; chrome.storage.session.set(item); }
+  });
+  laCarfaxStatus(vin, 'sent');
 }
 chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   if (!msg) { return; }

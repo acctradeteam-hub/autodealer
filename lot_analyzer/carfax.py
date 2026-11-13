@@ -1,9 +1,10 @@
 """Carfax: отчёт, открытый на vin-reports-pro.com (или carfax.com), — коротко к машине в окне, в списке на осмотр и на телефоне.
 
-Два пути в программу:
-— кнопка «📄 Carfax» в окне: расширение само заказывает отчёт на vin-reports-pro.com/pro и забирает готовый PDF
-  (POST /api/carfax_pdf) — PDF хранится в data/carfax/<VIN>.pdf, оттуда же — в закрытый репозиторий (Отправка Claude);
-— отчёт, открытый на сайте вручную: расширение присылает его текст (POST /api/carfax).
+Пути в программу:
+— кнопка «📄 Carfax» в окне (на Mac или с телефона): расширение открывает отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>,
+  Carfax for Dealers) с вашим входом в Chrome и присылает его текст (POST /api/carfax); копия текста — data/carfax/<VIN>.txt
+  («текст ↗» в окне — читается и с телефона);
+— отчёт, открытый на сайте вручную, — так же; PDF отчёта (раньше — vin-reports-pro) — POST /api/carfax_pdf.
 Разбор — по обычным фразам Carfax («CARFAX 1-Owner», «Accident reported», «Damage Severity: Moderate», «Point of
 Impact: Front», «Owned in: Ohio», «Personal vehicle», «Salvage title» …). data/carfax.json: VIN → {url, at, summary}.
 Найденное идёт и в расчёт (history_text): ДТП, 4+ владельца, аренда — скидка к цене продажи (history_discounts),
@@ -227,6 +228,12 @@ def save(vin: str, url: str, text: str, source: str = "text", pdf: str = "") -> 
                  "source": source, "pdf": pdf or (old.get("pdf", "") if source != "pdf" else "")}
     PATH.parent.mkdir(parents=True, exist_ok=True)
     PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+    if source != "pdf":                                # текст отчёта — копией: «текст ↗» в окне, читается и с телефона
+        try:
+            PDF_DIR.mkdir(parents=True, exist_ok=True)
+            (PDF_DIR / f"{vin}.txt").write_text(f"{url}\n\n{text}", encoding="utf-8")
+        except OSError:
+            pass
     return data[vin]
 
 
@@ -268,6 +275,7 @@ def attach(rows: list[dict]) -> None:
             row["carfax_url"] = rec.get("url", "")
             row["carfax_flags"] = "; ".join(rec.get("flags") or [])
             row["carfax_pdf"] = f"/carfax/{vin}.pdf" if rec.get("pdf") and Path(rec["pdf"]).exists() else ""
+            row["carfax_txt"] = f"/carfax/{vin}.txt" if (PDF_DIR / f"{vin}.txt").exists() else ""
             found = history_text(rec.get("summary") or {})
             if found and found not in row.get("carfax_autocheck", ""):          # в расчёт: скидки и стоп-факторы истории
                 row["carfax_autocheck"] = " | ".join(x for x in (row.get("carfax_autocheck", ""), found) if x)

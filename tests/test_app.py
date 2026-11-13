@@ -1997,3 +1997,47 @@ class RemoteAccessTest(unittest.TestCase):
         costs = load_costs(COSTS)
         self.assertTrue(popular.is_popular({"make": "Toyota", "model": "Tacoma", "trim": "SR5 Double Cab", "year": "2016"}, costs))
         self.assertFalse(popular.is_popular({"make": "Toyota", "model": "Tundra", "year": "2016"}, costs))
+
+
+class CarfaxOnlineTest(unittest.TestCase):
+    """Carfax напрямую: отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>) с входом в Chrome; текст — в программу, копия — «текст ↗»."""
+
+    REPORT = ("CARFAX Vehicle History Report for this 2016 HONDA CIVIC EX: 19XFC2F7XGE000001\nCARFAX 1-Owner vehicle\n"
+              "No accidents or damage reported to CARFAX\nPersonal vehicle\nOwned in: California\n"
+              + "\n".join(f"{m}/2019 Vehicle serviced - Oil and filter changed, Honda dealer, Los Angeles, CA" for m in range(1, 30)))
+
+    def test_text_copy_and_route(self) -> None:
+        from lot_analyzer import carfax
+        vin = "19XFC2F7XGE000001"
+        rec = carfax.save(vin, "https://www.carfaxonline.com/vhr/" + vin, self.REPORT)
+        self.assertIn("без ДТП", rec["line"])
+        self.assertTrue((carfax.PDF_DIR / f"{vin}.txt").exists())
+        row = {"vin": vin}
+        carfax.attach([row])
+        self.assertEqual(row["carfax_txt"], f"/carfax/{vin}.txt")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([Path(tempfile.mkdtemp())], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            self.assertIn("CARFAX 1-Owner", urllib.request.urlopen(f"{base}/carfax/{vin}.txt").read().decode("utf-8"))
+            with self.assertRaises(urllib.error.HTTPError):
+                urllib.request.urlopen(f"{base}/carfax/../../etc.txt")
+        finally:
+            server.shutdown()
+
+    def test_extension_uses_carfax_online(self) -> None:
+        ext = ROOT / "tools" / "kbb_extension"
+        manifest = json.loads((ext / "manifest.json").read_text(encoding="utf-8"))
+        block = next(c for c in manifest["content_scripts"] if "carfax_online.js" in c["js"])
+        self.assertIn("https://www.carfaxonline.com/*", block["matches"])
+        self.assertFalse(block.get("all_frames"))                                   # только сама вкладка, не рамки внутри
+        self.assertEqual(manifest["version"], app.EXTENSION_VERSION)
+        bg = (ext / "background.js").read_text(encoding="utf-8")
+        self.assertIn("var CFO_REPORT = 'https://www.carfaxonline.com/vhr/';", bg)
+        self.assertIn("msg.type === 'cfo-job'", bg)
+        self.assertIn("carfaxonline|carfaxfordealers", bg)
+        self.assertNotIn("vin-reports-pro.com/pro#la-carfax", bg)
+        page = (ext / "carfax_online.js").read_text(encoding="utf-8")
+        self.assertNotRegex(page, r"\.click\(\)")                                       # на сайте ничего не нажимает
+        self.assertIn("Carfax Online", app.PAGE.split("const CF_TEXT=")[1].split(";")[0])
+        self.assertIn('hidden id="vrpbtn"', app.PAGE)
