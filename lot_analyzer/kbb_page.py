@@ -145,15 +145,49 @@ def _parse_next_data(html: str) -> dict | None:
     return record if record["private_party"] else None
 
 
+_BMW_CODE = re.compile(r"^(m?)([1-8])(\d{2})\s*(li|xi|ci|is|i|d|e)?\b", re.I)
+_BMW_PLUG = re.compile(r"plug[- ]?in(?:\s+hybrid)?|hybrid", re.I)
+
+
+def bmw_series(model: str, trim: str = "") -> tuple[list[str], str] | None:
+    """BMW: на аукционах модель — номер («535» + трим «I», «M340» + «I», «330» + «Plug In Hybrid»), а на KBB модель —
+    серия («5 Series»), номер — комплектация («535i xDrive Sedan 4D»). → (модель в адресе KBB — по очереди,
+    трим для выбора комплектации) или None (X3, M5, Z4, i3 … — у KBB так же, как на аукционе)."""
+    text = " ".join(f"{model or ''} {trim or ''}".split())
+    found = _BMW_CODE.match(text)
+    if not found:
+        return None
+    rest = text[found.end():]
+    plug = bool(_BMW_PLUG.search(rest))
+    rest = " ".join(_BMW_PLUG.sub(" ", rest).split())
+    head = f"{found.group(1)}{found.group(2)}{found.group(3)}".lower()
+    suffix = (found.group(4) or ("e" if plug else "i")).lower()     # «535 Base» — это 535i; plug-in — 330e, 530e
+    code = head + suffix
+    if suffix == "xi":
+        code += f" {head}i xDrive"                    # до 2009 у KBB «328xi», позже — «328i xDrive»
+    series = f"{found.group(2)}-series"
+    if re.search(r"gran turismo|\bgt\b", rest, re.I):
+        slugs = [f"{series}-gran-turismo", series]
+    elif re.search(r"gran coupe", rest, re.I):
+        slugs = [f"{series}-gran-coupe", series]
+    else:
+        slugs = [series]
+    return slugs, f"{code} {rest}".strip()
+
+
 def matches(record: dict, row: dict[str, str], max_gap: int) -> bool:
     """Подходит ли страница KBB машине лота: тот же VIN, либо год, марка, модель и пробег рядом."""
     if record.get("vin"):
         return record["vin"] == row.get("vin")
     if str(row.get("year", "")) != record["year"] or slug(row.get("make", "")) != record["make"]:
         return False
-    lot_model, kbb_model = slug(row.get("model", "")), record["model"]
-    if not (lot_model == kbb_model or lot_model.replace("-", "") == kbb_model.replace("-", "")
-            or kbb_model.startswith(lot_model + "-") or lot_model.startswith(kbb_model + "-")):
+    kbb_model = record["model"]
+    lot_models = [slug(row.get("model", ""))]
+    bmw = bmw_series(row.get("model", ""), row.get("trim", "")) if record["make"] == "bmw" else None
+    if bmw:
+        lot_models += bmw[0]                          # «535» на аукционе — «5-series» на KBB
+    if not any(lot_model == kbb_model or lot_model.replace("-", "") == kbb_model.replace("-", "")
+               or kbb_model.startswith(lot_model + "-") or lot_model.startswith(kbb_model + "-") for lot_model in lot_models):
         return False
     miles = re.sub(r"\D", "", str(row.get("odometer_miles", "")))
     if not record["miles"] or not miles:

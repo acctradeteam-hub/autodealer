@@ -82,5 +82,87 @@ class KbbSiteTest(unittest.TestCase):
         self.assertIn("лимит", str(ctx.exception))
 
 
+
+BMW_PAGE = """<html><script id="__NEXT_DATA__">{}</script>
+<a href="/bmw/5-series/2014/528i-sedan-4d/">528i</a>
+<a href="/bmw/5-series/2014/535i-sedan-4d/">535i</a>
+<a href="/bmw/5-series/2014/535i-xdrive-sedan-4d/">535i xDrive</a>
+<a href="/bmw/5-series/2014/535d-sedan-4d/">535d</a>
+<a href="/bmw/5-series/2014/550i-sedan-4d/">550i</a></html>"""
+
+BMW_CASES = [(("535", "I"), (["5-series"], "535i")),
+             (("535", "I Gran Turismo"), (["5-series-gran-turismo", "5-series"], "535i Gran Turismo")),
+             (("328", "I"), (["3-series"], "328i")),
+             (("328", "Base"), (["3-series"], "328i Base")),
+             (("328", "XI"), (["3-series"], "328xi 328i xDrive")),
+             (("328", "D"), (["3-series"], "328d")),
+             (("330", "Plug In Hybrid Base"), (["3-series"], "330e Base")),
+             (("530e", "Plug-in Hybrid Base"), (["5-series"], "530e Base")),
+             (("M340", "I"), (["3-series"], "m340i")),
+             (("430", "I Gran Coupe"), (["4-series-gran-coupe", "4-series"], "430i Gran Coupe")),
+             (("750", "Li"), (["7-series"], "750li")),
+             (("X3", "XDrive28i"), None), (("M5", "Base"), None), (("Z4", "3.0i"), None), (("I3", "Giga World"), None),
+             (("5 Series", "535i"), None)]
+
+
+class BmwSeriesTest(unittest.TestCase):
+    """BMW: на аукционах модель — номер («535» + «I»), на KBB — серия («5 Series»), а номер — комплектация («535i»)."""
+
+    def test_mapping(self):
+        from lot_analyzer import kbb_page
+        for (model, trim), want in BMW_CASES:
+            got = kbb_page.bmw_series(model, trim)
+            self.assertEqual((got[0], got[1]) if got else None, want, (model, trim))
+
+    def test_url_lookup_and_saved_page(self):
+        from lot_analyzer import kbb_page
+        self.assertIn("/bmw/5-series/2014/?", kbb_site.browser_url({}, "2014", "BMW", "535", "80000"))
+        self.assertIn("/bmw/3-series/2016/?", kbb_site.browser_url({}, "2016", "BMW", "328", "80000"))
+        self.assertIn("/bmw/x3/2016/?", kbb_site.browser_url({}, "2016", "BMW", "X3", "80000"))
+        self.assertIn("/honda/civic/2016/?", kbb_site.browser_url({}, "2016", "Honda", "Civic", "80000"))
+        self.assertEqual(kbb_site.pick_trim(kbb_site.trim_links(BMW_PAGE, "bmw", "5-series", "2014"), "535i")[0], "535i-sedan-4d")
+        self.assertEqual(kbb_site.pick_trim(kbb_site.trim_links(BMW_PAGE, "bmw", "5-series", "2014"), "535i xDrive")[0], "535i-xdrive-sedan-4d")
+        tmp = tempfile.TemporaryDirectory()
+        old = kbb_site.CACHE_PATH
+        kbb_site.CACHE_PATH = Path(tmp.name) / "cache.json"
+        asked = []
+
+        def fetch(url):
+            asked.append(url)
+            if url.endswith("/bmw/5-series/2014/"):
+                return BMW_PAGE
+            if "/535i-xdrive-sedan-4d/" in url:
+                return kbb_html(80000)
+            raise kbb_site.KbbSiteError("404")
+        try:
+            costs = load_costs(DEFAULT_COSTS_PATH)
+            costs["kbb_site"] = {**costs.get("kbb_site", {}), "enabled": True}
+            got = kbb_site.lookup(costs, "WBA5B3C50ED000001", "2014", "BMW", "535", "I xDrive", "80000", fetch=fetch)
+        finally:
+            kbb_site.CACHE_PATH = old
+            tmp.cleanup()
+        self.assertEqual(got["trim_slug"], "5-series/535i-xdrive-sedan-4d")
+        self.assertFalse(any("/bmw/535" in u for u in asked), asked)
+        record = {"year": "2014", "make": "bmw", "model": "5-series", "miles": 80500}                 # сохранена вручную, без VIN
+        self.assertTrue(kbb_page.matches(record, {"year": "2014", "make": "BMW", "model": "535", "trim": "I", "odometer_miles": "80000"}, 3000))
+        self.assertFalse(kbb_page.matches(record, {"year": "2014", "make": "BMW", "model": "335", "trim": "I", "odometer_miles": "80000"}, 3000))
+
+    def test_extension_same_as_program(self):
+        """Автопилот KBB в расширении (content.js) переводит BMW так же, как программа."""
+        import json
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("нет node")
+        src = (Path(__file__).resolve().parent.parent / "tools" / "kbb_extension" / "content.js").read_text(encoding="utf-8")
+        fn = re.search(r"var bmwSeries = (function \(model, trim\) \{.*?\n    \});", src, re.S).group(1)
+        script = f"var f = {fn};\nvar cases = {json.dumps([list(c) for c, _ in BMW_CASES])};\n" \
+                 "console.log(JSON.stringify(cases.map(function (c) { var r = f(c[0], c[1]); return r ? [r.models, r.t] : null; })));"
+        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out, [list(w) if w else None for _, w in BMW_CASES])
+        self.assertIn("var models = bmw ? bmw.models :", src)
+
 if __name__ == "__main__":
     unittest.main()

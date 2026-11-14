@@ -58,8 +58,12 @@ class KbbSiteError(Exception):
 slug = kbb_page.slug
 
 
-def model_slugs(model: str) -> list[str]:
-    """Как модель может называться в адресе kbb.com: «F-150» → f-150, f150; «Silverado 1500» → silverado-1500, silverado."""
+def model_slugs(model: str, make: str = "", trim: str = "") -> list[str]:
+    """Как модель может называться в адресе kbb.com: «F-150» → f-150, f150; «Silverado 1500» → silverado-1500, silverado;
+    BMW «535» → 5-series (номер — комплектация, kbb_page.bmw_series)."""
+    bmw = kbb_page.bmw_series(model, trim) if slug(make) == "bmw" else None
+    if bmw:
+        return bmw[0]
     base = slug(model)
     options = [base, base.replace("-", "")]
     words = base.split("-")
@@ -184,7 +188,7 @@ def browser_url(costs: dict, year: str, make: str, model: str, miles: str) -> st
     miles_n = re.sub(r"\D", "", str(miles or ""))
     query = f"?intent=trade-in-sell&mileage={miles_n}&zipcode={cfg['zip']}" if miles_n else f"?intent=trade-in-sell&zipcode={cfg['zip']}"
     if year and make and model:
-        return f"{BASE}/{slug(make)}/{model_slugs(model)[0]}/{year}/{query}"
+        return f"{BASE}/{slug(make)}/{model_slugs(model, make)[-1 if slug(make) == 'bmw' else 0]}/{year}/{query}"   # BMW — сама серия
     return f"{BASE}/whats-my-car-worth/"
 
 
@@ -214,12 +218,15 @@ def lookup(costs: dict, vin: str, year: str, make: str, model: str, trim: str, m
     get = fetch or (lambda url: _http_get(url, cfg, cache))
 
     make_s = slug(make)
+    bmw = kbb_page.bmw_series(model, trim) if make_s == "bmw" else None
+    if bmw:
+        trim = bmw[1]                                # «535» + «I» → комплектация «535i»
     if chosen:
         model_s, trim_slug = chosen.split("/", 1)
     else:
         model_s = trim_slug = ""
         candidates: list[str] = []
-        for option in model_slugs(model):
+        for option in (bmw[0] if bmw else model_slugs(model)):
             try:
                 page = get(f"{BASE}/{make_s}/{option}/{year}/")
             except KbbSiteError as error:

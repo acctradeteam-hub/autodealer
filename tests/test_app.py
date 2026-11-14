@@ -2325,6 +2325,20 @@ class NearPlacesTest(unittest.TestCase):
         self.assertIn("function toggleNear(names)", app.PAGE)
         self.assertIn("+nearBtn(d)+", app.PAGE)
 
+class KbbBmwRetryTest(unittest.TestCase):
+    """Попытки KBB для BMW до исправления (искались как «535i» вместо «5 Series») не считаются — KBB возьмётся заново."""
+
+    def test_old_bmw_tries_forgotten(self) -> None:
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        before, after = app.KBB_BMW_FIXED_AT - 3600, app.KBB_BMW_FIXED_AT + 3600
+        (tmp / "kbb_week.json").write_text(json.dumps({"asked": {
+            "WBA5B3C50ED000001": {"n": 2, "at": before}, "WBA5B3C50ED000002": {"n": 2, "at": after},
+            "2HGFC2F50JH000003": {"n": 2, "at": before}}}), encoding="utf-8")
+        with mock.patch.object(app, "KBB_WEEK_PATH", tmp / "kbb_week.json"), mock.patch.object(app.time, "time", return_value=after + 60):
+            got = app.load_kbb_week()
+        self.assertEqual(sorted(got), ["2HGFC2F50JH000003", "WBA5B3C50ED000002"])
+
 class FastBidTest(unittest.TestCase):
     """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""
 

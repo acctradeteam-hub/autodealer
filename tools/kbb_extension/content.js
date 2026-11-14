@@ -269,6 +269,23 @@ window.lotAnalyzerAuto = true;
     var KBB_MODEL = { 'golf-electric': 'e-golf', 'bolt': 'bolt-ev', 'bolt-euv': 'bolt-euv', 'gti': 'golf-gti', 'golf-gti': 'golf-gti', 'e-golf': 'e-golf', 'leaf-plus': 'leaf', 'ioniq-electric': 'ioniq', 'niro-ev': 'niro-ev', 'kona-electric': 'kona-electric', 'clarity-plug-in-hybrid': 'clarity-plug-in-hybrid', 'prius-prime': 'prius-prime', 'rav4-prime': 'rav4-prime' };
     var KBB_EXTRA = { 'prius-plug-in-hybrid': 'prius-plug-in', 'prius-plug-in': 'prius-plug-in-hybrid' };
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
+    /* BMW: на аукционах модель — номер («535» + трим «I», «M340» + «I», «330» + «Plug In Hybrid»), а на KBB модель —
+       серия («5 Series»), номер — комплектация («535i xDrive Sedan 4D»). Как kbb_page.bmw_series в программе. */
+    var bmwSeries = function (model, trim) {
+      var text = (String(model || '') + ' ' + String(trim || '')).replace(/\s+/g, ' ').trim();
+      var m = /^(m?)([1-8])(\d{2})\s*(li|xi|ci|is|i|d|e)?\b/i.exec(text);
+      if (!m) { return null; }
+      var rest = text.slice(m[0].length);
+      var plugRe = /plug[- ]?in(?:\s+hybrid)?|hybrid/ig;
+      var plug = new RegExp(plugRe.source, 'i').test(rest);
+      rest = rest.replace(plugRe, ' ').replace(/\s+/g, ' ').trim();
+      var head = (m[1] + m[2] + m[3]).toLowerCase();
+      var suffix = (m[4] || (plug ? 'e' : 'i')).toLowerCase();
+      var code = head + suffix + (suffix === 'xi' ? ' ' + head + 'i xDrive' : '');
+      var series = m[2] + '-series';
+      var models = /gran turismo|\bgt\b/i.test(rest) ? [series + '-gran-turismo', series] : /gran coupe/i.test(rest) ? [series + '-gran-coupe', series] : [series];
+      return { models: models, t: (code + ' ' + rest).trim(), md: m[2] + ' Series' };
+    };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
     var nextData = function (html) {
       var found = /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(html);
@@ -362,12 +379,14 @@ window.lotAnalyzerAuto = true;
       /* Как модель называется на KBB: аукцион пишет «Bolt», KBB — «Bolt EV»; гибриды у KBB часто отдельной моделью
          («camry-hybrid»). Пробуем варианты по очереди, пока страница не покажет комплектации. */
       /* Старые строки CarMax: «Model» + трим «X 75D» → модель «Model X». EUV, Plug-in — у KBB отдельные модели. */
+      var bmw = /^bmw$/i.test(car.mk || '') ? bmwSeries(car.md, car.t) : null;
+      if (bmw) { car.md = bmw.md; car.t = bmw.t; }               // «535» + «I» → «5 Series», комплектация «535i»
       if (/^model$/i.test(car.md) && /^[3sxy]\b/i.test(car.t || '')) { car.md = 'Model ' + car.t.charAt(0).toUpperCase(); car.t = car.t.slice(1).trim(); }
       var lead = /^(euv|plug[- ]?in(?: hybrid)?|prime|electric)\b/i.exec(car.t || '');
       if (lead) { car.md = car.md + ' ' + lead[1]; car.t = car.t.slice(lead[0].length).trim(); }
       var md = slugOf(car.md);
       var hybrid = /hybrid/i.test(car.md + ' ' + car.t);
-      var models = [KBB_MODEL[md] || '', (KBB_EXTRA[md] || '')].concat([hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
+      var models = bmw ? bmw.models : [KBB_MODEL[md] || '', (KBB_EXTRA[md] || '')].concat([hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
         md + '-ev', md.split('-')[0] + (hybrid ? '-hybrid' : '-ev')]).filter(function (m, i, all) { return m && all.indexOf(m) === i; });
       var trims = [];
       var modelSlug = '';
