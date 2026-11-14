@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.25"
-PROGRAM_VERSION = "2026-11-13.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-14.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -194,8 +194,10 @@ def is_own_window(path: Path) -> bool:
 
 
 UPCOMING_DAYS = 7
-# Кнопки моделей в окне: марка и модель (Civic — все, и Hybrid; Corolla — и Hybrid, без Corolla Cross).
-MODEL_BUTTONS = {"civic": ("honda", r"^civic\b"), "corolla": ("toyota", r"^corolla\b(?!\s*cross)")}
+# Кнопки моделей в окне: марка и модель (Civic — все, и Hybrid; Corolla — и Hybrid, без Corolla Cross;
+# Camry — и Hybrid, без Camry Solara; Accord — и Hybrid / Plug-in, без Crosstour).
+MODEL_BUTTONS = {"civic": ("honda", r"^civic\b"), "corolla": ("toyota", r"^corolla\b(?!\s*cross)"),
+                 "camry": ("toyota", r"^camry\b(?!\s*solara)"), "accord": ("honda", r"^accord\b(?!\s*crosstour)")}
 
 
 # Своя папка в «Загрузках»: файлы закладки и расширения (KBB, страницы аукционов) — туда, «Загрузки» не засоряются.
@@ -1465,7 +1467,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                             "any": lambda r: has(r, "engine") or has(r, "transmission"),
                             "none": lambda r: not (has(r, "engine") or has(r, "transmission"))}[defect]
                     rows = [r for r in rows if r.get("auction") == "CarMax" and want(r)]
-                # Кнопки моделей: Honda Civic и / или Toyota Corolla (можно обе сразу — одним списком).
+                # Кнопки моделей: Civic, Corolla, Camry, Accord (можно несколько сразу — одним списком).
                 chosen = [m for m in q.get("models", "").split(",") if m in MODEL_BUTTONS]
                 if chosen:
                     rows = [r for r in rows if any(str(r.get("make", "")).lower() == MODEL_BUTTONS[m][0]
@@ -2225,7 +2227,7 @@ input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8
 tr.flash td{background:rgba(232,168,0,.18);transition:background 1s}.pv{display:block;font-size:12px;line-height:1.25;white-space:normal;max-width:120px;margin-top:3px}.pv b{white-space:nowrap}
 .voice{margin:3px 0;padding:3px 6px;border-left:3px solid var(--acc);font-size:12px}
 form.top{gap:8px}form.top input{padding:7px 8px;min-width:0}form.top .w-q{width:130px}form.top .w-y{width:58px}form.top .w-n{width:78px}form.top .w-vin{width:175px;font-variant-numeric:tabular-nums;text-transform:uppercase}form.top .brk{flex-basis:100%;height:0}
-.modelbtns{display:flex;gap:6px;align-self:end}.modelbtns button{font-weight:700;padding:8px 12px;background:var(--bg);color:var(--acc);border:2px solid var(--acc)}.modelbtns button.on{background:var(--acc);color:#fff}
+.modelbtns{display:flex;flex-wrap:wrap;gap:6px;align-self:end}.modelbtns button{font-weight:700;padding:8px 12px;background:var(--bg);color:var(--acc);border:2px solid var(--acc)}.modelbtns button.on{background:var(--acc);color:#fff}
 input#q{min-width:240px}button,a.btn{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
 a.btn.sec,button.btn.sec{background:transparent;color:var(--acc)}button.btn.bad{border-color:var(--bad);color:var(--bad)}div.remarks{font-size:12px;margin-top:3px;max-width:420px}div.remarks mark{background:#f6d5d5;color:inherit;padding:0 2px;border-radius:3px}th.sorth{cursor:pointer;text-decoration:underline dotted}.sortbar{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;margin-left:12px}#notesstate.bad{color:var(--bad)}.links{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
@@ -2339,8 +2341,8 @@ let sortBy='';try{sortBy=localStorage.getItem('la-sort')||''}catch(e){}
 /* Фильтр «Major-дефекты» (только CarMax): '' — выкл, engine, trans, both — оба сразу, any — любой из двух. */
 let defectBy='';try{defectBy=localStorage.getItem('la-defect')||''}catch(e){}
 let models=[];try{models=(localStorage.getItem('la-models')||'').split(',').filter(Boolean)}catch(e){}
-const MODEL_NAMES={civic:'Honda Civic',corolla:'Toyota Corolla'};
-function drawModels(){const e=$('modelbtns');if(!e)return;e.innerHTML=Object.entries(MODEL_NAMES).map(([m,t])=>`<button type="button" class="${models.includes(m)?'on':''}" onclick="toggleModel('${m}')" title="Только ${t}; можно нажать обе — одним списком; ещё раз — выключить">${t}</button>`).join('')}
+const MODEL_NAMES={civic:'Honda Civic',corolla:'Toyota Corolla',camry:'Toyota Camry',accord:'Honda Accord'};
+function drawModels(){const e=$('modelbtns');if(!e)return;e.innerHTML=Object.entries(MODEL_NAMES).map(([m,t])=>`<button type="button" class="${models.includes(m)?'on':''}" onclick="toggleModel('${m}')" title="Только ${t}; можно нажать несколько — одним списком; ещё раз — выключить">${t}</button>`).join('')}
 function toggleModel(m){models=models.includes(m)?models.filter(x=>x!==m):models.concat([m]);try{localStorage.setItem('la-models',models.join(','))}catch(e){}drawModels();refresh()}
 let saleDay='';try{saleDay=localStorage.getItem('la-day')||''}catch(e){}
 function setDay(v){saleDay=v;try{localStorage.setItem('la-day',v)}catch(e){}refresh()}

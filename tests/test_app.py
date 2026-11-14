@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -209,6 +210,35 @@ class TestOneWindow(unittest.TestCase):
             self.assertIn("На осмотр", page)
         finally:
             server.shutdown()
+
+    def test_model_buttons(self) -> None:
+        """Кнопки моделей: Civic, Corolla, Camry, Accord — каждая только своя модель; можно несколько сразу."""
+        def hit(key: str, make: str, model: str) -> bool:
+            want, rx = app.MODEL_BUTTONS[key]
+            return make.lower() == want and bool(re.search(rx, model, re.I))
+        self.assertTrue(hit("camry", "Toyota", "Camry SE"))
+        self.assertTrue(hit("camry", "Toyota", "Camry Hybrid LE"))
+        self.assertFalse(hit("camry", "Toyota", "Camry Solara SE"))
+        self.assertFalse(hit("camry", "Honda", "Camry SE"))
+        self.assertTrue(hit("accord", "Honda", "Accord Sport"))
+        self.assertTrue(hit("accord", "Honda", "Accord Hybrid EX-L"))
+        self.assertFalse(hit("accord", "Honda", "Accord Crosstour EX"))
+        self.assertFalse(hit("corolla", "Toyota", "Corolla Cross LE"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            page = urllib.request.urlopen(base + "/").read().decode("utf-8")
+            for name in ("Honda Civic", "Toyota Corolla", "Toyota Camry", "Honda Accord"):
+                self.assertIn(name, page)
+            every = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1").read())["rows"]
+            got = json.loads(urllib.request.urlopen(base + "/api/rows?passed=1&models=civic,camry,accord").read())["rows"]
+        finally:
+            server.shutdown()
+        want = [r for r in every if any(hit(k, str(r.get("make", "")), f"{r.get('model', '')} {r.get('trim', '')}")
+                                        for k in ("civic", "camry", "accord"))]
+        self.assertTrue(want)
+        self.assertEqual(sorted(r.get("vin") or r.get("lot_number") for r in got), sorted(r.get("vin") or r.get("lot_number") for r in want))
 
 
 if __name__ == "__main__":
