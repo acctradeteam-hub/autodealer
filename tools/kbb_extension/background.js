@@ -3,7 +3,7 @@
      запоминает машины автопилота — вкладка спросит их сама;
    — закрывает вкладку kbb.com, когда автопилот закончил (просит сама вкладка);
    — берёт у окна программы (только 127.0.0.1:8765, ваш компьютер) тексты заметок для CarMax и Manheim. */
-importScripts('auto_collect.js', 'photo_check.js', 'auction_join.js', 'kbb_week.js', 'remote_cmd.js');   // + команды с телефона   // автосбор CarMax (чт 18:00, пт 7:00); «📷 Проверить фото»; запись торгов по понедельникам; KBB на неделю (чт 18:00 → пт 9:00)
+importScripts('auto_collect.js', 'photo_check.js', 'auction_join.js', 'kbb_week.js', 'remote_cmd.js', 'carfax_auto.js');   // + Carfax сам (машинам с KBB)   // + команды с телефона   // автосбор CarMax (чт 18:00, пт 7:00); «📷 Проверить фото»; запись торгов по понедельникам; KBB на неделю (чт 18:00 → пт 9:00)
 
 var favQueue = [];
 var favTimer = null;
@@ -105,7 +105,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
   }
   /* Вкладка Carfax Online спрашивает: её открыли по кнопке «📄 Carfax»? Какой VIN? */
   if (msg && msg.type === 'cfo-job' && sender.tab) {
-    chrome.storage.session.get('cfo-' + sender.tab.id, function (got) { reply({ vin: (got || {})['cfo-' + sender.tab.id] || '' }); });
+    chrome.storage.session.get(['cfo-' + sender.tab.id, 'cfo-auto-' + sender.tab.id], function (got) {
+      got = got || {};
+      reply({ vin: got['cfo-' + sender.tab.id] || '', auto: !!got['cfo-auto-' + sender.tab.id] });
+    });
     return true;
   }
   /* Фото на карточке лота CarMax — в программу: машина больше не «без фото», если CarMax их добавил. */
@@ -149,12 +152,12 @@ function laCarfaxStatus(vin, status, note) {
 /* Carfax по VIN: кнопка «📄 Carfax» в окне на Mac или с телефона (remote_cmd.js). Отчёт — на Carfax Online
    (carfaxonline.com/vhr/<VIN>) с вашим входом в этом Chrome; вкладка в фоне, carfax_online.js отдаёт текст и закрывает её. */
 var CFO_REPORT = 'https://www.carfaxonline.com/vhr/';
-function laCarfaxOrder(vin) {
+function laCarfaxOrder(vin, auto) {             // auto — «Carfax сам» (carfax_auto.js): не вышло — вкладку закрыть
   vin = String(vin || '').toUpperCase();
   if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) { return; }
   chrome.tabs.create({ url: CFO_REPORT + vin, active: false }, function (tab) {
     void chrome.runtime.lastError;
-    if (tab) { var item = {}; item['cfo-' + tab.id] = vin; chrome.storage.session.set(item); }
+    if (tab) { var item = {}; item['cfo-' + tab.id] = vin; item['cfo-auto-' + tab.id] = !!auto; chrome.storage.session.set(item); }
   });
   laCarfaxStatus(vin, 'sent');
 }
@@ -176,7 +179,11 @@ chrome.runtime.onMessage.addListener(function (msg, sender, reply) {
       .then(function (r) { return r.json(); }).then(reply, function () { reply({}); });
     return true;
   }
-  if (msg.type === 'carfax-status' && msg.vin) { laCarfaxStatus(String(msg.vin).toUpperCase(), String(msg.status || ''), String(msg.note || '')); return; }
+  if (msg.type === 'carfax-status' && msg.vin) {
+    laCarfaxStatus(String(msg.vin).toUpperCase(), String(msg.status || ''), String(msg.note || ''));
+    if (msg.auto && /^(done|error)$/.test(String(msg.status || ''))) { laCarfaxAutoDone(); }   // следующая машина — сразу
+    return;
+  }
   if (msg.type === 'carfax-show' && sender.tab) { chrome.tabs.update(sender.tab.id, { active: true }, function () { void chrome.runtime.lastError; }); return; }
   if (msg.type === 'carfax-close' && sender.tab) { chrome.tabs.remove(sender.tab.id, function () { void chrome.runtime.lastError; }); return; }
   if (msg.type === 'carfax-pdf') {

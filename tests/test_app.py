@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -1383,7 +1384,7 @@ class ManualInspectTest(unittest.TestCase):
             self.assertIn("1HGCR2F38DA104530", app.load_manual())
             self.assertNotIn("1HGCR2F38DA104530", app.load_rejected())          # добавили после отбоя — отбой снят
             app.set_manual("1HGCR2F38DA104530", False)
-            self.assertEqual(app.load_manual(), {})
+            self.assertTrue(app.load_manual()["1HGCR2F38DA104530"]["off"])          # убрали — помним (по KBB не вернётся)
         car = {"auction": "CarMax", "vin": "V1", "year": "2013", "make": "Honda", "model": "Accord", "lot_number": "A/3",
                "favorite_known": "1", "favorite": "", "calc_verdict": "ПРОПУСТИТЬ: повреждение рамы / кузова"}
         self.assertEqual(inspection.why(car), "")                                    # не в избранном, стоп-фактор — не в списке
@@ -2036,7 +2037,7 @@ class RemoteAccessTest(unittest.TestCase):
             self.assertIn(want, app.PAGE)
         ext = ROOT / "tools" / "kbb_extension"
         self.assertIn("'remote_cmd.js'", (ext / "background.js").read_text(encoding="utf-8"))
-        self.assertIn("function laCarfaxOrder(vin)", (ext / "background.js").read_text(encoding="utf-8"))
+        self.assertIn("function laCarfaxOrder(vin, auto)", (ext / "background.js").read_text(encoding="utf-8"))
         code = (ext / "remote_cmd.js").read_text(encoding="utf-8")
         for fn in ("autoRun", "kwTick", "photosStart", "laCarfaxOrder", "joinRun", "joinGet", "joinPut"):
             self.assertIn(fn, code)
@@ -2128,6 +2129,145 @@ class CarfaxInspectTest(unittest.TestCase):
         clean = carfax.parse("CARFAX Vehicle History Report\nCARFAX 1-Owner\nNo accidents or damage reported to CARFAX\nOwned in: California\n" + "x " * 800)
         self.assertEqual(carfax.inspect_points(clean), [])                               # чистая машина — ничего лишнего
 
+
+class InspectButtonTest(unittest.TestCase):
+    """«На осмотр»: зелёная сразу (без пересчёта всех машин); машины, уже попавшие в список сами (KBB, ставка), — тоже
+    зелёные; «убрать» помнится — по KBB машина не возвращается."""
+
+    def test_reasons(self) -> None:
+        from lot_analyzer import inspection
+        car = {"auction": "CarMax", "vin": "V1", "year": "2018", "make": "Toyota", "model": "Camry", "lot_number": "A/3",
+               "location": "Murrieta, CA", "kbb_private_party_usd": "15000"}
+        from unittest import mock
+        with mock.patch.object(inspection, "VISIT_PLACES", _REAL_VISIT_PLACES):
+            self.assertEqual(inspection.on_list(car), "просчитана (KBB)")
+            self.assertEqual(inspection.on_list(dict(car, inspect_off="2026-11-14")), "")              # убрали сами
+            self.assertEqual(inspection.on_list(dict(car, inspect_off="2026-11-14", my_proxy_usd="9000")), "ставка")
+            self.assertEqual(inspection.on_list(dict(car, location="Las Vegas, NV")), "")              # туда не ездите
+            self.assertEqual(inspection.on_list(dict(car, location="Las Vegas, NV", inspect_manual="2026-11-14")), "вручную из программы")
+        self.assertIn("insp_why", app.window_row(dict(car), load_costs(COSTS)))
+
+    def test_fast_mark(self) -> None:
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html")
+        pages, costs, cache = app.find_pages([tmp], 10 ** 6), load_costs(COSTS), app.PageCache()
+        with mock.patch.object(app, "MANUAL_PATH", tmp / "inspect_manual.json"), mock.patch.object(app, "REJECTED_PATH", tmp / "rejected.json"):
+            app._ROWS_MEMO.clear()
+            app._ROWS_COSTS.clear()
+            vin = next(r["vin"] for r in app.search_rows(pages, cache, costs, "") if r.get("vin"))
+            real = app._search_rows
+            app._search_rows = lambda *a, **k: (_ for _ in ()).throw(AssertionError("пересчёт всех машин"))
+            try:
+                self.assertTrue(app.mark_inspect(vin, True, "car"))
+                row = next(r for r in app.search_rows(pages, cache, costs, "") if r.get("vin") == vin)
+                self.assertTrue(row.get("inspect_manual"))
+                self.assertEqual(app.window_row(row, costs)["insp_why"], "вручную из программы")
+                self.assertTrue(app.mark_inspect(vin, False))
+                row = next(r for r in app.search_rows(pages, cache, costs, "") if r.get("vin") == vin)
+            finally:
+                app._search_rows = real
+            self.assertFalse(row.get("inspect_manual"))
+            self.assertTrue(row.get("inspect_off"))
+            app._ROWS_MEMO.clear()
+            app._ROWS_COSTS.clear()
+            full = next(r for r in app.search_rows(pages, cache, costs, "") if r.get("vin") == vin)    # заново — то же
+            self.assertEqual((full.get("inspect_manual", ""), bool(full.get("inspect_off"))), ("", True))
+        app._ROWS_MEMO.clear()
+        app._ROWS_COSTS.clear()
+        # окно: кнопка зеленеет сразу, не дожидаясь ответа программы
+        self.assertIn("render(lastData)}", app.PAGE.split("async function inspectAdd")[1].split("try{")[0])
+        self.assertIn("${x.insp_why?`<button type=\"button\" class=\"tab on\"", app.PAGE)
+
+class CarfaxAutoTest(unittest.TestCase):
+    """Carfax сам: машине с KBB (любым, при любой цене) расширение по очереди открывает отчёт на Carfax Online."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patch = mock.patch.object(app, "CARFAX_AUTO_PATH", self.tmp / "carfax_auto.json")
+        self.patch.start()
+        app.CARFAX_STATUS.clear()
+        app.CARFAX_AUTO_RECENT.clear()
+
+    def tearDown(self) -> None:
+        self.patch.stop()
+        app.CARFAX_STATUS.clear()
+        app.CARFAX_AUTO_RECENT.clear()
+
+    @staticmethod
+    def car(vin: str, **kw) -> dict:
+        return {"vin": vin, "year": "2018", "make": "Toyota", "model": "Camry", "kbb_private_party_usd": "14000",
+                "sale_date": "Nov 16", **kw}
+
+    def test_queue(self) -> None:
+        rows = [self.car("4T1B11HK1JU000001", sale_date="Nov 17"), self.car("4T1B11HK1JU000002"),
+                self.car("4T1B11HK1JU000003", carfax="1 владелец"),                     # Carfax уже есть
+                self.car("4T1B11HK1JU000004", kbb_private_party_usd=""),               # KBB нет
+                self.car("4T1B11HK1JU000005", kbb_private_party_usd="9000", kbb_from_window_field="1"),
+                self.car("4T1B11HK1JU000006", passed="1"), self.car("4T1B11HK1JU000007", rejected="2026-11-14"),
+                self.car("4T1B11HK1JU000008", inspect_off="2026-11-14"),
+                self.car("4T1B11HK1JU000009", kbb_private_party_usd="3500", calc_verdict="ПРОПУСТИТЬ: рама")]   # любая цена, любой вердикт
+        costs = load_costs(COSTS)
+        self.assertEqual(costs["carfax_auto"]["on"], True)
+        t = 1_800_000_000.0
+        first = app.carfax_next(rows, costs, now=t)
+        self.assertEqual(first["vin"], "4T1B11HK1JU000002")                  # ближайшие торги — первыми
+        self.assertEqual(first["left"], 2)
+        app.CARFAX_STATUS[first["vin"]] = {"status": "opened", "at": t + 1}
+        self.assertEqual(app.carfax_next(rows, costs, now=t + 30)["why"], "busy")          # по одной
+        app.CARFAX_STATUS[first["vin"]] = {"status": "done", "at": t + 10}
+        self.assertEqual(app.carfax_next(rows, costs, now=t + 15)["why"], "busy")          # пауза между отчётами (20 с)
+        second = app.carfax_next(rows, costs, now=t + 45)
+        third = app.carfax_next(rows, costs, now=t + 70)
+        self.assertEqual({second["vin"], third["vin"]}, {"4T1B11HK1JU000001", "4T1B11HK1JU000009"})
+        self.assertEqual(app.carfax_next(rows, costs, now=t + 100)["why"], "done")         # повтор — не раньше чем через 2 часа
+        self.assertEqual(app.load_carfax_auto()["4T1B11HK1JU000002"]["n"], 1)
+        # вход: пауза, пока отчёт не откроется
+        app.CARFAX_STATUS["4T1B11HK1JU000001"] = {"status": "login", "at": t + 200}
+        later = t + app.CARFAX_AUTO_RETRY + 300
+        self.assertEqual(app.carfax_next(rows, costs, now=t + 300)["why"], "login")
+        app.CARFAX_STATUS["4T1B11HK1JU000001"] = {"status": "done", "at": t + 400}
+        self.assertNotEqual(app.carfax_next(rows, costs, now=later)["why"], "login")
+        # три ошибки подряд — пауза на час
+        app.CARFAX_STATUS.clear()
+        app.CARFAX_AUTO_RECENT[:] = ["A" * 17, "B" * 17, "C" * 17]
+        for v in app.CARFAX_AUTO_RECENT:
+            app.CARFAX_STATUS[v] = {"status": "error", "at": later}
+        self.assertEqual(app.carfax_next(rows, costs, now=later + 60)["why"], "errors")
+        self.assertNotEqual(app.carfax_next(rows, costs, now=later + 3700)["why"], "errors")
+        # выключено, лимит за сутки
+        self.assertEqual(app.carfax_next(rows, {"carfax_auto": {"on": False}}, now=later + 9000)["why"], "off")
+        self.assertEqual(app.carfax_next(rows, {"carfax_auto": {"per_day": 1}}, now=later + 3800)["why"], "limit")
+        summary = app.carfax_auto_summary(rows, costs)
+        self.assertEqual((summary["kbb"], summary["have"]), (4, 1))
+
+    def test_extension(self) -> None:
+        ext = ROOT / "tools" / "kbb_extension"
+        auto = (ext / "carfax_auto.js").read_text(encoding="utf-8")
+        self.assertIn("/api/carfax_next", auto)
+        self.assertIn("'X-LA': '1'", auto)
+        self.assertIn("laCarfaxOrder(d.vin, true)", auto)
+        self.assertNotIn(".click(", auto)
+        self.assertIn("'carfax_auto.js'", (ext / "background.js").read_text(encoding="utf-8"))
+        online = (ext / "carfax_online.js").read_text(encoding="utf-8")
+        self.assertIn("closeIfAuto()", online)
+        self.assertNotIn(".click(", online)
+        self.assertIn("function drawCarfaxAuto(d)", app.PAGE)
+        self.assertIn('<div id="cfauto"', app.PAGE)
+
+    def test_endpoint_needs_extension(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}/api/carfax_next"
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(urllib.request.Request(base, data=b"{}", method="POST"))
+            self.assertEqual(err.exception.code, 403)
+            req = urllib.request.Request(base, data=b"{}", method="POST", headers={"X-LA": "1", "Content-Type": "application/json"})
+            self.assertEqual(json.loads(urllib.request.urlopen(req).read())["vin"], "")      # страниц нет — заказывать нечего
+        finally:
+            server.shutdown()
 
 class FastBidTest(unittest.TestCase):
     """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""

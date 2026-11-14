@@ -66,6 +66,8 @@ def why(row: dict[str, str]) -> str:
     """Почему машина в списке на осмотр (графа «Добавлено»); пусто — её в списке нет."""
     if row.get("my_proxy_usd"):
         return "ставка"                                # ставка поставлена — в списке и на телефоне всегда, что бы ни было
+    if row.get("inspect_off"):
+        return ""                                      # «убрать» в окне — сами решили не смотреть (и KBB не вернёт)
     if row.get("inspect_manual") and not row.get("rejected"):
         return "вручную из программы"                  # «На осмотр» в окне — сами решили осмотреть
     return _why_auto(row)
@@ -105,6 +107,12 @@ PLACE_ORDER = ("Oceanside", "Murrieta", "Chino")
 # Куда вы можете доехать на осмотр. Машины остальных площадок в список на осмотр и на телефон не попадают
 # (и со ставкой тоже — их не осмотреть); исключение — «На осмотр» в окне: вы сами выбрали машину.
 VISIT_PLACES = ("Oceanside", "Murrieta", "Chino")
+
+
+def on_list(row: dict[str, str]) -> str:
+    """Почему машина в списке на осмотр (как в inspection_rows: площадка, куда вы ездите, или «На осмотр» вручную); пусто — её там нет."""
+    reason = why(row)
+    return reason if reason and (can_visit(row) or reason == "вручную из программы") else ""
 
 
 def can_visit(row: dict[str, str]) -> bool:

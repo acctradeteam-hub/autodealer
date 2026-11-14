@@ -3,14 +3,17 @@
      вкладка ждёт, пока отчёт дорисуется, отдаёт его текст программе (владельцы, ДТП, титул, пробег, штаты) и закрывается.
    — Не вошли на Carfax Online: программа покажет «войдите на carfaxonline.com»; войдёте — отчёт откроется сам.
    — Отчёт, открытый вручную, тоже уходит в программу (вкладка остаётся открытой).
+   — «Carfax сам» (машинам с KBB, carfax_auto.js): то же, но если отчёт не вышел — вкладка закрывается (не копятся).
    Расширение ничего не нажимает на сайте: только открывает адрес отчёта и читает текст страницы. */
 (function () {
   var started = Date.now();
   var LIMIT_MS = 3 * 60 * 1000;
   var job = '';                      // VIN заказа, если вкладку открыло расширение по кнопке «📄 Carfax»
+  var auto = false;                  // заказ «Carfax сам» — не по кнопке
   var sentKey = '', saidLogin = false, lastLen = -1, done = false;
   var send = function (msg, cb) { try { chrome.runtime.sendMessage(msg, function (r) { void chrome.runtime.lastError; if (cb) { cb(r); } }); } catch (e) { /* расширение обновили */ } };
-  var status = function (s, note) { if (job) { send({ type: 'carfax-status', vin: job, status: s, note: note || '' }); } };
+  var status = function (s, note) { if (job) { send({ type: 'carfax-status', vin: job, status: s, note: note || '', auto: auto }); } };
+  var closeIfAuto = function () { if (auto) { setTimeout(function () { send({ type: 'carfax-close' }); }, 1500); } };
   var vinOf = function (text) {
     var all = text.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) || [];
     var counts = {};
@@ -43,18 +46,21 @@
         if (!job) { return; }
         done = true;
         status(r && r.ok ? 'done' : 'error', r && r.ok ? '' : 'программа не прочитала отчёт');
-        if (r && r.ok) { setTimeout(function () { send({ type: 'carfax-close' }); }, 1500); }
+        if (r && r.ok) { setTimeout(function () { send({ type: 'carfax-close' }); }, 1500); } else { closeIfAuto(); }
       });
       return;
     }
     lastLen = report ? text.length : -1;
     if (job && Date.now() - started > LIMIT_MS) {
       done = true;
-      status('error', /no (records|results)|not (a )?valid vin|unable to/i.test(text) ? 'Carfax не нашёл отчёт по этому VIN' : 'отчёт не открылся за 3 минуты — вкладка Carfax Online оставлена открытой');
+      status('error', /no (records|results)|not (a )?valid vin|unable to/i.test(text) ? 'Carfax не нашёл отчёт по этому VIN'
+        : auto ? 'отчёт не открылся за 3 минуты' : 'отчёт не открылся за 3 минуты — вкладка Carfax Online оставлена открытой');
+      closeIfAuto();
     }
   };
   send({ type: 'cfo-job' }, function (r) {
     job = (r && r.vin) || '';
+    auto = !!(r && r.auto);
     if (job) { status('opened'); }
     setInterval(tick, 2000);
     tick();
