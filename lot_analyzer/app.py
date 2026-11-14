@@ -46,7 +46,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.27"
-PROGRAM_VERSION = "2026-11-14.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-14.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1458,6 +1458,23 @@ def by_place(rows: list[dict], q: dict) -> tuple[list[dict], list[list]]:
     return rows, places
 
 
+def near_places(places: list[list], costs: dict) -> dict:
+    """«📍 До 100 миль от 92620»: площадки из списка, которые ближе radius_miles (costs.json: near_places), с милями."""
+    cfg = costs.get("near_places") or {}
+    radius = float(cfg.get("radius_miles") or 100)
+    known = {str(k).lower(): float(v) for k, v in (cfg.get("places") or {}).items() if str(v).replace(".", "", 1).isdigit()}
+    out = []
+    for name, n in places:
+        low = str(name).lower()
+        miles = known.get(low)
+        if miles is None:
+            miles = next((m for k, m in known.items() if k in low and "у продавца" not in low), None)
+        if miles is not None and miles <= radius:
+            out.append([name, n, int(miles)])
+    out.sort(key=lambda x: x[2])
+    return {"zip": str(cfg.get("zip") or ""), "radius": int(radius), "places": out}
+
+
 def place_choice(q: dict) -> set[str]:
     return {p for p in str(q.get("place", "")).split("|") if p}
 
@@ -1719,7 +1736,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                                        + (f"PP Good ${pp:,}" if pp else "") + warn)
                     files.append(item)
                 costs_now = load_costs(costs_path)
-                payload = {"rows": [window_row(r, costs_now) for r in rows], "files": files, "total": total, "places": places, "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
+                payload = {"rows": [window_row(r, costs_now) for r in rows], "files": files, "total": total, "places": places,
+                           "near": near_places(places, costs_now), "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "nottake_total": nottake_total, "nottake_bids": nottake_bids, "take_total": take_total, "take_nobid": take_nobid, "nophoto_total": nophoto_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
                            "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "photos_status": PHOTOS_STATUS,
@@ -2474,8 +2492,16 @@ let place='';try{place=localStorage.getItem('la-place')||''}catch(e){}
 try{$('picked').checked=localStorage.getItem('la-picked')==='1'}catch(e){}
 /* Площадки — можно выбрать одну, две, три …: place = «CarMax Chino|CarMax Oxnard»; пусто — все. */
 const placeList=()=>place?place.split('|'):[];
-function setPlace(p){place=p;try{localStorage.setItem('la-place',p)}catch(e){}refresh()}
+function setPlace(p,keepNear){place=p;if(!keepNear)setNear(false);try{localStorage.setItem('la-place',p)}catch(e){}refresh()}
 function togglePlace(p){const l=placeList();setPlace((l.includes(p)?l.filter(x=>x!==p):l.concat([p])).join('|'))}
+/* «📍 До 100 миль»: все ближние площадки одним нажатием; выбор держится — придут новые списки (новая неделя,
+   новая площадка рядом) — площадки подберутся сами. Нажать площадку или «Все» — обычный выбор. */
+let nearOn=false;try{nearOn=localStorage.getItem('la-near')==='1'}catch(e){}
+function setNear(on){nearOn=on;try{localStorage.setItem('la-near',on?'1':'')}catch(e){}}
+function toggleNear(names){if(nearOn){setPlace('')}else{setNear(true);setPlace(names,true)}}
+function nearBtn(d){const n=d.near;if(!n||!n.places||!n.places.length)return '';
+ const sum=n.places.reduce((a,[,c])=>a+c,0),list=n.places.map(([p,,m])=>`${p} ~${m} миль`).join(', ');
+ return `<button type="button" class="tab${nearOn?' on':''}" data-p="${esc(n.places.map(([p])=>p).join('|'))}" onclick="toggleNear(this.dataset.p)" title="Все площадки в радиусе ${n.radius} миль от ${esc(n.zip)} одним списком (мили — примерно, по дороге): ${esc(list)}. Ещё раз — все площадки. Список — config/costs.json: near_places">📍 До ${n.radius} миль от ${esc(n.zip)} <span class="cnt">${sum}</span></button>`}
 function setPicked(on){try{localStorage.setItem('la-picked',on?'1':'')}catch(e){}refresh()}
 let showPassed=false;try{showPassed=localStorage.getItem('la-passed')==='1'}catch(e){}
 /* Сортировка списка: '' — по выгоде (как раньше), 'market' — средняя цена покупки на аукционе по возрастанию, 'market_desc' — по убыванию. */
@@ -2626,8 +2652,9 @@ const CF_TEXT={sent:'⏳ Carfax: открываю Carfax Online…',opened:'⏳ 
 function cfStatus(x){const s=CF[x.vin];if(!s||Date.now()/1000-s.at>3600||(s.status==='done'&&x.carfax))return'';
  return `<div class="${/^(login|manual|error)$/.test(s.status)?'neg':'muted'}">${esc(CF_TEXT[s.status]||s.status)}${s.note?': '+esc(s.note):''}</div>`}
 function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);drawKbbWeek(d);drawCarfaxAuto(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
-{const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'));return}}
-$('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button>`+
+if(nearOn&&d.near){const want=(d.near.places||[]).map(([p])=>p).join('|');if(want&&want!==place){setPlace(want,true);return}}
+{const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'),nearOn);return}}
+$('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button> `+nearBtn(d)+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${placeList().includes(p)?' on':''}" onclick="togglePlace(this.dataset.p)" title="Нажмите ещё площадки — они добавятся в список; нажмите снова — уберётся" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
  `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`+
  `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов закончился), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
@@ -2747,7 +2774,7 @@ function activeFilters(){const f=[];const v=id=>($(id)&&$(id).value||'').trim();
  if($('nophoto')&&$('nophoto').checked)f.push('без фото');if($('vin')&&$('vin').value.trim())f.push('VIN: '+$('vin').value.trim().toUpperCase()+' (остальные фильтры не действуют)');if(saleDay)f.push('день торгов: '+dayLabel(saleDay));if(onlyBids)f.push('только мои ставки (по прибыли)');if(onlyNotTake)f.push('только «📱 Не беру»');if(onlyTake)f.push('только «📱 Беру»');if(onlyArrived)f.push('только «фото появились»');if(showRemoved)f.push('только убранные из избранного CarMax');if(onlyReturned)f.push('только вернувшиеся после продажи');if(onlyBuyable)f.push('реально купить (потолок ≥ средней цены)');if(showRejected)f.push('только «🚫 Отбой»');if(models.length)f.push('модели: '+models.map(m=>({civic:'Honda Civic',corolla:'Toyota Corolla'}[m])).join(' + '));if(defectBy)f.push('Major-дефекты: '+({engine:'двигатель',trans:'коробка',both:'двигатель + коробка',any:'любой из двух',none:'без дефекта'}[defectBy]||defectBy));
  if(v('q'))f.push('машина: «'+v('q')+'»');if(v('y1')||v('y2'))f.push('годы '+(v('y1')||'…')+'–'+(v('y2')||'…'));if(v('miles'))f.push('пробег до '+v('miles'));
  if(v('maxbid')&&v('maxbid')!=='15000')f.push('потолок до $'+v('maxbid'));return f}
-function resetFilters(){place='';defectBy='';onlyReturned=false;onlyBuyable=false;showRejected=false;try{localStorage.setItem('la-buyable','');localStorage.setItem('la-rejected','')}catch(e){}showRemoved=false;onlyArrived=false;onlyBids=false;onlyNotTake=false;onlyTake=false;models=[];saleDay='';try{localStorage.setItem('la-day','');localStorage.setItem('la-bids','');localStorage.setItem('la-nottake','');localStorage.setItem('la-take','');localStorage.setItem('la-arrived','');localStorage.setItem('la-removed','');localStorage.setItem('la-models','');localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-returned','');localStorage.setItem('la-picked','')}catch(e){}
+function resetFilters(){place='';setNear(false);defectBy='';onlyReturned=false;onlyBuyable=false;showRejected=false;try{localStorage.setItem('la-buyable','');localStorage.setItem('la-rejected','')}catch(e){}showRemoved=false;onlyArrived=false;onlyBids=false;onlyNotTake=false;onlyTake=false;models=[];saleDay='';try{localStorage.setItem('la-day','');localStorage.setItem('la-bids','');localStorage.setItem('la-nottake','');localStorage.setItem('la-take','');localStorage.setItem('la-arrived','');localStorage.setItem('la-removed','');localStorage.setItem('la-models','');localStorage.setItem('la-place','');localStorage.setItem('la-defect','');localStorage.setItem('la-returned','');localStorage.setItem('la-picked','')}catch(e){}
  ['q','y1','y2','miles','vin'].forEach(id=>{if($(id))$(id).value=''});if($('maxbid'))$('maxbid').value='15000';if($('picked'))$('picked').checked=false;if($('nophoto'))$('nophoto').checked=false;refresh()}
 function showFilters(){drawModels();const e=$('filters');if(!e)return;const f=activeFilters();
  e.innerHTML=f.length?`<b>Включены фильтры:</b> ${esc(f.join(' · '))} — в списке не все машины. <button type="button" class="tab" onclick="resetFilters()">сбросить фильтры</button>`:''}

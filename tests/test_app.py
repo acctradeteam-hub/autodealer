@@ -2309,6 +2309,22 @@ class CarfaxAutoTest(unittest.TestCase):
         finally:
             server.shutdown()
 
+class NearPlacesTest(unittest.TestCase):
+    """«📍 До 100 миль от 92620»: ближние площадки одним нажатием (costs.json: near_places)."""
+
+    def test_near(self) -> None:
+        costs = load_costs(COSTS)
+        places = [["CarMax Murrieta", 120], ["CarMax Vegas", 80], ["Manheim California", 300], ["CarMax El Mirage", 40],
+                  ["CarMax Oxnard", 60], ["CarMax Fresno", 50], ["Manheim — у продавца (не на площадке)", 9], ["CarMax Chino", 70]]
+        near = app.near_places(places, costs)
+        self.assertEqual((near["zip"], near["radius"]), ("92620", 100))
+        self.assertEqual([p for p, _, _ in near["places"]],
+                         ["Manheim California", "CarMax Chino", "CarMax Murrieta", "CarMax Oxnard"])   # ближние — первыми; El Mirage — AZ
+        self.assertEqual(app.near_places(places, {**costs, "near_places": {**costs["near_places"], "radius_miles": 60}})["places"][-1][0],
+                         "CarMax Murrieta")
+        self.assertIn("function toggleNear(names)", app.PAGE)
+        self.assertIn("+nearBtn(d)+", app.PAGE)
+
 class FastBidTest(unittest.TestCase):
     """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""
 
