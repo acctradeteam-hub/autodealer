@@ -2061,6 +2061,12 @@ class CarfaxOnlineTest(unittest.TestCase):
               "No accidents or damage reported to CARFAX\nPersonal vehicle\nOwned in: California\n"
               + "\n".join(f"{m}/2019 Vehicle serviced - Oil and filter changed, Honda dealer, Los Angeles, CA" for m in range(1, 30)))
 
+    def test_link_names(self) -> None:
+        """Ссылки в графе Carfax подписаны понятно: «Открыть Carfax ↗», «PDF Carfax ↗» (рядом есть «Открыть лот ↗»)."""
+        self.assertIn(">Открыть Carfax ↗</a>", app.PAGE)
+        self.assertIn(">PDF Carfax ↗</a>", app.PAGE)
+        self.assertNotIn(">открыть ↗</a>", app.PAGE)
+
     def test_report_text(self) -> None:
         from lot_analyzer import carfax
         vin = "19XFC2F7XGE000001"
