@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.26"
-PROGRAM_VERSION = "2026-11-14.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.27"
+PROGRAM_VERSION = "2026-11-14.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1089,7 +1089,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     carfax.attach(rows)                              # Carfax — до расчёта: ДТП, владельцы, аренда — скидка; рама, титул — стоп
     # нет похожих в базе KBB — по вашим итогам продаж CarMax той же модели
     apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs, learning["learned"], results.load_history()))
-    # Civic / Corolla с брендированным титулом — не рассматриваем вовсе: ни в списке, ни на осмотре, ни на телефоне.
+    # Civic, Corolla, Accord, Camry, CT 200h с брендированным титулом — не рассматриваем вовсе: ни в списке, ни на осмотре, ни на телефоне.
     rows = [r for r in rows if not r.get("branded_hidden")]
     goal_bids(rows, costs)                           # ставка на 15% прибыли — под потолком (10%)
     if kbb_learning.update(rows, learning):          # прикидка → настоящий KBB: насколько ошиблись, поправка на будущее
@@ -1210,15 +1210,18 @@ def _real_kbb(row: dict) -> bool:
 
 def kbb_week_pool(row: dict) -> bool:
     """Кандидаты «KBB на неделю» (чт 18:00 → пт 9:00): популярные машины с торгами впереди, без стоп-факторов
-    (рама, титул, затопление) и без Major Engine/Transmission. Civic и Corolla — все («считаем все»), кроме брендированного титула."""
+    (рама, титул, затопление) и без Major Engine/Transmission. Civic, Corolla, Accord, Camry, CT 200h — все («считаем все»),
+    кроме брендированного титула."""
     from .inspection import major_defects
 
-    if not row.get("popular") or row.get("passed") or row.get("rejected") or row.get("branded_hidden"):
+    if row.get("passed") or row.get("rejected") or row.get("branded_hidden"):
         return False
     if not (row.get("vin") and row.get("year") and row.get("make") and parse_money(row.get("odometer_miles"))):
         return False
     if row.get("all_in"):
-        return True
+        return True                                  # Civic, Corolla, Accord, Camry, CT 200h — все, любых лет
+    if not row.get("popular"):
+        return False
     return not str(row.get("calc_verdict") or "").startswith(("ПРОПУСТИТЬ", "РИСК")) and not major_defects(row)
 
 
@@ -1243,13 +1246,17 @@ def kbb_week_summary(rows: list[dict], asked: dict[str, dict] | None = None) -> 
                             for r in failed[:20]]}
 
 
-def kbb_week_batch(rows: list[dict], costs: dict, limit: int = KBB_WEEK_BATCH) -> dict:
-    """Следующая пачка для KBB-автопилота: машины без KBB, сначала ещё не спрошенные, ближайшие торги, бо́льшая выгода."""
+def kbb_week_batch(rows: list[dict], costs: dict, limit: int = KBB_WEEK_BATCH, only_all_in: bool = False) -> dict:
+    """Следующая пачка для KBB-автопилота: машины без KBB, сначала ещё не спрошенные, Civic / Corolla / Accord / Camry /
+    CT 200h, ближайшие торги, бо́льшая выгода. only_all_in — только эти модели: KBB сразу, как они появились в списках
+    аукционов (в любой день, не дожидаясь четверга)."""
     from .inspection import _day as sale_day
 
     asked = load_kbb_week()
-    todo = [r for r in rows if kbb_week_pool(r) and not _real_kbb(r) and int(asked.get(r["vin"], {}).get("n") or 0) < KBB_WEEK_TRIES]
-    todo.sort(key=lambda r: (int(asked.get(r["vin"], {}).get("n") or 0), sale_day(r.get("sale_date", "")) or "99", -expected_gain(r)))
+    todo = [r for r in rows if kbb_week_pool(r) and not _real_kbb(r) and int(asked.get(r["vin"], {}).get("n") or 0) < KBB_WEEK_TRIES
+            and (r.get("all_in") or not only_all_in)]
+    todo.sort(key=lambda r: (int(asked.get(r["vin"], {}).get("n") or 0), 0 if r.get("all_in") else 1,
+                             sale_day(r.get("sale_date", "")) or "99", -expected_gain(r)))
     need = []
     for r in todo[:limit]:
         need.append({"v": r["vin"], "y": str(r["year"]), "mk": r["make"], "md": r.get("model", ""), "t": r.get("trim", ""),
@@ -1304,7 +1311,8 @@ def carfax_auto_pause(asked: dict[str, dict], costs: dict, now: float | None = N
 
 
 def carfax_next(rows: list[dict], costs: dict, now: float | None = None) -> dict:
-    """Следующая машина для Carfax: по одной, сначала ближайшие торги и ещё не заказанные. Заказ отмечается."""
+    """Следующая машина для Carfax: по одной, сначала ещё не заказанные, Civic / Corolla / Accord / Camry / CT 200h,
+    ближайшие торги. Заказ отмечается."""
     from .inspection import _day as sale_day
 
     now = time.time() if now is None else now
@@ -1320,7 +1328,7 @@ def carfax_next(rows: list[dict], costs: dict, now: float | None = None) -> dict
         return int(asked.get(r["vin"].upper(), {}).get("n") or 0)
     todo = [r for r in rows if carfax_auto_pool(r) and tries(r) < CARFAX_AUTO_TRIES
             and (not tries(r) or now - float(asked[r["vin"].upper()].get("at") or 0) > CARFAX_AUTO_RETRY)]
-    todo.sort(key=lambda r: (tries(r), sale_day(r.get("sale_date", "")) or "99", -expected_gain(r)))
+    todo.sort(key=lambda r: (tries(r), 0 if r.get("all_in") else 1, sale_day(r.get("sale_date", "")) or "99", -expected_gain(r)))
     if why or not todo:
         return {"vin": "", "why": why or "done", "note": note, "left": len(todo)}
     r = todo[0]
@@ -1941,7 +1949,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 costs_now = load_costs(costs_path)
                 rows = search_rows(find_pages(folders, 168), cache, costs_now, "")
                 limit = max(1, min(int(data.get("limit") or KBB_WEEK_BATCH), 40))
-                batch = kbb_week_batch(rows, costs_now, limit)
+                batch = kbb_week_batch(rows, costs_now, limit, only_all_in=bool(data.get("only_all_in")))
                 _SLOW_CACHE["kbb_week"] = (time.time(), {k: batch[k] for k in ("pool", "have", "left", "failed", "failed_cars")})   # окну — свежий счёт
                 self._send(json.dumps(batch, ensure_ascii=False).encode("utf-8"))
                 return
@@ -2699,7 +2707,7 @@ function drawKbbWeek(d){const e=$('kbbweek'),k=d.kbb_week;if(!e||!k)return;const
  if(s.busy)line+=` · <b>идёт</b>: пачек ${s.batches||0}, спрошено машин ${s.asked||0}`;else if(s.finished)line+=` · готово ${t(s.finished)}`;else if(s.started)line+=` · начато ${t(s.started)}`;
  if(s.note)line+=` — ${esc(s.note)}`;
  if(late&&k.left>0)line+=` · <b class="neg">⚠ к пятнице 9:00 не успели: осталось ${k.left}</b>`;
- e.innerHTML=`🔎 KBB на неделю (чт 18:00 → пт 9:00): ${line} <button type="button" class="tab" onclick="kbbWeekRun()" title="Взять KBB для всех кандидатов сейчас: популярные машины с торгами впереди, без стоп-факторов и Major Engine/Transmission (Civic и Corolla — все). Вкладка kbb.com в фоне, по 25 машин, закрывается сама">▶ Взять KBB сейчас</button>`}
+ e.innerHTML=`🔎 KBB на неделю (чт 18:00 → пт 9:00): ${line} <button type="button" class="tab" onclick="kbbWeekRun()" title="Взять KBB для всех кандидатов сейчас: популярные машины с торгами впереди, без стоп-факторов и Major Engine/Transmission (Civic, Corolla, Accord, Camry, CT 200h — все, и в любой день — сразу, как появились в списках). Вкладка kbb.com в фоне, по 25 машин, закрывается сама">▶ Взять KBB сейчас</button>`}
 /* «📄 Carfax сам»: каждой машине с KBB (любым, при любой цене) расширение по очереди открывает отчёт на Carfax Online. */
 function drawCarfaxAuto(d){const e=$('cfauto'),c=d.carfax_auto;if(!e||!c)return;if(!c.kbb){e.innerHTML='';return}
  let line=`машин с KBB ${c.kbb}: Carfax есть у <b>${c.have}</b>`+(c.left?`, в очереди <b>${c.left}</b>`:'')+(c.failed?`, <span title="${esc((c.failed_cars||[]).join('; '))}">не вышло ${c.failed} — закажите кнопкой «📄 Carfax»</span>`:'');
@@ -2762,14 +2770,14 @@ const fresh=x=>(x.vin||x.lot_number)&&x.year&&x.make&&x.odometer_miles&&!x.kbb_p
 const need=x=>{if(!fresh(x))return false;if(asked[x.vin||x.lot_number]){skipped++;return false}return true};
 /* Лучшие без KBB: 15 популярных, по 5 электромобилей, пикапов и остальных. */
 const quota=[['popular',15,'популярных'],['ev',5,'электромобилей'],['truck',5,'пикапов'],['other',5,'остальных']];
-/* Civic и Corolla считаем все: KBB — каждой, сверх квоты. */
+/* Civic, Corolla, Accord, Camry, CT 200h считаем все: KBB — каждой, сверх квоты. */
 const allIn=shown.filter(x=>x.all_in&&need(x));
 const picked=quota.map(([g,n])=>shown.filter(x=>x.group===g&&!x.all_in&&need(x)).slice(0,n));const list=allIn.concat(picked.flat());
 const skippedNote=skipped?` Пропущено ${skipped}: KBB для них уже запрошен за последние ${ASKED_HOURS} ч — цены придут сами.`:'';
 const f=activeFilters();
 if(!list.length){alert('У всех машин на экране, кроме «ПРОПУСТИТЬ», KBB уже есть или уже запрошен.'+skippedNote+(f.length?'\nВключены фильтры: '+f.join(' · ')+' — сбросьте их, чтобы взять остальные машины.':''));return}
 openKbb(list);rememberAsked(list);
-const why='Взято: '+(allIn.length?`Civic и Corolla — все ${allIn.length}, `:'')+quota.map(([g,n,t],i)=>`${t} ${picked[i].length} из ${n}`).join(', ')+(list.length<30?` — меньше 30, потому что у остальных машин${f.length?' на экране (фильтры: '+f.join(' · ')+')':''} KBB уже есть, уже запрошен или вердикт «ПРОПУСТИТЬ»`:'')+'.'+skippedNote+' ';
+const why='Взято: '+(allIn.length?`Civic, Corolla, Accord, Camry, CT 200h — все ${allIn.length}, `:'')+quota.map(([g,n,t],i)=>`${t} ${picked[i].length} из ${n}`).join(', ')+(list.length<30?` — меньше 30, потому что у остальных машин${f.length?' на экране (фильтры: '+f.join(' · ')+')':''} KBB уже есть, уже запрошен или вердикт «ПРОПУСТИТЬ»`:'')+'.'+skippedNote+' ';
 $('stat').textContent=why+`KBB для ${list.length} машин: на вкладке kbb.com всё идёт само (с расширением «Lot Analyzer KBB»; без него — нажмите там закладку «💾 Сохранить для анализа»). Около 5 секунд на машину, цены появятся здесь сами. Если Chrome спросит «Разрешить скачивание нескольких файлов» — разрешите.`}
 /* Машины передаются и в адресе (#la=…), и в имени вкладки — на случай, если kbb.com при переадресации потеряет хвост адреса. */
 /* С расширением «Lot Analyzer KBB» ссылки открываются соседней вкладкой в фоне — вы остаётесь в окне программы. */

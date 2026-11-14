@@ -1533,7 +1533,7 @@ class VisitPlacesTest(unittest.TestCase):
 
 
 class AllInModelsTest(unittest.TestCase):
-    """Civic и Corolla считаем все: стоп-факторы — «РИСК» с расчётом; брендированный титул — из списка совсем."""
+    """Civic, Corolla, Accord, Camry, CT 200h считаем все: стоп-факторы — «РИСК» с расчётом; брендированный титул — из списка совсем."""
 
     def test_civic_corolla_all_in(self) -> None:
         from lot_analyzer.bid import apply_to_rows
@@ -1541,7 +1541,7 @@ class AllInModelsTest(unittest.TestCase):
         base = {"auction": "CarMax", "year": "2016", "odometer_miles": "90000", "kbb_private_party_usd": "", "kbb_estimate_usd": "",
                 "retail_estimate_usd": "11000"}
         frame = dict(base, vin="V1", make="Honda", model="Civic", trim="EX", damage_primary="Structural damage")
-        accord = dict(base, vin="V2", make="Honda", model="Accord", trim="EX", damage_primary="Structural damage")
+        accord = dict(base, vin="V2", make="Nissan", model="Altima", trim="S", damage_primary="Structural damage")
         salvage = dict(base, vin="V3", make="Toyota", model="Corolla", trim="LE", title_type="Salvage")
         salvage_bid = dict(salvage, vin="V4", my_proxy_usd="3000")
         cross = dict(base, vin="V5", make="Toyota", model="Corolla Cross", trim="LE", title_type="Salvage")
@@ -1554,6 +1554,46 @@ class AllInModelsTest(unittest.TestCase):
 
     def test_kbb_for_all_civic_corolla(self) -> None:
         self.assertIn("const allIn=shown.filter(x=>x.all_in&&need(x));", app.PAGE)
+
+    def test_five_models(self) -> None:
+        """Accord, Camry, Lexus CT 200h — тоже «считаем все»; Camry Solara, Accord Crosstour, Corolla Cross — нет."""
+        from lot_analyzer.bid import all_in_model
+        costs = load_costs(COSTS)
+        yes = [("Honda", "Civic", "EX"), ("Toyota", "Corolla", "LE"), ("Honda", "Accord", "Sport"), ("Honda", "Accord Hybrid", "EX-L"),
+               ("Toyota", "Camry", "SE"), ("Toyota", "Camry Hybrid", "LE"), ("Lexus", "CT 200h", "Premium"), ("Lexus", "Ct 200H Hybrid", "")]
+        no = [("Toyota", "Camry Solara", "SE"), ("Honda", "Accord Crosstour", "EX"), ("Toyota", "Corolla Cross", "LE"),
+              ("Lexus", "ES 300h", ""), ("Honda", "CR-V", "EX"), ("Toyota", "Avalon", "XLE")]
+        for make, model, trim in yes:
+            self.assertTrue(all_in_model({"make": make, "model": model, "trim": trim}, costs), (make, model))
+        for make, model, trim in no:
+            self.assertFalse(all_in_model({"make": make, "model": model, "trim": trim}, costs), (make, model))
+
+    def test_kbb_right_after_lists(self) -> None:
+        """Вне «KBB на неделю» (любой день): пачка KBB — только эти пять моделей, сразу; в общей пачке — они первыми;
+        в очереди Carfax — тоже первыми."""
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        car = {"year": "2018", "odometer_miles": "90000", "popular": "1", "sale_date": "Nov 16"}
+        rows = [dict(car, vin="2HGFC2F50JH000001", make="Honda", model="Civic", all_in="1", sale_date="Nov 17"),
+                dict(car, vin="JTDKBRFU0J3000002", make="Toyota", model="Prius", sale_date="Nov 16"),
+                dict(car, vin="JTHKD5BH0E2000003", make="Lexus", model="CT 200h", all_in="1", sale_date="Nov 18"),
+                dict(car, vin="1HGCV1F30JA000004", make="Honda", model="Accord", all_in="1", kbb_private_party_usd="15000")]
+        with mock.patch.object(app, "KBB_WEEK_PATH", tmp / "kbb_week.json"), mock.patch.object(app, "kbb_week_summary", return_value={}):
+            only = app.kbb_week_batch([dict(r) for r in rows], load_costs(COSTS), 25, only_all_in=True)
+            self.assertEqual([c["v"] for c in only["cars"]], ["2HGFC2F50JH000001", "JTHKD5BH0E2000003"])   # Prius — ждёт четверга
+        with mock.patch.object(app, "KBB_WEEK_PATH", tmp / "kbb_week2.json"), mock.patch.object(app, "kbb_week_summary", return_value={}):
+            week = app.kbb_week_batch([dict(r) for r in rows], load_costs(COSTS), 25)
+            self.assertEqual([c["v"] for c in week["cars"]], ["2HGFC2F50JH000001", "JTHKD5BH0E2000003", "JTDKBRFU0J3000002"])
+        with mock.patch.object(app, "CARFAX_AUTO_PATH", tmp / "carfax_auto.json"):
+            app.CARFAX_STATUS.clear()
+            app.CARFAX_AUTO_RECENT.clear()
+            both = [dict(car, vin="JTDKBRFU0J3000005", make="Toyota", model="Prius", kbb_private_party_usd="12000", sale_date="Nov 16"),
+                    dict(car, vin="1HGCV1F30JA000006", make="Honda", model="Accord", all_in="1", kbb_private_party_usd="15000", sale_date="Nov 18")]
+            self.assertEqual(app.carfax_next(both, load_costs(COSTS), now=1_800_000_000.0)["vin"], "1HGCV1F30JA000006")
+            app.CARFAX_AUTO_RECENT.clear()
+        week_js = (ROOT / "tools" / "kbb_extension" / "kbb_week.js").read_text(encoding="utf-8")
+        self.assertIn("only_all_in: prio", week_js)
+        self.assertIn("var prio = !thu && !manual;", week_js)
 
 
 class NotTakeTest(unittest.TestCase):

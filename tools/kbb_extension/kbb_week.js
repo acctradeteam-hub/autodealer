@@ -1,6 +1,8 @@
 /* «KBB на неделю»: с четверга 18:00 до пятницы 9:00 расширение само берёт настоящий KBB у всех кандидатов недели —
    популярных машин с торгами впереди, без стоп-факторов (рама, титул) и без Major Engine/Transmission
-   (Civic и Corolla — все). Кого спрашивать, решает программа (/api/kbb_week).
+   (Civic, Corolla, Accord, Camry, Lexus CT 200h — все). Кого спрашивать, решает программа (/api/kbb_week).
+   — Civic, Corolla, Accord, Camry, CT 200h — в любой день, сразу как появились в списках аукционов (проверка каждые
+     5 минут): KBB этим машинам, не дожидаясь четверга; Carfax за ним заказывается сам (carfax_auto.js).
    — Сначала списки CarMax (автосбор, auto_collect.js: четверг 18:00 и ещё раз пятница 7:00 — новые машины).
    — Потом пачками по 25 машин: отдельное окно Chrome с kbb.com (KBB-автопилот, content.js), закрывается само;
      следующая пачка — после закрытия, проверка каждые 5 минут.
@@ -61,10 +63,13 @@ function kwTick(force) {
         var now = new Date(), thu = kwWeekStart(now);
         if (force) { st.manual_until = Date.now() + KW_MANUAL_MS; st.finished = null; }
         var manual = !!(st.manual_until && Date.now() < st.manual_until);
-        if (!thu && !manual) { done(false); return; }
-        var week = thu ? kwIso(thu) : kwIso(now);
-        if (st.week !== week) { st = { week: week, manual_until: st.manual_until, tab: st.tab }; }   // новая неделя — счёт с нуля
-        st.deadline = thu ? kwDeadline(thu).getTime() : null;
+        /* Вне «KBB на неделю»: только Civic, Corolla, Accord, Camry, CT 200h — сразу, как появились в списках. */
+        var prio = !thu && !manual;
+        if (!prio) {
+          var week = thu ? kwIso(thu) : kwIso(now);
+          if (st.week !== week) { st = { week: week, manual_until: st.manual_until, tab: st.tab }; }   // новая неделя — счёт с нуля
+          st.deadline = thu ? kwDeadline(thu).getTime() : null;
+        }
         if (st.tab) {
           var alive = await kwTabAlive(st.tab.id);
           if (alive && Date.now() - st.tab.at < KW_TAB_MAX_MS) { kwSave(st); done(false); return; }
@@ -72,12 +77,13 @@ function kwTick(force) {
           st.tab = null;
         }
         /* Сначала списки CarMax: автосбор этой недели (чт 18:00, пт 7:00) — без него программа не знает машин. */
-        if (typeof autoRun === 'function' && !autoBusy) { await autoRun(false); }
-        if (typeof autoBusy !== 'undefined' && autoBusy) { st.note = 'жду автосбор CarMax'; kwSave(st); done(false); return; }
+        if (!prio && typeof autoRun === 'function' && !autoBusy) { await autoRun(false); }
+        if (typeof autoBusy !== 'undefined' && autoBusy) { if (!prio) { st.note = 'жду автосбор CarMax'; kwSave(st); } done(false); return; }
         var res = await fetch(KW_API, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LA': '1' },
-          body: JSON.stringify({ action: 'batch', limit: KW_BATCH }) }).then(function (r) { return r.json(); }).catch(function () { return null; });
-        if (!res) { st.note = 'программа не отвечает — запустите её'; kwSave(st); done(false); return; }
+          body: JSON.stringify({ action: 'batch', limit: KW_BATCH, only_all_in: prio }) }).then(function (r) { return r.json(); }).catch(function () { return null; });
+        if (!res) { if (!prio) { st.note = 'программа не отвечает — запустите её'; kwSave(st); } done(false); return; }
         if (!res.cars || !res.cars.length) {
+          if (prio) { if (st.note) { st.note = ''; kwSave(st); } done(false); return; }
           if (!st.finished) { st.finished = Date.now(); }
           st.note = '';
           kwSave(st);
@@ -86,13 +92,17 @@ function kwTick(force) {
         }
         var tab = await kwOpen(res.url, res.cars_json || '');
         if (!tab) { st.note = 'не открылось окно Chrome для kbb.com'; kwSave(st); done(false); return; }
-        st.started = st.started || Date.now();
-        st.finished = null;
-        st.tab = { id: tab.id, at: Date.now(), n: res.cars.length };
-        st.batches = (st.batches || 0) + 1;
-        st.asked = (st.asked || 0) + res.cars.length;
-        st.last = Date.now();
-        st.note = '';
+        st.tab = { id: tab.id, at: Date.now(), n: res.cars.length, prio: prio };
+        if (prio) {
+          st.note = 'новые Civic / Corolla / Accord / Camry / CT 200h в списках — KBB для ' + res.cars.length + ' машин';
+        } else {
+          st.started = st.started || Date.now();
+          st.finished = null;
+          st.batches = (st.batches || 0) + 1;
+          st.asked = (st.asked || 0) + res.cars.length;
+          st.last = Date.now();
+          st.note = '';
+        }
         kwSave(st);
         done(true);
       } catch (e) {
@@ -108,6 +118,7 @@ function kwTick(force) {
 chrome.tabs.onRemoved.addListener(function (id) {
   kwState(function (st) {
     if (st.tab && st.tab.id === id) {
+      if (st.tab.prio) { st.note = ''; }
       st.tab = null;
       kwSave(st);                                         // окну: пачка закончилась
       setTimeout(function () { kwTick(false); }, 60000);

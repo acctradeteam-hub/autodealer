@@ -778,7 +778,7 @@ def hybrid_high_miles(data: "BidInput", costs: dict) -> bool:
 
 
 def all_in_model(row: dict[str, str], costs: dict) -> bool:
-    """Honda Civic, Toyota Corolla (costs: all_in_models) — их считаем все, со стоп-факторами тоже."""
+    """Civic, Corolla, Accord, Camry, Lexus CT 200h (costs: all_in_models) — их считаем все, со стоп-факторами тоже."""
     models = (costs.get("all_in_models") or {}).get("models") or []
     make, model = str(row.get("make", "")).strip().lower(), squeeze(f"{row.get('model', '')} {row.get('trim', '')}")
     return any(make == m.lower() and re.search(p, model, re.I) for m, p in models)
@@ -863,7 +863,7 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
         data = input_from_row(row)
         row["all_in"] = row["branded_hidden"] = ""
         if all_in_model(row, costs):
-            # Civic / Corolla: считаем все — стоп-факторы дают «РИСК» с полным расчётом, а не «ПРОПУСТИТЬ».
+            # Civic, Corolla, Accord, Camry, CT 200h: считаем все — стоп-факторы дают «РИСК» с полным расчётом, а не «ПРОПУСТИТЬ».
             data.consider = True
             row["all_in"] = "1"
             if (costs.get("all_in_models") or {}).get("hide_branded_title") and branded_title(row) and not parse_money(row.get("my_proxy_usd")):
