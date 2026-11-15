@@ -2339,6 +2339,23 @@ class KbbBmwRetryTest(unittest.TestCase):
             got = app.load_kbb_week()
         self.assertEqual(sorted(got), ["2HGFC2F50JH000003", "WBA5B3C50ED000002"])
 
+class ListOrderTest(unittest.TestCase):
+    """«По выгоде»: одним списком по «Прибыль по средней» (и с настоящим KBB, и с прикидкой), под чертой — что
+    программа брать не советует, в самом низу — без титула на руках. Раньше список шёл двумя кусками."""
+
+    def test_order(self) -> None:
+        def car(name, verdict, profit):
+            return {"vin": name, "group": "popular", "calc_verdict": verdict, "calc_profit_market_usd": profit}
+        rows = [car("real3000", "МОЖНО до $9,000", "3000"), car("est5000", "НУЖЕН KBB: предварительно до $12,000 (прикидка)", "5000"),
+                car("skip9000", "ПРОПУСТИТЬ: повреждение рамы / кузова", "9000"), car("risk4000", "РИСК: рама; МОЖНО до $8,000", "4000"),
+                car("notitle9500", "ПРОПУСТИТЬ: нет титула на руках (Title Absent)", "9500"), car("bad100", "НЕВЫГОДНО: потолок ниже", "100"),
+                car("real-500", "ОСМОТР: до $7,000, если дефект не подтвердится", "-500"), car("noprofit", "МОЖНО до $5,000", "")]
+        got = [r["vin"] for r in sorted(rows, key=app.list_order)]
+        self.assertEqual(got, ["est5000", "risk4000", "real3000", "real-500", "noprofit", "skip9000", "bad100", "notitle9500"])
+        self.assertEqual([app.list_tier(r) for r in rows], [0, 0, 1, 0, 2, 1, 0, 0])
+        self.assertIn("sepRow(x,seenTier)+", app.PAGE)
+        self.assertIn("const TIER_SEP=", app.PAGE)
+
 class FastBidTest(unittest.TestCase):
     """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""
 
