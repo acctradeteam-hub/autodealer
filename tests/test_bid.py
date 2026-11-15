@@ -224,6 +224,11 @@ class TestStrategySettings(unittest.TestCase):
         # Roseville (под Сакраменто) — доставка как Sacramento, не $0
         self.assertEqual(transport_cost("Roseville, CA", costs), costs["transport_by_location"]["Sacramento"])
         self.assertEqual(transport_cost("CarMax Roseville Auction Center", costs), 450)
+        # Oxnard — $200; Oceanside, Murrieta, Chino — забираете сами; El Mirage — Аризона (под Phoenix), $450
+        self.assertEqual(transport_cost("Oxnard, CA", costs), 200)
+        for near in ("Oceanside, CA", "Murrieta, CA", "Chino, CA"):
+            self.assertEqual(transport_cost(near, costs), 0, near)
+        self.assertEqual(transport_cost("El Mirage, AZ", costs), 450)
         far =calculate(BidInput(auction="CarMax", location="Fresno, CA", kbb_private_party=10000, history_text="clean"), dict(costs, budget_max_bid_usd=0))
         near = calculate(BidInput(auction="CarMax", location="Chino, CA", kbb_private_party=10000, history_text="clean"), dict(costs, budget_max_bid_usd=0))
         self.assertLess(far.max_bid, near.max_bid)

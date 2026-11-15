@@ -57,10 +57,10 @@
   "_mmr_retail": "Последний запасной вариант: оптовая оценка (MMR, опт аукциона) × этот коэффициент. Вы покупаете около опта и продаёте на Facebook примерно на 30–60% дороже; 1.3 — осторожно. 0 — не использовать.",
   "mmr_retail_factor": 1.3,
 
-  "_transport": "Площадки, откуда забираете сами (Oceanside, Murrieta, Chino, Oxnard, Manheim рядом), — 0. Когда начнёте возить перевозчиком и оттуда, поставьте сумму.",
+  "_transport": "Площадки, откуда забираете сами (Oceanside, Murrieta, Chino, Manheim рядом), — 0. Когда начнёте возить перевозчиком и оттуда, поставьте сумму.",
   "transport_usd": 0,
   "_transport_by_location": "Доставка с дальних площадок (перевозчик) — вычитается из прибыли и потолка, в окне видна у машины («🚚 доставка»). Площадка ищется по вхождению названия в «Локацию» лота. Остальные — transport_usd (забираете сами). El Mirage — это Аризона (под Phoenix).",
-  "transport_by_location": {"Vegas": 350, "Las Vegas": 350, "Henderson": 350, "Fresno": 300, "Pleasanton": 400, "Fremont": 400, "Sacramento": 450, "Rocklin": 450, "Roseville": 450, "Phoenix": 450, "El Mirage": 450, "Chandler": 450, "Tucson": 500, "Reno": 500, "San Francisco": 400},
+  "transport_by_location": {"Oxnard": 200, "Vegas": 350, "Las Vegas": 350, "Henderson": 350, "Fresno": 300, "Pleasanton": 400, "Fremont": 400, "Sacramento": 450, "Rocklin": 450, "Roseville": 450, "Phoenix": 450, "El Mirage": 450, "Chandler": 450, "Tucson": 500, "Reno": 500, "San Francisco": 400},
   "_out_of_state": "Лот в другом штате, а в transport_by_location его нет — закладывается эта сумма. home_state — ваш штат.",
   "home_state": "CA",
   "_near_places": "Кнопка окна «📍 До 100 миль от 92620»: площадки в радиусе radius_miles от zip — примерно миль по дороге от Irvine 92620. Название — как на кнопке площадки (можно часть: «Chino»). Manheim California — Anaheim, Manheim Southern California — Fontana. CarMax El Mirage — это Аризона (под Phoenix), не сюда. Нужна ещё площадка — допишите, лишняя — уберите.",
