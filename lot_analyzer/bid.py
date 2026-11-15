@@ -441,10 +441,18 @@ def _usd(value: float) -> str:
 MAJOR_DEFECT_RE = re.compile(r"major\s+(engine|transmission)\s+defect", re.I)
 
 
+def soft_risks(costs: dict) -> set[str]:
+    """Стоп-факторы, с которыми машину всё равно считаем (costs: history_risk) — «РИСК: …» в общем списке."""
+    return {_SKIP_TEXT[name] for name in (costs.get("history_risk") or []) if name in _SKIP_TEXT}
+
+
 def calculate(data: BidInput, costs: dict) -> BidResult:
     """Потолок ставки. Стоп-фактор (рама, титул …) у машины, по которой вы смотрели KBB, не обрывает расчёт:
-    всё считается как обычно, а вердикт начинается с «РИСК: …» — решаете сами."""
+    всё считается как обычно, а вердикт начинается с «РИСК: …» — решаете сами. «Мягкие» стоп-факторы (history_risk:
+    рама / кузов) — так у всех машин, и без KBB."""
     risks = assess_history(data.history_text, costs).skip
+    if risks and not data.consider and all(r in soft_risks(costs) for r in risks):
+        data = BidInput(**{**data.__dict__, "consider": True})       # только рама / кузов — считаем, вердикт «РИСК»
     if risks and not data.consider:
         # Стоп-фактор (рама, нет титула …): вердикт — «ПРОПУСТИТЬ», но средняя цена покупки, прибыль по ней и потолок
         # всё равно считаются — видно, сколько такая машина стоит на торгах и до скольких её можно брать, если всё же брать.
@@ -905,6 +913,10 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
                                                       + ([f"история {_usd(result.discount)}"] if result.discount else []))
             total = result.sale_price - result.discount - proxy - fee - result.fixed_total
             row["profit_at_my_bid_items"] += f" = {'−' if total < 0 else ''}{_usd(abs(total))}"
+        row["risk_soft"] = ""
+        if row["calc_verdict"].startswith("РИСК: "):
+            reasons = row["calc_verdict"][len("РИСК: "):].split("; ")[0].split(", ")
+            row["risk_soft"] = "1" if all(r in soft_risks(costs) for r in reasons) else ""
         real_kbb = parse_money(row.get("kbb_private_party_usd")) or parse_money(row.get("retail_estimate_usd"))
         # «РИСК: рама; МОЖНО до …» — решает то, что после риска; сам риск в вердикте остаётся.
         parts = row["calc_verdict"].split("; ")

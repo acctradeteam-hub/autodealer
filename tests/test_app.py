@@ -1541,7 +1541,7 @@ class AllInModelsTest(unittest.TestCase):
         base = {"auction": "CarMax", "year": "2016", "odometer_miles": "90000", "kbb_private_party_usd": "", "kbb_estimate_usd": "",
                 "retail_estimate_usd": "11000"}
         frame = dict(base, vin="V1", make="Honda", model="Civic", trim="EX", damage_primary="Structural damage")
-        accord = dict(base, vin="V2", make="Nissan", model="Altima", trim="S", damage_primary="Structural damage")
+        accord = dict(base, vin="V2", make="Nissan", model="Altima", trim="S", damage_primary="Flood damage")
         salvage = dict(base, vin="V3", make="Toyota", model="Corolla", trim="LE", title_type="Salvage")
         salvage_bid = dict(salvage, vin="V4", my_proxy_usd="3000")
         cross = dict(base, vin="V5", make="Toyota", model="Corolla Cross", trim="LE", title_type="Salvage")
@@ -1549,7 +1549,12 @@ class AllInModelsTest(unittest.TestCase):
         apply_to_rows(rows, costs, estimator=None)
         self.assertTrue(frame["calc_verdict"].startswith("РИСК: повреждение рамы"), frame["calc_verdict"])
         self.assertTrue(frame["calc_max_bid_usd"] and frame["all_in"])
-        self.assertTrue(accord["calc_verdict"].startswith("ПРОПУСТИТЬ"))          # остальные модели — как раньше
+        self.assertTrue(accord["calc_verdict"].startswith("ПРОПУСТИТЬ"))          # остальные модели — как раньше (затопление)
+        frame_other = dict(base, vin="V6", make="Nissan", model="Altima", trim="S", damage_primary="Structural damage", popular="1")
+        apply_to_rows([frame_other], costs, estimator=None)
+        self.assertTrue(frame_other["calc_verdict"].startswith("РИСК: повреждение рамы"), frame_other["calc_verdict"])   # рама — в общем списке
+        self.assertEqual(frame_other["risk_soft"], "1")
+        self.assertEqual(app.list_tier(frame_other), 0 if not frame_other["calc_verdict"].split("; ")[1].startswith(("НЕВЫГОДНО", "НЕТ")) else 1)
         self.assertEqual((salvage["branded_hidden"], salvage_bid["branded_hidden"], cross["branded_hidden"]), ("1", "", ""))
 
     def test_kbb_for_all_civic_corolla(self) -> None:
@@ -2358,6 +2363,10 @@ class ListOrderTest(unittest.TestCase):
         self.assertEqual(app.list_tier(car("y", "МОЖНО до $9,000; нет титула на руках — продать нельзя, пока не пришлют", "3000")), 0)
         self.assertEqual(app.list_tier(car("z", "ПРОПУСТИТЬ: повреждение рамы / кузова, нет титула на руках", "3000")), 1)
         self.assertIn("sepRow(x,seenTier)+", app.PAGE)
+        # «РИСК: повреждение рамы / кузова» — тоже кандидат «KBB на неделю»; другие «РИСК» — нет
+        cand = {"vin": "V9", "year": "2018", "make": "Nissan", "model": "Altima", "odometer_miles": "90000", "popular": "1"}
+        self.assertTrue(app.kbb_week_pool(dict(cand, calc_verdict="РИСК: повреждение рамы / кузова; МОЖНО до $8,000", risk_soft="1")))
+        self.assertFalse(app.kbb_week_pool(dict(cand, calc_verdict="РИСК: затопление; МОЖНО до $8,000", risk_soft="")))
         self.assertIn("const TIER_SEP=", app.PAGE)
 
 class PageDiskCacheTest(unittest.TestCase):

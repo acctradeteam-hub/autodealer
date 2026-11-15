@@ -198,7 +198,8 @@ class TestCarMaxWatchlist(unittest.TestCase):
         self.assertTrue(verdict["A/88"].startswith("РИСК: повреждение рамы"), verdict["A/88"])
         self.assertIsNotNone(calculate(input_from_row(self.by_lot["A/88"]), COSTS).max_bid)
         no_kbb = dict(self.by_lot["A/88"], kbb_private_party_usd="")
-        self.assertTrue(calculate(input_from_row(no_kbb), COSTS).verdict.startswith("ПРОПУСТИТЬ"))   # без KBB — как раньше
+        self.assertTrue(calculate(input_from_row(no_kbb), dict(COSTS, history_risk=[])).verdict.startswith("ПРОПУСТИТЬ"))
+        self.assertFalse(calculate(input_from_row(no_kbb), COSTS).verdict.startswith("ПРОПУСТИТЬ"))   # рама — «РИСК», и без KBB
         self.assertFalse(verdict["B/10"].startswith("ПРОПУСТИТЬ"))      # Not actual miles — не пропуск,
         self.assertIn("TMU", verdict["B/10"])                            # а пометка TMU
         self.assertTrue(verdict["A/70"].startswith("ОСМОТР"))           # KBB из заметки, «Major transmission defect»

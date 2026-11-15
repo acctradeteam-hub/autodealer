@@ -285,9 +285,19 @@ class TestMajorDefectInspection(unittest.TestCase):
         self.assertEqual(r.inspect, ["без фото"])
 
     def test_stop_factor_still_wins(self) -> None:
-        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Engine Defect, Structural damage"), self.costs)
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Engine Defect, Flood damage"), self.costs)
         self.assertTrue(r.verdict.startswith("ПРОПУСТИТЬ"))
         self.assertTrue(r.max_bid and r.market_price and r.profit_at_market is not None)   # средняя, прибыль, потолок — есть
+
+    def test_structural_damage_is_risk(self) -> None:
+        """Рама / кузов (history_risk) — не пропуск: считаем, вердикт «РИСК: …», машина — в общем списке."""
+        r = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Structural damage"), self.costs)
+        self.assertTrue(r.verdict.startswith("РИСК: повреждение рамы / кузова; "), r.verdict)
+        self.assertTrue(r.max_bid)
+        both = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Structural damage, Salvage title"), self.costs)
+        self.assertTrue(both.verdict.startswith("ПРОПУСТИТЬ"), both.verdict)         # с брендированным титулом — как раньше
+        strict = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Structural damage"), dict(self.costs, history_risk=[]))
+        self.assertTrue(strict.verdict.startswith("ПРОПУСТИТЬ"))
 
     def test_market_when_defect_makes_it_unprofitable(self) -> None:
         # Дешёвая машина: при подтверждённом дефекте — «НЕВЫГОДНО», без дефекта — потолок есть.

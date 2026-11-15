@@ -163,6 +163,8 @@
   "_all_in_models": "Модели, которые считаем все (Civic, Corolla, Accord, Camry, Lexus CT 200h): KBB — сразу, как машины появились в списках аукционов (в любой день), за ним Carfax; стоп-факторы (рама, нет титула, подушки …) не «ПРОПУСТИТЬ», а «РИСК» с полным расчётом; KBB — всем. hide_branded_title — с брендированным титулом (salvage / rebuilt / lemon …) машины этих моделей не показываются вовсе (кроме тех, где уже стоит ваша ставка).",
   "all_in_models": {"models": [["Honda", "^civic\\b"], ["Toyota", "^corolla\\b(?!\\s*cross)"], ["Honda", "^accord\\b(?!\\s*crosstour)"],
                                ["Toyota", "^camry\\b(?!\\s*solara)"], ["Lexus", "^ct\\s*200\\s*h\\b"]], "hide_branded_title": true},
+  "_history_risk": "Стоп-факторы, с которыми машину всё равно считаем и показываем в общем списке — с пометкой «РИСК: …» (решаете на осмотре). structural_damage: у CarMax «Structural damage» часто ставят без серьёзных причин. Скидки за раму в расчёте нет — смотрите машину сами.",
+  "history_risk": ["structural_damage"],
   "history_skip": [
     "branded_title",
     "odometer_problem",
