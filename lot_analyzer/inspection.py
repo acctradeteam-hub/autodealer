@@ -90,6 +90,8 @@ def _wanted_auto(row: dict[str, str]) -> bool:
         return False                                   # сняли звёздочку — сами решили не смотреть
     if row.get("rejected"):
         return False                                   # «🚫 Отбой» в окне — посмотрели лот, не покупать
+    if row.get("tmu"):
+        return False                                   # TMU (пробег не подтверждён) — не интересны; со ставкой / «На осмотр» — да
     if row.get("kbb_private_party_usd") and not row.get("kbb_from_window_field"):
         return True                                    # просчитали (настоящий KBB) — и не «Отбой»: смотрим
     if row.get("no_photos") == "да" and row.get("popular") and not row.get("calc_verdict", "").startswith(SKIP_VERDICTS):

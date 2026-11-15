@@ -2363,10 +2363,21 @@ class ListOrderTest(unittest.TestCase):
         self.assertEqual(app.list_tier(car("y", "МОЖНО до $9,000; нет титула на руках — продать нельзя, пока не пришлют", "3000")), 0)
         self.assertEqual(app.list_tier(car("z", "ПРОПУСТИТЬ: повреждение рамы / кузова, нет титула на руках", "3000")), 1)
         self.assertIn("sepRow(x,seenTier)+", app.PAGE)
+        # TMU — в самом низу, к брендированному титулу; KBB, Carfax и осмотр — нет
+        tmu = car("tmu", "МОЖНО до $9,000; ⚠ TMU — пробег не подтверждён", "7000")
+        tmu["tmu"] = "1"
+        self.assertEqual(app.list_tier(tmu), 2)
+        self.assertEqual({r["vin"] for r in sorted(rows + [tmu], key=app.list_order)[-2:]}, {"tmu", "branded9500"})   # обе — в самом низу
+        from lot_analyzer import inspection
+        self.assertEqual(inspection.why(dict(tmu, kbb_private_party_usd="12000", auction="CarMax")), "")
+        self.assertEqual(inspection.why(dict(tmu, my_proxy_usd="5000")), "ставка")
+        self.assertFalse(app.carfax_auto_pool(dict(tmu, kbb_private_party_usd="12000")))
         # «РИСК: повреждение рамы / кузова» — тоже кандидат «KBB на неделю»; другие «РИСК» — нет
         cand = {"vin": "V9", "year": "2018", "make": "Nissan", "model": "Altima", "odometer_miles": "90000", "popular": "1"}
         self.assertTrue(app.kbb_week_pool(dict(cand, calc_verdict="РИСК: повреждение рамы / кузова; МОЖНО до $8,000", risk_soft="1")))
         self.assertFalse(app.kbb_week_pool(dict(cand, calc_verdict="РИСК: затопление; МОЖНО до $8,000", risk_soft="")))
+        self.assertFalse(app.kbb_week_pool(dict(cand, calc_verdict="МОЖНО до $8,000", tmu="1")))
+        self.assertFalse(app.kbb_week_pool(dict(cand, calc_verdict="МОЖНО до $8,000", tmu="1", all_in="1")))
         self.assertIn("const TIER_SEP=", app.PAGE)
 
 class PageDiskCacheTest(unittest.TestCase):

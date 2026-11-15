@@ -202,6 +202,10 @@ class TestCarMaxWatchlist(unittest.TestCase):
         self.assertFalse(calculate(input_from_row(no_kbb), COSTS).verdict.startswith("ПРОПУСТИТЬ"))   # рама — «РИСК», и без KBB
         self.assertFalse(verdict["B/10"].startswith("ПРОПУСТИТЬ"))      # Not actual miles — не пропуск,
         self.assertIn("TMU", verdict["B/10"])                            # а пометка TMU
+        from lot_analyzer.bid import apply_to_rows
+        b10 = dict(self.by_lot["B/10"])
+        apply_to_rows([b10], COSTS, estimator=None)
+        self.assertEqual(b10["tmu"], "1")                                # TMU — в самый низ списка (app.list_tier)
         self.assertTrue(verdict["A/70"].startswith("ОСМОТР"))           # KBB из заметки, «Major transmission defect»
         self.assertTrue(verdict["A/9"].startswith("НЕТ ОЦЕНКИ"))        # KBB не вписан
 

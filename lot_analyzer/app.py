@@ -48,7 +48,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.29"
-PROGRAM_VERSION = "2026-11-15.7"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-15.8"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1334,8 +1334,8 @@ def kbb_week_pool(row: dict) -> bool:
     кроме брендированного титула."""
     from .inspection import major_defects
 
-    if row.get("passed") or row.get("rejected") or row.get("branded_hidden"):
-        return False
+    if row.get("passed") or row.get("rejected") or row.get("branded_hidden") or row.get("tmu"):
+        return False                                 # TMU — не интересны, KBB не берём
     if not (row.get("vin") and row.get("year") and row.get("make") and parse_money(row.get("odometer_miles"))):
         return False
     if row.get("all_in"):
@@ -1405,7 +1405,7 @@ def carfax_auto_pool(row: dict) -> bool:
     """Carfax сам: машина с настоящим KBB (вручную, пачкой, «KBB на неделю» — при любой цене), торги впереди,
     не «Отбой», не убрана с осмотра; Carfax по ней ещё нет."""
     return bool(row.get("vin") and _real_kbb(row) and not row.get("passed") and not row.get("rejected")
-                and not row.get("branded_hidden") and not row.get("inspect_off") and not row.get("carfax"))
+                and not row.get("branded_hidden") and not row.get("inspect_off") and not row.get("carfax") and not row.get("tmu"))
 
 
 def load_carfax_auto() -> dict[str, dict]:
@@ -1631,8 +1631,8 @@ def list_tier(row: dict[str, str]) -> int:
     rank = verdict_rank(verdict)
     if rank >= 4.5:
         return 3
-    if "брендированный титул" in verdict.split("; ")[0]:
-        return 2
+    if "брендированный титул" in verdict.split("; ")[0] or row.get("tmu"):
+        return 2                                     # брендированный титул и TMU (пробег не подтверждён) — не интересны
     return 0 if rank <= 0.5 else 1
 
 
@@ -2798,7 +2798,7 @@ function sortHead(){setSort(sortBy==='market'?'market_desc':'market')}
 function sortProfit(){setSort(sortBy==='profit'?'profit_asc':'profit')}
 /* «По выгоде»: части списка — с подписанной чертой между ними, чтобы было видно, где начинается следующая. */
 const TIER_SEP={1:'▼ Ниже — что программа брать не советует: невыгодно, дороже потолка, нет оценки, «ПРОПУСТИТЬ» (рама / кузов …). Тоже по прибыли, сверху — самая большая',
- 2:'▼ Брендированный титул (salvage / rebuilt / lemon …) — в самом низу',3:'▼ Уже проданы'};
+ 2:'▼ Не интересны: брендированный титул (salvage / rebuilt / lemon …) и TMU — пробег не подтверждён (Not actual miles)',3:'▼ Уже проданы'};
 function sepRow(x,seen){const t=Number(x.tier||0);if(sortBy||onlyBids||onlyNotTake||!t||seen[t])return '';seen[t]=1;
  return `<tr class="sep"><td colspan="11">${TIER_SEP[t]||''}</td></tr>`}
 const SORT_NOTE={'':'одним списком по «Прибыль по средней», сверху — самая большая: и с настоящим KBB, и с прикидкой; под чертой — что программа брать не советует',lane:'по линии и номеру: A/1, A/2 … затем B/1 … — каждая площадка отдельно',market:'сверху — самая низкая средняя цена покупки на аукционе',market_desc:'сверху — самая высокая средняя цена покупки на аукционе',profit:'сверху — самая большая прибыль при покупке по средней цене (одним списком, без деления по вердиктам)',profit_asc:'сверху — самая маленькая прибыль при покупке по средней цене'};

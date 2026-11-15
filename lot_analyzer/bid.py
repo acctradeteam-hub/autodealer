@@ -913,6 +913,8 @@ def apply_to_rows(rows: list[dict[str, str]], costs: dict, estimator=None) -> No
                                                       + ([f"история {_usd(result.discount)}"] if result.discount else []))
             total = result.sale_price - result.discount - proxy - fee - result.fixed_total
             row["profit_at_my_bid_items"] += f" = {'−' if total < 0 else ''}{_usd(abs(total))}"
+        # TMU (пробег не подтверждён): вам не интересны — в самом низу списка, без KBB, Carfax и осмотра.
+        row["tmu"] = "1" if _positive_hits(_words_to_digits(squeeze(data.history_text)), _TMU) else ""
         row["risk_soft"] = ""
         if row["calc_verdict"].startswith("РИСК: "):
             reasons = row["calc_verdict"][len("РИСК: "):].split("; ")[0].split(", ")
