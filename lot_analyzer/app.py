@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import hashlib
 import os
 import datetime as dt
 import json
@@ -46,7 +48,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.29"
-PROGRAM_VERSION = "2026-11-15.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-15.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -111,14 +113,98 @@ RANK = {"ПРОДАНА": 4.5, "НУЖЕН": 0.5, "МОЖНО": 0, "ОСМОТР
 
 # ---------------------------------------------------------------- файлы из «Загрузок»
 
-class PageCache:
-    """Разбор сохранённых страниц с кэшем по времени изменения файла."""
+# Разобранные страницы — и на диске: новая версия программы (или перезапуск) берёт их готовыми, а не разбирает
+# заново (60 страниц CarMax — ~85 с). Запись сбрасывается сама, если поменялся файл (размер, время) или код разбора
+# страниц (_PARSE_MODULES — по их тексту); поменяли сам PageCache._parse — PAGE_CACHE_VERSION + 1.
+PAGE_CACHE_DIR = DATA_DIR / "page_cache"
+PAGE_CACHE_VERSION = 1
+PAGE_CACHE_DAYS = 21                     # не нужны столько дней — удаляются
+_PARSE_MODULES = ("acv", "extract", "kbb_page", "lists", "manheim", "manheim_csv", "market", "normalize", "notes", "pages",
+                  "parsers", "paths", "results", "schema", "sites_text")
+_PARSER_STAMP: list[str] = []
 
-    def __init__(self) -> None:
+
+def _parser_stamp() -> str:
+    """Отпечаток кода разбора страниц: поменялся разбор — старые записи на диске не подходят."""
+    if not _PARSER_STAMP:
+        digest = hashlib.sha1(f"v{PAGE_CACHE_VERSION}".encode())
+        here = Path(__file__).parent
+        for name in _PARSE_MODULES:
+            digest.update(name.encode())
+            try:
+                digest.update((here / f"{name}.py").read_bytes())
+            except OSError:
+                pass
+        _PARSER_STAMP.append(digest.hexdigest()[:16])
+    return _PARSER_STAMP[0]
+
+
+def prune_page_cache(days: int = PAGE_CACHE_DAYS) -> int:
+    """Удаляет записи, которые не читались больше days дней (страницы давно ушли из «Загрузок»)."""
+    removed = 0
+    since = time.time() - days * 86400
+    try:
+        for item in PAGE_CACHE_DIR.glob("*.json.gz"):
+            try:
+                if item.stat().st_mtime < since:
+                    item.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
+
+
+class PageCache:
+    """Разбор сохранённых страниц с кэшем по времени изменения файла (в памяти и на диске — data/page_cache)."""
+
+    def __init__(self, disk: Path | None = None) -> None:
         self._cache: dict[Path, tuple[float, list[dict[str, str]]]] = {}
         self._kbb: dict[Path, dict | None] = {}
         self._lock = threading.Lock()
         self._parse_lock = threading.Lock()     # один разбор за раз: запросы окна не разбирают один файл параллельно
+        self._disk = PAGE_CACHE_DIR if disk is None else disk
+
+    def _disk_path(self, path: Path) -> Path | None:
+        try:
+            st = path.stat()
+            key = f"{path.resolve()}|{st.st_size}|{st.st_mtime_ns}|{_parser_stamp()}"
+        except OSError:
+            return None
+        return self._disk / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".json.gz")
+
+    def _from_disk(self, path: Path, mtime: float) -> list[dict[str, str]] | None:
+        item = self._disk_path(path)
+        if not item or not item.exists():
+            return None
+        try:
+            with gzip.open(item, "rt", encoding="utf-8") as handle:
+                saved = json.load(handle)
+            rows, record = saved["rows"], saved["record"]
+            os.utime(item, None)                 # читается — не удалять
+        except (OSError, ValueError, KeyError, EOFError):
+            return None
+        with self._lock:
+            self._cache[path] = (mtime, rows)
+            self._kbb[path] = record
+        return [dict(r) for r in rows]
+
+    def _to_disk(self, path: Path, rows: list, record) -> None:
+        item = self._disk_path(path)
+        if not item:
+            return
+        try:
+            blob = json.dumps({"rows": rows, "record": record}, ensure_ascii=False)
+            if json.loads(blob) != {"rows": rows, "record": record}:
+                return                           # в разборе есть то, что JSON не сохранит как есть, — не кэшируем
+            item.parent.mkdir(parents=True, exist_ok=True)
+            tmp = item.with_name(item.name + f".{os.getpid()}.tmp")
+            with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=3) as handle:
+                handle.write(blob)
+            os.replace(tmp, item)
+        except (OSError, TypeError, ValueError):
+            pass
 
     def kbb(self, path: Path) -> dict | None:
         """Значения KBB, если файл — сохранённая страница kbb.com (иначе None)."""
@@ -137,6 +223,9 @@ class PageCache:
                 cached = self._cache.get(path)
                 if cached and cached[0] == mtime:      # пока ждали, файл разобрал другой запрос
                     return [dict(r) for r in cached[1]]
+            saved = self._from_disk(path, mtime)
+            if saved is not None:
+                return saved
             return self._parse(path, mtime)
 
     def _parse(self, path: Path, mtime: float) -> list[dict[str, str]]:
@@ -172,6 +261,8 @@ class PageCache:
         except Exception as error:  # битый файл не должен ронять окно
             record = None
             rows = [{"auction": "?", "source_file": path.name, "needs_review": f"не разобрано: {error}"}]
+        else:
+            self._to_disk(path, rows, record)
         with self._lock:
             self._cache[path] = (mtime, rows)
             self._kbb[path] = record
@@ -2388,6 +2479,7 @@ def main(argv: list[str] | None = None) -> int:
     if server is None:
         return 0
     warm_vin_search(folders, page_cache, Path(args.costs))     # поиск по VIN — без ожидания
+    threading.Thread(target=prune_page_cache, daemon=True).start()   # старые разобранные страницы — с диска
     remote.keep_awake()                                       # Mac не засыпает, пока работает программа
     # Доступ с телефона (задан PIN в окне): ещё и адрес Tailscale этого Mac — только ваши устройства, вход по PIN.
     remote.start(lambda ip: ThreadingHTTPServer((ip, args.port), make_remote_handler(folders, Path(args.costs), page_cache)))

@@ -2360,6 +2360,43 @@ class ListOrderTest(unittest.TestCase):
         self.assertIn("sepRow(x,seenTier)+", app.PAGE)
         self.assertIn("const TIER_SEP=", app.PAGE)
 
+class PageDiskCacheTest(unittest.TestCase):
+    """Разобранные страницы — на диске: новая версия программы (новый процесс) не разбирает их заново."""
+
+    def test_disk_cache(self) -> None:
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        page = tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html"
+        shutil.copy(FIXTURES / "carmax_watchlist.html", page)
+        disk = tmp / "page_cache"
+        first = app.PageCache(disk=disk).rows(page)
+        self.assertTrue(first)
+        self.assertEqual(len(list(disk.glob("*.json.gz"))), 1)
+        fresh = app.PageCache(disk=disk)                                   # «новая версия программы»
+        with mock.patch.object(app, "parse_page", side_effect=AssertionError("разбор заново")):
+            self.assertEqual(fresh.rows(page), first)
+        time.sleep(0.01)
+        page.write_text(page.read_text(encoding="utf-8") + "\n", encoding="utf-8")   # файл поменялся — разбор заново
+        self.assertEqual(len(app.PageCache(disk=disk).rows(page)), len(first))
+        self.assertEqual(len(list(disk.glob("*.json.gz"))), 2)
+        with mock.patch.object(app, "_PARSER_STAMP", ["другой-разбор"]):     # поменялся код разбора — разбор заново
+            with mock.patch.object(app, "parse_page", side_effect=RuntimeError("битая страница")) as parse:
+                rows = app.PageCache(disk=disk).rows(page)
+            self.assertTrue(parse.called)
+            self.assertIn("не разобрано", rows[0]["needs_review"])
+        self.assertEqual(len(list(disk.glob("*.json.gz"))), 2)               # неразобранное на диск не пишется
+        old = time.time() - 40 * 86400
+        for item in disk.glob("*.json.gz"):
+            os.utime(item, (old, old))
+        with mock.patch.object(app, "PAGE_CACHE_DIR", disk):
+            self.assertEqual(app.prune_page_cache(), 2)
+
+    def test_parse_modules_exist(self) -> None:
+        here = ROOT / "lot_analyzer"
+        for name in app._PARSE_MODULES:
+            self.assertTrue((here / f"{name}.py").exists(), name)
+        self.assertEqual(len(app._parser_stamp()), 16)
+
 class FastBidTest(unittest.TestCase):
     """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""
 
