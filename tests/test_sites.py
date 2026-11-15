@@ -139,11 +139,14 @@ class TestCarMaxVocabulary(unittest.TestCase):
         self.assertIn("TMU", " ".join(assess_history("Not actual miles", COSTS).notes))  # а помечаем
         self.assertIn("был в угоне", assess_history("Prior theft history", COSTS).discounts)
         self.assertIn("аренда/флит", assess_history("Prior police", COSTS).discounts)
-        # allow_227 (по умолчанию): REG 227 можно, с лишними днями; «Title Absent» — пропуск
+        # allow_all (по умолчанию с 15.11.2026): REG 227 и «Title Absent» — можно, с лишними днями
         flags = assess_history("App 227", COSTS)
         self.assertEqual((flags.skip, flags.extra_days), ([], COSTS["reg227_extra_days"]))
         self.assertTrue(any("227" in n for n in assess_history("Possible 227", COSTS).notes))
-        self.assertTrue(assess_history("Title absent", COSTS).skip)
+        self.assertEqual(COSTS["title_policy"], "allow_all")
+        self.assertFalse(assess_history("Title absent", COSTS).skip)
+        # allow_227: «Title Absent» — пропуск
+        self.assertTrue(assess_history("Title absent", dict(COSTS, title_policy="allow_227")).skip)
         self.assertFalse(assess_history("No Title Issues", COSTS).skip)
         # strict: пропуск и того, и другого; allow_all: оба можно, с днями
         self.assertTrue(assess_history("App 227", dict(COSTS, title_policy="strict")).skip)

@@ -86,9 +86,10 @@ class TestAcvCalculation(unittest.TestCase):
         self.assertIsNotNone(result.max_bid)
         self.assertIn("был в угоне", result.breakdown())
         self.assertIn("нет титула", result.verdict)
-        # По умолчанию (allow_227) «Title Absent» пропускаем.
-        self.assertIn("нет титула", calculate(input_from_row(row), self.costs).verdict)
-        self.assertTrue(calculate(input_from_row(row), self.costs).verdict.startswith("ПРОПУСТИТЬ"))
+        # Режим allow_227: «Title Absent» пропускаем.
+        strict = dict(self.costs, title_policy="allow_227")
+        self.assertIn("нет титула", calculate(input_from_row(row), strict).verdict)
+        self.assertTrue(calculate(input_from_row(row), strict).verdict.startswith("ПРОПУСТИТЬ"))
 
     def test_recon_itemized_from_acv_findings(self) -> None:
         text = f"{self.row['defects']} {self.row['condition_report']}"

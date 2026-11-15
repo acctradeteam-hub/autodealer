@@ -749,14 +749,14 @@ class PreKbbTest(unittest.TestCase):
 
 
 class SkipOrderTest(unittest.TestCase):
-    def test_structural_above_branded_above_no_title(self):
+    def test_structural_above_no_title_above_branded(self):
         from lot_analyzer.app import verdict_rank
         structural = verdict_rank("ПРОПУСТИТЬ: повреждение рамы / кузова")
         branded = verdict_rank("ПРОПУСТИТЬ: брендированный титул (salvage/rebuilt/lemon…)")
         no_title = verdict_rank("ПРОПУСТИТЬ: повреждение рамы / кузова, нет титула на руках (Title Absent) — продать нельзя")
-        self.assertLess(structural, branded)
-        self.assertLess(branded, no_title)
-        self.assertLess(no_title, verdict_rank("ПРОДАНА за $5,000 — купить нельзя"))
+        self.assertLess(structural, no_title)
+        self.assertLess(no_title, branded)                                  # брендированный титул — в самом низу
+        self.assertLess(branded, verdict_rank("ПРОДАНА за $5,000 — купить нельзя"))
 
 
 class PastSalesNoteTest(unittest.TestCase):
@@ -2348,11 +2348,15 @@ class ListOrderTest(unittest.TestCase):
             return {"vin": name, "group": "popular", "calc_verdict": verdict, "calc_profit_market_usd": profit}
         rows = [car("real3000", "МОЖНО до $9,000", "3000"), car("est5000", "НУЖЕН KBB: предварительно до $12,000 (прикидка)", "5000"),
                 car("skip9000", "ПРОПУСТИТЬ: повреждение рамы / кузова", "9000"), car("risk4000", "РИСК: рама; МОЖНО до $8,000", "4000"),
-                car("notitle9500", "ПРОПУСТИТЬ: нет титула на руках (Title Absent)", "9500"), car("bad100", "НЕВЫГОДНО: потолок ниже", "100"),
+                car("branded9500", "ПРОПУСТИТЬ: брендированный титул (salvage/rebuilt/lemon…)", "9500"), car("bad100", "НЕВЫГОДНО: потолок ниже", "100"),
                 car("real-500", "ОСМОТР: до $7,000, если дефект не подтвердится", "-500"), car("noprofit", "МОЖНО до $5,000", "")]
         got = [r["vin"] for r in sorted(rows, key=app.list_order)]
-        self.assertEqual(got, ["est5000", "risk4000", "real3000", "real-500", "noprofit", "skip9000", "bad100", "notitle9500"])
+        self.assertEqual(got, ["est5000", "risk4000", "real3000", "real-500", "noprofit", "skip9000", "bad100", "branded9500"])
         self.assertEqual([app.list_tier(r) for r in rows], [0, 0, 1, 0, 2, 1, 0, 0])
+        # брендированный титул — внизу и при «РИСК» (есть KBB); без титула на руках — в общем списке
+        self.assertEqual(app.list_tier(car("x", "РИСК: брендированный титул (salvage/rebuilt/lemon…); МОЖНО до $7,000", "6000")), 2)
+        self.assertEqual(app.list_tier(car("y", "МОЖНО до $9,000; нет титула на руках — продать нельзя, пока не пришлют", "3000")), 0)
+        self.assertEqual(app.list_tier(car("z", "ПРОПУСТИТЬ: повреждение рамы / кузова, нет титула на руках", "3000")), 1)
         self.assertIn("sepRow(x,seenTier)+", app.PAGE)
         self.assertIn("const TIER_SEP=", app.PAGE)
 
