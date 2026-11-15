@@ -48,7 +48,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.29"
-PROGRAM_VERSION = "2026-11-15.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-15.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -165,6 +165,28 @@ class PageCache:
         self._lock = threading.Lock()
         self._parse_lock = threading.Lock()     # один разбор за раз: запросы окна не разбирают один файл параллельно
         self._disk = PAGE_CACHE_DIR if disk is None else disk
+        self.parsing = ""                        # какая страница разбирается сейчас (окну — «идёт загрузка»)
+        self.parsed = 0                          # сколько страниц разобрано с запуска
+
+    @property
+    def disk(self) -> Path:
+        return self._disk
+
+    def on_disk(self, path: Path) -> bool:
+        """Страница уже разобрана и лежит в кэше на диске (или в памяти)."""
+        with self._lock:
+            cached = self._cache.get(path)
+        try:
+            if cached and cached[0] == path.stat().st_mtime:
+                return True
+        except OSError:
+            return True
+        item = self._disk_path(path)
+        return bool(item and item.exists())
+
+    def pending(self, pages: list[Path]) -> int:
+        """Сколько из этих страниц ещё не разобрано (нет ни в памяти, ни на диске)."""
+        return sum(1 for p in pages if not self.on_disk(p))
 
     def _disk_path(self, path: Path) -> Path | None:
         try:
@@ -229,6 +251,7 @@ class PageCache:
             return self._parse(path, mtime)
 
     def _parse(self, path: Path, mtime: float) -> list[dict[str, str]]:
+        self.parsing = path.name
         try:
             record = None
             if results.is_results_file(path):
@@ -266,6 +289,8 @@ class PageCache:
         with self._lock:
             self._cache[path] = (mtime, rows)
             self._kbb[path] = record
+        self.parsing = ""
+        self.parsed += 1
         return [dict(r) for r in rows]
 
 
@@ -1912,6 +1937,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(json.dumps(CARFAX_STATUS, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/version":
                 self._send(json.dumps({"version": PROGRAM_VERSION}).encode("utf-8"))
+            elif url.path == "/api/load_status":       # окно ждёт список: сколько страниц ещё разбирается
+                pages = find_pages(folders, 168)
+                self._send(json.dumps({"pending": cache.pending(pages), "total": len(pages), "parsing": cache.parsing,
+                                       "parsed": cache.parsed}, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/review":              # разбор торгов: наш прогноз ↔ итоги
                 search_rows(find_pages(folders, float(q.get("hours") or 168)), cache, load_costs(costs_path), "")   # свежие итоги — в базу
                 self._send(review.render(results.load_history()).encode("utf-8"), "text/html; charset=utf-8")
@@ -2317,18 +2346,39 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
 
 
 def _running_version(port: int) -> str | None:
-    """Версия программы, уже работающей на этом порту: «2026-10-13», «старая» (окно есть, версии нет) или None (не наша)."""
+    """Версия программы, уже работающей на этом порту: «2026-10-13», «старая» (окно есть, версии нет) или None (не наша
+    или не отвечает — занята разбором страниц)."""
     import urllib.request
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=3) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/version", timeout=10) as resp:
             return json.loads(resp.read() or b"{}").get("version") or "старая"
     except Exception:  # старые версии не знают /api/version
         pass
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
             return "старая" if "Одно окно" in resp.read(4000).decode("utf-8", "replace") else None
     except Exception:
         return None
+
+
+def _our_pids(port: int) -> list[int]:
+    """Процессы этой программы (lot_analyzer), которые держат порт: старая версия, даже если не отвечает."""
+    import subprocess
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    ours = []
+    for pid in {int(x) for x in out.split() if x.strip().isdigit()}:
+        if pid == os.getpid():
+            continue
+        try:
+            command = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            continue
+        if "lot_analyzer" in command:
+            ours.append(pid)
+    return ours
 
 
 def _stop_running(port: int) -> None:
@@ -2445,14 +2495,31 @@ def _take_port(port: int, handler, open_browser: bool):
             webbrowser.open(address)
         return None
     if running is None:
-        raise SystemExit(f"Порт {port} занят другой программой — закройте её или запустите с --port 8766")
-    print(f"Уже запущена {'старая версия программы' if running == 'старая' else 'версия ' + running} — закрываю её и запускаю {PROGRAM_VERSION}…")
-    _stop_running(port)
-    for _ in range(20):
+        stuck = _our_pids(port)
+        if not stuck:
+            raise SystemExit(f"Порт {port} занят другой программой — закройте её или запустите с --port 8766")
+        # Наша же программа, но не ответила (занята разбором страниц) — раньше новая версия тут сдавалась и закрывалась,
+        # а в браузере оставалась старая, занятая, с пустым списком.
+        print(f"Старая версия программы не отвечает (занята) — закрываю её и запускаю {PROGRAM_VERSION}…")
+        for pid in stuck:
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+    else:
+        print(f"Уже запущена {'старая версия программы' if running == 'старая' else 'версия ' + running} — закрываю её и запускаю {PROGRAM_VERSION}…")
+        _stop_running(port)
+    for attempt in range(30):
         time.sleep(0.5)
         try:
             return ThreadingHTTPServer(("127.0.0.1", port), handler)
         except OSError:
+            if attempt == 12:                    # не закрылась за 6 с — закрыть принудительно (только нашу программу)
+                for pid in _our_pids(port):
+                    try:
+                        os.kill(pid, 9)
+                    except OSError:
+                        pass
             continue
     raise SystemExit("Не удалось закрыть старую версию программы: закройте её окно Терминала (или перезагрузите компьютер) и запустите снова.")
 
@@ -2478,6 +2545,8 @@ def main(argv: list[str] | None = None) -> int:
     server = _take_port(args.port, make_handler(folders, Path(args.costs), page_cache), not args.no_browser)
     if server is None:
         return 0
+    from . import prewarm
+    prewarm.start(find_pages(folders, 168), page_cache)         # первый разбор страниц — в фоне, на нескольких ядрах
     warm_vin_search(folders, page_cache, Path(args.costs))     # поиск по VIN — без ожидания
     threading.Thread(target=prune_page_cache, daemon=True).start()   # старые разобранные страницы — с диска
     remote.keep_awake()                                       # Mac не засыпает, пока работает программа
@@ -2761,9 +2830,16 @@ function setTab(g){tab=g;try{localStorage.setItem('la-tab',g)}catch(e){}if(lastD
 /* Один пересчёт за раз: пока идёт KBB-автопилот, файлы приходят каждые 2–3 с — новые запросы не обгоняют
    и не отменяют текущий (раньше окно выбрасывало каждый ответ как устаревший и ничего не показывало). */
 let refreshBusy=false,refreshAgain=false;
-async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=true;const my=++refreshNo;
+/* Список долго не приходит (программа разбирает сохранённые страницы — после установки или когда пришло сразу много)
+   — показываем ход, а не пустое окно. */
+let loadTimer=null,loadOn=false;
+async function loadStatus(){try{const s=await (await fetch('/api/load_status')).json();if(!loadOn)return;   // список уже пришёл — строку не трогаем
+ if(s.pending>0)$('stat').textContent=`⏳ Разбираю сохранённые страницы аукционов и KBB: осталось ${s.pending} из ${s.total}${s.parsing?' (сейчас: '+s.parsing+')':''}. Каждая страница разбирается один раз — следующие запуски и новые версии откроются за секунды.`;
+ else $('stat').textContent='⏳ Считаю список…'}catch(e){}}
+function loadWatch(on){loadOn=on;clearTimeout(loadTimer);loadTimer=null;if(on){const tick=()=>{loadStatus();loadTimer=setTimeout(tick,2000)};loadTimer=setTimeout(tick,2500)}}
+async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=true;const my=++refreshNo;loadWatch(true);
  try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
- finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
+ finally{loadWatch(false);refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
 /* «📄 Carfax» у машины: расширение откроет отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>) с вашим входом в Chrome
    на Mac, текст отчёта придёт в программу сам. Ход (открывается, нужен вход, получен, не вышло) — под машиной. */
 let CF={};

@@ -2391,6 +2391,44 @@ class PageDiskCacheTest(unittest.TestCase):
         with mock.patch.object(app, "PAGE_CACHE_DIR", disk):
             self.assertEqual(app.prune_page_cache(), 2)
 
+    def test_load_status_and_takeover(self) -> None:
+        """Окно видит ход разбора страниц; новая версия закрывает и зависшую старую (только нашу программу)."""
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html")
+        cache = app.PageCache(disk=tmp / "page_cache")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([tmp], COSTS, cache))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            before = json.loads(urllib.request.urlopen(base + "/api/load_status").read())
+            urllib.request.urlopen(base + "/api/rows").read()
+            after = json.loads(urllib.request.urlopen(base + "/api/load_status").read())
+        finally:
+            server.shutdown()
+        self.assertEqual((before["pending"], after["pending"]), (before["total"], 0))
+        self.assertGreaterEqual(before["total"], 1)
+        self.assertIn("if(!loadOn)return;", app.PAGE)
+        self.assertIn("loadWatch(true)", app.PAGE)
+        self.assertEqual(app._our_pids(1), [])                                 # порт свободен — закрывать нечего
+        src = (ROOT / "lot_analyzer" / "app.py").read_text(encoding="utf-8")
+        self.assertIn('if "lot_analyzer" in command:', src)                    # чужие программы на порту не трогаем
+
+    def test_prewarm_parallel(self) -> None:
+        """Первый разбор — в фоне, в отдельных процессах: готовое ложится на диск, окно берёт оттуда."""
+        from lot_analyzer import prewarm
+        tmp = Path(tempfile.mkdtemp())
+        pages = []
+        for i in range(3):
+            page = tmp / f"CarMax_Member_Dashboard_2026-09-29_143{i}.html"
+            shutil.copy(FIXTURES / "carmax_watchlist.html", page)
+            pages.append(page)
+        cache = app.PageCache(disk=tmp / "page_cache")
+        thread = prewarm.start(pages, cache, workers=2)
+        self.assertIsNotNone(thread)
+        thread.join(240)
+        self.assertEqual(cache.pending(pages), 0)
+        self.assertIsNone(prewarm.start(pages, cache))                          # всё уже на диске — нечего делать
+
     def test_parse_modules_exist(self) -> None:
         here = ROOT / "lot_analyzer"
         for name in app._PARSE_MODULES:
