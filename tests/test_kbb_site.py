@@ -164,5 +164,99 @@ class BmwSeriesTest(unittest.TestCase):
         self.assertEqual(out, [list(w) if w else None for _, w in BMW_CASES])
         self.assertIn("var models = bmw ? bmw.models :", src)
 
+
+MB_PAGE = """<html><script id="__NEXT_DATA__">{}</script>
+<a href="/mercedes-benz/c-class/2016/c-300-sedan-4d/">C 300</a>
+<a href="/mercedes-benz/c-class/2016/c-300-4matic-sedan-4d/">C 300 4MATIC</a>
+<a href="/mercedes-benz/c-class/2016/c-300-coupe-2d/">C 300 Coupe</a>
+<a href="/mercedes-benz/c-class/2016/c-450-amg-sedan-4d/">C 450 AMG</a>
+<a href="/mercedes-benz/c-class/2016/c-63-amg-sedan-4d/">C 63 AMG</a></html>"""
+
+MB_CASES = [(("C300", "Base", "2016"), (["c-class"], "C 300 Base")),
+            (("C300", "Sport", "2012"), (["c-class"], "C 300 Sport")),
+            (("E350", "Luxury", "2014"), (["e-class"], "E 350 Luxury")),
+            (("GLE350", "Base", "2018"), (["gle"], "GLE 350 Base")),
+            (("GLE53", "AMG Coupe Base", "2021"), (["mercedes-amg-gle-coupe", "mercedes-amg-gle", "gle-coupe", "gle"], "GLE 53 AMG Coupe Base")),
+            (("E63", "AMG S", "2018"), (["mercedes-amg-e-class", "e-class"], "E 63 AMG S")),
+            (("E63", "AMG S", "2012"), (["e-class", "mercedes-amg-e-class"], "E 63 AMG S")),
+            (("C43", "AMG Base", "2018"), (["mercedes-amg-c-class", "c-class"], "C 43 AMG Base")),
+            (("CLA250", "Base", "2015"), (["cla-class", "cla"], "CLA 250 Base")),
+            (("CLA250", "Base", "2018"), (["cla", "cla-class"], "CLA 250 Base")),
+            (("GLC300", "Base", "2019"), (["glc"], "GLC 300 Base")),
+            (("GLC350E", "Plug In Hybrid Base", "2019"), (["glc"], "GLC 350e Base")),
+            (("ML350", "Base", "2014"), (["m-class"], "ML 350 Base")),
+            (("GL450", "Base", "2014"), (["gl-class"], "GL 450 Base")),
+            (("GLK350", "Base", "2013"), (["glk-class"], "GLK 350 Base")),
+            (("GLS450", "Base", "2020"), (["gls"], "GLS 450 Base")),
+            (("S550", "Base", "2015"), (["s-class"], "S 550 Base")),
+            (("SLC300", "Base", "2018"), (["slc", "slc-class"], "SLC 300 Base")),
+            (("A220", "Base", "2020"), (["a-class"], "A 220 Base")),
+            (("EQB", "300 Base", "2023"), (["mercedes-eq-eqb"], "EQB 300 Base")),
+            (("EQS450+", "Base", "2023"), (["mercedes-eq-eqs"], "EQS 450+ Base")),
+            (("AMG", "GT Base", "2018"), (["mercedes-amg-gt"], "GT Base")),
+            (("B C300W C 300", "", "2018"), (["c-class"], "C 300")),                       # Manheim
+            (("G63W4 Amg Amg G 63", "", "2021"), (["mercedes-amg-g-class", "g-class"], "G 63 AMG")),
+            (("Sprinter", "2500 Base", "2019"), None), (("B-Class", "Electric Drive", "2017"), None),
+            (("Maybach", "S 580", "2022"), None), (("Metris", "Base", "2018"), None)]
+
+
+class MercedesClassTest(unittest.TestCase):
+    """Mercedes: на аукционах модель — «C300», на KBB — класс («C-Class»), а «C 300» — комплектация."""
+
+    def test_mapping(self):
+        from lot_analyzer import kbb_page
+        for (model, trim, year), want in MB_CASES:
+            got = kbb_page.mercedes_class(model, trim, year)
+            self.assertEqual((got[0], got[1]) if got else None, want, (model, trim, year))
+        self.assertEqual(kbb_page.kbb_model("Mercedes-Benz", "C300", "Base", "2016")[0], ["c-class"])
+        self.assertIsNone(kbb_page.kbb_model("Honda", "C300", "", "2016"))
+
+    def test_url_lookup_and_saved_page(self):
+        from lot_analyzer import kbb_page
+        self.assertIn("/mercedes-benz/c-class/2016/?", kbb_site.browser_url({}, "2016", "Mercedes-Benz", "C300", "60000"))
+        self.assertIn("/mercedes-benz/gle/2018/?", kbb_site.browser_url({}, "2018", "Mercedes-Benz", "GLE350", "60000"))
+        links = kbb_site.trim_links(MB_PAGE, "mercedes-benz", "c-class", "2016")
+        self.assertEqual(kbb_site.pick_trim(links, kbb_page.mercedes_class("C300", "Base", "2016")[1])[0], "c-300-sedan-4d")
+        tmp = tempfile.TemporaryDirectory()
+        old = kbb_site.CACHE_PATH
+        kbb_site.CACHE_PATH = Path(tmp.name) / "cache.json"
+        asked = []
+
+        def fetch(url):
+            asked.append(url)
+            if url.endswith("/mercedes-benz/c-class/2016/"):
+                return MB_PAGE
+            if "/c-300-sedan-4d/" in url:
+                return kbb_html(60000)
+            raise kbb_site.KbbSiteError("404")
+        try:
+            costs = load_costs(DEFAULT_COSTS_PATH)
+            costs["kbb_site"] = {**costs.get("kbb_site", {}), "enabled": True}
+            got = kbb_site.lookup(costs, "55SWF4JB0GU000001", "2016", "Mercedes-Benz", "C300", "Base", "60000", fetch=fetch)
+        finally:
+            kbb_site.CACHE_PATH = old
+            tmp.cleanup()
+        self.assertEqual(got["trim_slug"], "c-class/c-300-sedan-4d")
+        self.assertFalse(any("/c300/" in u or "/c-300/" in u for u in asked), asked)
+        record = {"year": "2016", "make": "mercedes-benz", "model": "c-class", "miles": 60400}
+        self.assertTrue(kbb_page.matches(record, {"year": "2016", "make": "Mercedes-Benz", "model": "C300", "trim": "Base", "odometer_miles": "60000"}, 3000))
+
+    def test_extension_same_as_program(self):
+        """Автопилот KBB в расширении (content.js) переводит Mercedes так же, как программа."""
+        import json
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("нет node")
+        src = (Path(__file__).resolve().parent.parent / "tools" / "kbb_extension" / "content.js").read_text(encoding="utf-8")
+        block = re.search(r"(var MB_CLASS = .*?var mbClass = function \(model, trim, year\) \{.*?\n    \};)", src, re.S).group(1)
+        script = f"{block}\nvar cases = {json.dumps([list(c) for c, _ in MB_CASES])};\n" \
+                 "console.log(JSON.stringify(cases.map(function (c) { var r = mbClass(c[0], c[1], c[2]); return r ? [r.models, r.t] : null; })));"
+        out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out, [list(w) if w else None for _, w in MB_CASES])
+        self.assertIn("mbClass(car.md, car.t, car.y)", src)
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,8 +45,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.28"
-PROGRAM_VERSION = "2026-11-14.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.29"
+PROGRAM_VERSION = "2026-11-15.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -469,6 +469,8 @@ MANUAL_PATH = DATA_DIR / "inspect_manual.json"         # «На осмотр» �
 CARFAX_AUTO_PATH = DATA_DIR / "carfax_auto.json"
 BMW_WMI = ("WBA", "WBS", "WBY", "WBX", "5UX", "5UJ", "5YM", "4US")    # первые знаки VIN у BMW
 KBB_BMW_FIXED_AT = dt.datetime(2026, 11, 14, 12, 0).timestamp()        # с этой версии BMW ищется на KBB по серии
+MB_WMI = ("WDD", "WDB", "WDC", "WDF", "W1K", "W1N", "W1V", "55S", "4JG")   # Mercedes-Benz
+KBB_MB_FIXED_AT = dt.datetime(2026, 11, 15, 12, 0).timestamp()         # с этой версии Mercedes ищется на KBB по классу
 CARFAX_AUTO_TRIES = 2                 # не вышло дважды (Carfax не нашёл отчёт, не открылся) — больше не пробуем
 CARFAX_AUTO_RETRY = 2 * 3600          # вторая попытка — не раньше чем через 2 часа
 CARFAX_AUTO_GAP = 20                  # секунд между заказами — по одному, как человек
@@ -1234,9 +1236,11 @@ def load_kbb_week() -> dict[str, dict]:
     except (OSError, ValueError):
         data = {}
     since = time.time() - 7 * 86400
-    # До 14.11.2026 BMW «535», «328» … искались на KBB как модель «535i» (а там «5 Series») — те попытки не считаем.
+    # До 14–15.11.2026 BMW «535» и Mercedes «C300» искались на KBB по номеру (а там «5 Series», «C-Class») — те попытки не считаем.
+    def stale(vin: str, at: float) -> bool:
+        return (vin[:3] in BMW_WMI and at < KBB_BMW_FIXED_AT) or (vin[:3] in MB_WMI and at < KBB_MB_FIXED_AT)
     return {vin: a for vin, a in (data.get("asked") or {}).items() if isinstance(a, dict) and float(a.get("at") or 0) > since
-            and not (vin[:3] in BMW_WMI and float(a.get("at") or 0) < KBB_BMW_FIXED_AT)}
+            and not stale(vin, float(a.get("at") or 0))}
 
 
 def kbb_week_summary(rows: list[dict], asked: dict[str, dict] | None = None) -> dict:

@@ -286,6 +286,38 @@ window.lotAnalyzerAuto = true;
       var models = /gran turismo|\bgt\b/i.test(rest) ? [series + '-gran-turismo', series] : /gran coupe/i.test(rest) ? [series + '-gran-coupe', series] : [series];
       return { models: models, t: (code + ' ' + rest).trim(), md: m[2] + ' Series' };
     };
+    /* Mercedes: на аукционах модель — «C300» + «Base», «GLE53» + «AMG Coupe Base», у Manheim «B C300W C 300»; на KBB
+       модель — класс («c-class», «gle», «mercedes-amg-gle-coupe»), «C 300» — комплектация. Как kbb_page.mercedes_class. */
+    var MB_CLASS = { a: ['a-class'], b: ['b-class'], c: ['c-class'], cla: ['cla', 'cla-class'], cle: ['cle'], clk: ['clk-class'],
+      cls: ['cls-class', 'cls'], e: ['e-class'], g: ['g-class'], gl: ['gl-class'], gla: ['gla', 'gla-class'], glb: ['glb'], glc: ['glc'],
+      gle: ['gle'], glk: ['glk-class'], gls: ['gls'], m: ['m-class'], ml: ['m-class'], r: ['r-class'], s: ['s-class'], sl: ['sl-class', 'sl'],
+      slc: ['slc', 'slc-class'], slk: ['slk-class'], eqb: ['mercedes-eq-eqb'], eqe: ['mercedes-eq-eqe'], eqs: ['mercedes-eq-eqs'] };
+    var MB_COUPE = { glc: 'glc-coupe', gle: 'gle-coupe' }, MB_SUV = { eqe: 'mercedes-eq-eqe-suv', eqs: 'mercedes-eq-eqs-suv' };
+    var MB_AMG = ['a', 'c', 'cla', 'cls', 'e', 'g', 'gla', 'glb', 'glc', 'gle', 'gls', 's', 'sl', 'slc', 'eqe', 'eqs'];
+    var mbClass = function (model, trim, year) {
+      var text = (String(model || '') + ' ' + String(trim || '')).replace(/\s+/g, ' ').trim();
+      if (/maybach|sprinter|metris/i.test(text)) { return null; }
+      if (/^amg\s+gt\b/i.test(text)) { return { models: ['mercedes-amg-gt'], t: text.slice(4), md: 'mercedes-amg-gt' }; }
+      var m = /(?:^|[^a-z0-9])(cla|cle|clk|cls|gla|glb|glc|gle|glk|gls|slc|slk|eqb|eqe|eqs|gl|ml|sl|a|b|c|e|g|m|r|s)\s*-?\s*(\d{2,3})(?!\d)(e|d|h)?(\+)?(?![a-z])/i.exec(text);
+      if (!m) { return null; }
+      var fam = m[1].toLowerCase(), num = m[2], y = parseInt(String(year || '').slice(0, 4), 10) || 0;
+      var rest = text.slice(m.index + m[0].length).replace(/plug[- ]?in(?:\s+hybrid)?/ig, ' ').replace(/\s+/g, ' ').trim();
+      var amg = num.length === 2 || /\bamg\b/i.test(text);
+      var base = MB_CLASS[fam].slice();
+      if (fam === 'cla' && y > 0 && y <= 2015) { base.reverse(); }
+      if (fam === 'cls' && y >= 2019) { base.reverse(); }
+      if (MB_COUPE[fam] && /\bcoupe\b/i.test(rest)) { base = [MB_COUPE[fam]].concat(base); }
+      if (MB_SUV[fam] && /\bsuv\b/i.test(rest)) { base = [MB_SUV[fam]].concat(base); }
+      var models = base;
+      if (amg && MB_AMG.indexOf(fam) >= 0) {
+        var pages = (fam === 'eqe' || fam === 'eqs') ? ['mercedes-amg-' + fam] : base.filter(function (b) { return b.indexOf('mercedes-') !== 0; }).map(function (b) { return 'mercedes-amg-' + b; });
+        models = (y >= 2016 || !y) ? pages.concat(base) : base.concat(pages);
+      }
+      models = models.filter(function (x, i, all) { return all.indexOf(x) === i; });
+      var label = (fam === 'ml' || fam === 'm') ? 'ML' : fam.toUpperCase();
+      var code = label + ' ' + num + (m[3] || '').toLowerCase() + (m[4] || '') + (amg && !/\bamg\b/i.test(rest) ? ' AMG' : '');
+      return { models: models, t: (code + ' ' + rest).trim(), md: models[0] };
+    };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
     var nextData = function (html) {
       var found = /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(html);
@@ -379,8 +411,9 @@ window.lotAnalyzerAuto = true;
       /* Как модель называется на KBB: аукцион пишет «Bolt», KBB — «Bolt EV»; гибриды у KBB часто отдельной моделью
          («camry-hybrid»). Пробуем варианты по очереди, пока страница не покажет комплектации. */
       /* Старые строки CarMax: «Model» + трим «X 75D» → модель «Model X». EUV, Plug-in — у KBB отдельные модели. */
-      var bmw = /^bmw$/i.test(car.mk || '') ? bmwSeries(car.md, car.t) : null;
-      if (bmw) { car.md = bmw.md; car.t = bmw.t; }               // «535» + «I» → «5 Series», комплектация «535i»
+      var bmw = /^bmw$/i.test(car.mk || '') ? bmwSeries(car.md, car.t)
+        : /^mercedes(-benz)?$/.test(slugOf(car.mk)) ? mbClass(car.md, car.t, car.y) : null;
+      if (bmw) { car.md = bmw.md; car.t = bmw.t; }               // «535» + «I» → «5 Series» / «535i»; «C300» → «c-class» / «C 300»
       if (/^model$/i.test(car.md) && /^[3sxy]\b/i.test(car.t || '')) { car.md = 'Model ' + car.t.charAt(0).toUpperCase(); car.t = car.t.slice(1).trim(); }
       var lead = /^(euv|plug[- ]?in(?: hybrid)?|prime|electric)\b/i.exec(car.t || '');
       if (lead) { car.md = car.md + ' ' + lead[1]; car.t = car.t.slice(lead[0].length).trim(); }

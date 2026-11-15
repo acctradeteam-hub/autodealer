@@ -175,19 +175,84 @@ def bmw_series(model: str, trim: str = "") -> tuple[list[str], str] | None:
     return slugs, f"{code} {rest}".strip()
 
 
+# Mercedes: класс → модель на KBB (по ссылкам со страниц kbb.com). Варианты — по очереди; год решает, какой первым.
+_MB_CLASS = {"a": ["a-class"], "b": ["b-class"], "c": ["c-class"], "cla": ["cla", "cla-class"], "cle": ["cle"], "clk": ["clk-class"],
+             "cls": ["cls-class", "cls"], "e": ["e-class"], "g": ["g-class"], "gl": ["gl-class"], "gla": ["gla", "gla-class"],
+             "glb": ["glb"], "glc": ["glc"], "gle": ["gle"], "glk": ["glk-class"], "gls": ["gls"], "m": ["m-class"], "ml": ["m-class"],
+             "r": ["r-class"], "s": ["s-class"], "sl": ["sl-class", "sl"], "slc": ["slc", "slc-class"], "slk": ["slk-class"],
+             "eqb": ["mercedes-eq-eqb"], "eqe": ["mercedes-eq-eqe"], "eqs": ["mercedes-eq-eqs"]}
+_MB_COUPE = {"glc": "glc-coupe", "gle": "gle-coupe"}
+_MB_SUV = {"eqe": "mercedes-eq-eqe-suv", "eqs": "mercedes-eq-eqs-suv"}
+_MB_AMG_PAGE = {"a", "c", "cla", "cls", "e", "g", "gla", "glb", "glc", "gle", "gls", "s", "sl", "slc", "eqe", "eqs"}
+_MB_CODE = re.compile(r"(?<![a-z0-9])(cla|cle|clk|cls|gla|glb|glc|gle|glk|gls|slc|slk|eqb|eqe|eqs|gl|ml|sl|a|b|c|e|g|m|r|s)"
+                      r"\s*-?\s*(\d{2,3})(?!\d)(e|d|h)?(\+)?(?![a-z])", re.I)
+
+
+def mercedes_class(model: str, trim: str = "", year: str = "") -> tuple[list[str], str] | None:
+    """Mercedes: на аукционах модель — «C300» + «Base», «GLE53» + «AMG Coupe Base», у Manheim «B C300W C 300»; на KBB
+    модель — класс («c-class», «gle», «mercedes-amg-gle-coupe»), а «C 300» — комплектация. → (модели KBB по очереди,
+    трим для выбора комплектации) или None (Sprinter, Metris, B-Class, AMG GT … — как раньше)."""
+    text = " ".join(f"{model or ''} {trim or ''}".split())
+    if re.search(r"maybach|sprinter|metris", text, re.I):
+        return None
+    if re.match(r"amg\s+gt\b", text, re.I):
+        return ["mercedes-amg-gt"], text[4:]
+    found = _MB_CODE.search(text)
+    if not found:
+        return None
+    fam, num = found.group(1).lower(), found.group(2)
+    rest = " ".join(text[found.end():].split())     # у Manheim слова до номера («B C300W») — служебные, не нужны
+    rest = " ".join(re.sub(r"plug[- ]?in(?:\s+hybrid)?", " ", rest, flags=re.I).split())
+    try:
+        y = int(str(year)[:4])
+    except ValueError:
+        y = 0
+    amg = len(num) == 2 or bool(re.search(r"\bamg\b", text, re.I))
+    base = list(_MB_CLASS[fam])
+    if fam == "cla" and 0 < y <= 2015:
+        base.reverse()                                   # CLA 2014–2015 у KBB — «cla-class»
+    if fam == "cls" and y >= 2019:
+        base.reverse()
+    if fam in _MB_COUPE and re.search(r"\bcoupe\b", rest, re.I):
+        base = [_MB_COUPE[fam]] + base
+    if fam in _MB_SUV and re.search(r"\bsuv\b", rest, re.I):
+        base = [_MB_SUV[fam]] + base
+    slugs = base
+    if amg and fam in _MB_AMG_PAGE:
+        pages = [f"mercedes-amg-{b}" for b in base if not b.startswith("mercedes-")]
+        if fam in ("eqe", "eqs"):
+            pages = [f"mercedes-amg-{fam}"]
+        slugs = (pages + base) if y >= 2016 or not y else (base + pages)   # раньше 2016 AMG — в самом классе
+    label = {"ml": "ML", "m": "ML"}.get(fam, fam.upper())
+    code = f"{label} {num}{(found.group(3) or '').lower()}{found.group(4) or ''}"
+    if amg and not re.search(r"\bamg\b", rest, re.I):
+        code += " AMG"
+    return list(dict.fromkeys(slugs)), f"{code} {rest}".strip()
+
+
+def kbb_model(make: str, model: str, trim: str = "", year: str = "") -> tuple[list[str], str] | None:
+    """Марки, у которых на KBB модель — серия / класс, а номер — комплектация: BMW («535» → 5-series), Mercedes («C300» → c-class)."""
+    make_s = slug(make)
+    if make_s == "bmw":
+        return bmw_series(model, trim)
+    if make_s == "mercedes-benz" or make_s == "mercedes":
+        return mercedes_class(model, trim, year)
+    return None
+
+
 def matches(record: dict, row: dict[str, str], max_gap: int) -> bool:
     """Подходит ли страница KBB машине лота: тот же VIN, либо год, марка, модель и пробег рядом."""
     if record.get("vin"):
         return record["vin"] == row.get("vin")
     if str(row.get("year", "")) != record["year"] or slug(row.get("make", "")) != record["make"]:
         return False
-    kbb_model = record["model"]
+    page_model = record["model"]
     lot_models = [slug(row.get("model", ""))]
-    bmw = bmw_series(row.get("model", ""), row.get("trim", "")) if record["make"] == "bmw" else None
-    if bmw:
-        lot_models += bmw[0]                          # «535» на аукционе — «5-series» на KBB
-    if not any(lot_model == kbb_model or lot_model.replace("-", "") == kbb_model.replace("-", "")
-               or kbb_model.startswith(lot_model + "-") or lot_model.startswith(kbb_model + "-") for lot_model in lot_models):
+    mapped = kbb_model(record["make"], row.get("model", ""), row.get("trim", ""), str(row.get("year", "")))
+    if mapped:
+        lot_models += mapped[0]                       # «535» на аукционе — «5-series» на KBB, «C300» — «c-class»
+    if not any(lot_model == page_model or lot_model.replace("-", "") == page_model.replace("-", "")
+               or page_model.startswith(lot_model + "-") or lot_model.startswith(page_model + "-") for lot_model in lot_models):
         return False
     miles = re.sub(r"\D", "", str(row.get("odometer_miles", "")))
     if not record["miles"] or not miles:
