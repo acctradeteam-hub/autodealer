@@ -6,7 +6,11 @@ const money = v => v ? "$" + Number(v).toLocaleString("en-US") : "—";
 const TAGS = [["Беру", "good"], ["Не беру", "badc"]];      // только решение; остальное — голосом и текстом
 /* Смог-чек на осмотре: проходит / не проходит — в программу тегом «Смог проходит» / «Смог не проходит». */
 const SMOG = [["Смог проходит", "good", "проходит"], ["Смог не проходит", "badc", "не проходит"]];
-const PAIRS = [["Беру", "Не беру"], ["Смог проходит", "Смог не проходит"]];
+/* Камера заднего вида и запуск (кнопка Start/Stop или ключ) — для полной картины по машине; запуск программа запоминает
+   для такой же машины: на Oceanside у таких CarMax забирает ключ — в списке будет «🔑 Нужен ключ». */
+const CAMERA = [["Камера есть", "good", "есть"], ["Камера нет", "badc", "нет"]];
+const START = [["Кнопка Start/Stop", "info", "кнопка Start/Stop"], ["Ключ в замке", "info", "ключ"]];
+const PAIRS = [["Беру", "Не беру"], ["Смог проходит", "Смог не проходит"], ["Камера есть", "Камера нет"], ["Кнопка Start/Stop", "Ключ в замке"]];
 const BRANCH = "main", LIST = "voice/list.json", NOTES = "voice/notes.json";
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
@@ -111,6 +115,7 @@ function render() {
         <div class="name">${esc(c.car)}<small>${c.miles ? Number(c.miles).toLocaleString("en-US") + " миль · " : ""}…${esc((c.vin || "").slice(-6))}${c.place ? " · " + esc(c.place.replace(/^CarMax /, "")) : ""}</small>
         ${c.no_pics ? '<span class="nopics">NO PICTURES</span>' : ""}</div></div>
       ${(c.major || []).map(k => `<div class="major">⚠ MAJOR ${esc(String(k).toUpperCase())} DEFECT</div>`).join("")}
+      ${c.key ? `<div class="keyneed">${esc(c.key)}</div>` : ""}
       ${(c.carfax_check || []).length ? `<div class="cfx"><b>Carfax — смотреть:</b>${c.carfax_check.map(p => `<div>• ${esc(p)}</div>`).join("")}</div>` : ""}
       ${c.manual ? '<div class="manual">✋ Добавлено вручную — смотреть внимательно</div>' : ""}
       <div class="kbb"><span>KBB</span>${c.kbb ? money(c.kbb) : c.kbb_est ? "≈" + money(c.kbb_est) : "—"}</div>
@@ -118,6 +123,8 @@ function render() {
       <div class="stars" role="group" aria-label="Оценка машины"><span>Оценка</span>${[1, 2, 3, 4, 5].map(k => `<button type="button" class="star${k <= rating ? " on" : ""}" data-star="${k}" aria-label="${k} из 5" aria-pressed="${k <= rating}">${k <= rating ? "★" : "☆"}</button>`).join("")}</div>
       <div class="tags">${TAGS.map(([t, k]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(t)}</button>`).join("")}</div>
       <div class="tags smog" role="group" aria-label="Смог-чек"><span>Смог-чек</span>${SMOG.map(([t, k, label]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(label)}</button>`).join("")}</div>
+      <div class="tags smog" role="group" aria-label="Камера заднего вида"><span>📷 Камера</span>${CAMERA.map(([t, k, label]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(label)}</button>`).join("")}${c.camera && !tags.some(t => t.startsWith("Камера")) ? `<small class="hint">${esc(c.camera)}</small>` : ""}</div>
+      <div class="tags smog" role="group" aria-label="Запуск"><span>Запуск</span>${START.map(([t, k, label]) => `<button type="button" class="tag ${k}${tags.includes(t) ? " on" : ""}" data-tag="${esc(t)}" aria-pressed="${tags.includes(t)}">${esc(label)}</button>`).join("")}</div>
       <div class="say"><button type="button" class="mic" data-mic="${esc(c.vin)}" aria-label="Надиктовать заметку">🎤</button>
         <textarea id="n-${esc(c.vin)}" data-vin="${esc(c.vin)}" placeholder="Нажмите 🎤 и говорите, или пишите здесь">${esc(n.text || "")}</textarea></div>
       <div class="saved" id="s-${esc(c.vin)}">${n.at ? "сохранено " + hhmm(n.at) : ""}</div>

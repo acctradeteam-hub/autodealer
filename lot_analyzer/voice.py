@@ -40,6 +40,7 @@ def _url(repo: str, path: str) -> str:
 
 
 def car_of(row: dict) -> dict:
+    from . import vin_features
     from .inspection import major_defects
     from .notes import lot_note
 
@@ -54,7 +55,9 @@ def car_of(row: dict) -> dict:
             "market": row.get("market_estimate_usd", ""), "mp": row.get("my_proxy_usd", ""), "no_pics": row.get("no_photos") == "да",
             "notes": notes, "own": own, "url": row.get("lot_url", ""), "manual": bool(row.get("inspect_manual")),
             "major": major_defects(row),             # «Major Engine / Transmission Defect» — крупно на телефоне
-            "carfax_check": [p for p in str(row.get("carfax_check") or "").split("\n") if p.strip()]}   # Carfax: куда смотреть
+            "carfax_check": [p for p in str(row.get("carfax_check") or "").split("\n") if p.strip()],   # Carfax: куда смотреть
+            "key": vin_features.key_note(row),       # Oceanside: кнопка Start/Stop — ключ у CarMax
+            "camera": vin_features.camera(row)}      # камера заднего вида: отметка с осмотра или подсказка
 
 
 def push_list(rows: list[dict]) -> dict:
@@ -186,5 +189,11 @@ def attach(rows: list[dict]) -> None:
             row["phone_take"] = next((t for t in ("Беру", "Не беру") if t in (note.get("tags") or [])), "")
             # Смог-чек на осмотре: «Смог проходит» / «Смог не проходит»
             row["phone_smog"] = next((t.replace("Смог ", "") for t in ("Смог проходит", "Смог не проходит") if t in (note.get("tags") or [])), "")
+            # Запуск (кнопка Start/Stop или ключ) и камера заднего вида — с осмотра; запуск запоминается для такой же машины.
+            from . import vin_features
+            tags = note.get("tags") or []
+            row["phone_start"] = "кнопка" if vin_features.PUSH_TAG in tags else "ключ" if vin_features.KEY_TAG in tags else ""
+            row["phone_camera"] = "есть" if vin_features.CAMERA_YES in tags else "нет" if vin_features.CAMERA_NO in tags else ""
+            vin_features.learn(row, tags)
         if own:
             row["window_note"] = own.get("text", "")

@@ -2455,6 +2455,48 @@ class PageDiskCacheTest(unittest.TestCase):
             self.assertTrue((here / f"{name}.py").exists(), name)
         self.assertEqual(len(app._parser_stamp()), 16)
 
+class KeyAndCameraTest(unittest.TestCase):
+    """Oceanside: «🔑 Нужен ключ» у машин с кнопкой Start/Stop (по VIN NHTSA или по осмотру такой же машины);
+    камера заднего вида — отметка с осмотра или подсказка."""
+
+    def test_key_and_camera(self) -> None:
+        from unittest import mock
+        from lot_analyzer import inspection, vin_features, voice
+        tmp = Path(tempfile.mkdtemp())
+        with mock.patch.object(vin_features, "CACHE_PATH", tmp / "vin_features.json"), mock.patch.object(vin_features, "START_PATH", tmp / "start_types.json"):
+            got = vin_features.decode(["JTNB11HK0J3000001", "1HGCR2F38DA000002", "bad"], fetch=lambda batch: [
+                {"VIN": "JTNB11HK0J3000001", "KeylessIgnition": "Standard", "RearVisibilitySystem": "Standard"},
+                {"VIN": "1HGCR2F38DA000002", "KeylessIgnition": "", "RearVisibilitySystem": ""}])
+            self.assertEqual(got, 2)
+            camry = {"vin": "JTNB11HK0J3000001", "year": "2018", "make": "Toyota", "model": "Camry", "trim": "XSE", "location": "Oceanside, CA"}
+            accord = {"vin": "1HGCR2F38DA000002", "year": "2013", "make": "Honda", "model": "Accord", "trim": "LX", "location": "Oceanside, CA"}
+            self.assertIn("Нужен ключ", vin_features.key_note(camry))
+            self.assertIn("по VIN", vin_features.key_note(camry))
+            self.assertEqual(vin_features.key_note(dict(camry, location="Murrieta, CA")), "")        # только Oceanside
+            self.assertEqual(vin_features.key_note(accord), "")                                       # неизвестно — без пометки
+            # на осмотре: у этой Accord — кнопка; такая же Accord (другой VIN) на Oceanside — тоже «нужен ключ»
+            vin_features.learn(accord, ["Кнопка Start/Stop"])
+            twin = dict(accord, vin="1HGCR2F38DA000003")
+            self.assertIn("по осмотру такой же машины", vin_features.key_note(twin))
+            # отметка «Ключ в замке» на самой машине главнее VIN
+            self.assertEqual(vin_features.key_note(dict(camry, phone_start="ключ")), "")
+            # камера: отметка с осмотра → по VIN → по году
+            self.assertEqual(vin_features.camera(dict(accord, phone_camera="нет")), "нет")
+            self.assertEqual(vin_features.camera(camry), "есть (по VIN)")
+            self.assertEqual(vin_features.camera(dict(accord, vin="X", year="2020")), "есть (с 2018 обязательна)")
+            self.assertEqual(vin_features.camera(accord), "")
+            # телефон и список на печать
+            car = voice.car_of(camry)
+            self.assertIn("Нужен ключ", car["key"])
+            self.assertEqual(car["camera"], "есть (по VIN)")
+            page = inspection._key_html(camry)
+            self.assertIn("keyneed", page)
+        app_js = (ROOT / "tools" / "android_voice" / "app" / "src" / "main" / "assets" / "app.js").read_text(encoding="utf-8")
+        for needle in ('["Камера есть", "Камера нет"]', '["Кнопка Start/Stop", "Ключ в замке"]', 'class="keyneed"'):
+            self.assertIn(needle, app_js)
+        self.assertIn("vin_features.PUSH_TAG", (ROOT / "lot_analyzer" / "voice.py").read_text(encoding="utf-8"))
+        self.assertIn("🔑 нужен ключ", app.PAGE)
+
 class FastBidTest(unittest.TestCase):
     """Ставка в окне: пересчитывается одна машина (а не все), окно получает её строку сразу, список остаётся в памяти."""
 
