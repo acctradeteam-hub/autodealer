@@ -271,7 +271,7 @@ class TestMajorDefectInspection(unittest.TestCase):
         self.assertEqual(r.max_bid, clean.max_bid)                       # не подтвердится — как у чистой
         self.assertLess(r.max_bid_if_defect or 0, r.max_bid)             # подтвердится — с резервом на мотор
         self.assertEqual(r.inspect, ["объявлен Major Engine Defect"])
-        self.assertAlmostEqual(r.market_price, 10000 * self.costs["market"]["kbb_heavy"])
+        self.assertAlmostEqual(r.market_price, 10000 * 0.54)            # тяжёлый дефект, KBB $6–12k — 0,54 (kbb_price_bands)
         self.assertIn("шанс", " ".join([r.verdict, "шанс"]))
 
     def test_disabled_setting_applies_reserve(self) -> None:
@@ -305,7 +305,7 @@ class TestMajorDefectInspection(unittest.TestCase):
         r = calculate(BidInput(auction="CarMax", kbb_private_party=4500, history_text="Major Engine Defect"), self.costs)
         self.assertTrue(r.max_bid, r.verdict)
         self.assertIsNone(r.max_bid_if_defect)
-        self.assertAlmostEqual(r.market_price, 4500 * self.costs["market"]["kbb_heavy"])
+        self.assertAlmostEqual(r.market_price, 4500 * 0.45)             # тяжёлый дефект, KBB до $6k — 0,45
         self.assertIsNotNone(r.profit_at_market)
 
 

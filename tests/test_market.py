@@ -138,7 +138,7 @@ class TestMarketInVerdict(unittest.TestCase):
 
     def test_clean_car_market_note(self) -> None:
         result = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="clean"), self.costs)
-        self.assertAlmostEqual(result.market_price, 10000 * self.costs["market"]["kbb_clean"])
+        self.assertAlmostEqual(result.market_price, 10000 * 0.76)          # без тяжёлых дефектов, KBB $8–12k — 0,76
         self.assertIn("выиграть вряд ли", result.verdict)       # при продаже по KBB и прибыли $1500 рынок выше
 
     def test_higher_sale_price_gives_a_chance(self) -> None:
@@ -147,7 +147,33 @@ class TestMarketInVerdict(unittest.TestCase):
 
     def test_heavy_defect_uses_heavy_share(self) -> None:
         result = calculate(BidInput(auction="CarMax", kbb_private_party=10000, history_text="Major Engine Defect"), self.costs)
-        self.assertAlmostEqual(result.market_price, 10000 * self.costs["market"]["kbb_heavy"])
+        self.assertAlmostEqual(result.market_price, 10000 * 0.54)
+
+    def test_kbb_share_depends_on_price(self) -> None:
+        """Доля от KBB — по цене машины: дешёвые уходят дешевле относительно KBB, дорогие — дороже (торги 16–17.11)."""
+        from lot_analyzer.bid import expected_market_price, kbb_share, win_chance_at
+        shares = [expected_market_price(BidInput(auction="CarMax", kbb_private_party=k, history_text="clean"), self.costs)[0] / k
+                  for k in (5000, 10000, 15000, 25000)]
+        self.assertEqual([round(x, 2) for x in shares], [0.69, 0.76, 0.78, 0.83])
+        heavy = [expected_market_price(BidInput(auction="CarMax", kbb_private_party=k, history_text="Major Engine Defect"), self.costs)[0] / k
+                 for k in (5000, 10000, 20000)]
+        self.assertEqual([round(x, 2) for x in heavy], [0.45, 0.54, 0.65])
+        self.assertIn("по цене машины", expected_market_price(BidInput(auction="CarMax", kbb_private_party=5000, history_text="clean"), self.costs)[1])
+        # своя доля площадки (по вашим итогам) — поправка во столько же раз
+        market = {"kbb_clean": 0.70, "kbb_note": "по вашим итогам Chino"}
+        share, factor, note = kbb_share(5000, "clean", market, self.costs)
+        self.assertAlmostEqual(share, round(0.70 * 0.69 / 0.752, 3))
+        self.assertIn("площадки", note)
+        # шанс выиграть: та же ставка ÷ KBB у дешёвой машины — выше (доля рынка ниже)
+        cheap = win_chance_at(0.70 * 5000, BidInput(auction="CarMax", kbb_private_party=5000, history_text="clean"), self.costs)
+        dear = win_chance_at(0.70 * 25000, BidInput(auction="CarMax", kbb_private_party=25000, history_text="clean"), self.costs)
+        self.assertGreater(cheap, dear)
+        estimate = BidInput(auction="CarMax", kbb_private_party=5000, history_text="clean", kbb_source="по похожим")   # прикидка KBB — без диапазонов
+        self.assertAlmostEqual(expected_market_price(estimate, self.costs)[0] / 5000,
+                               round(self.costs["market"]["kbb_clean"] * self.costs["kbb_estimate"].get("market_factor", 0.88), 3))
+        flat = dict(self.costs, kbb_price_bands={})                       # без диапазонов — как раньше, одна доля
+        self.assertAlmostEqual(expected_market_price(BidInput(auction="CarMax", kbb_private_party=5000, history_text="clean"), flat)[0],
+                               5000 * flat["market"]["kbb_clean"])
 
 
 if __name__ == "__main__":

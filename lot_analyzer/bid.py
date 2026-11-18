@@ -336,6 +336,32 @@ def market_config(auction: str, costs: dict, location: str = "") -> dict:
     return market
 
 
+def kbb_share(kbb: float, kind: str, market: dict, costs: dict) -> tuple[float, float, str]:
+    """Доля от KBB для машины такой цены (costs: kbb_price_bands): дешёвые на торгах уходят дешевле относительно KBB,
+    дорогие — дороже. → (доля, во сколько раз она отличается от одной доли market[kbb_kind] — для кривой шанса, пояснение).
+    Своя доля площадки (по вашим итогам) — поправляется во столько же раз, во сколько диапазон отличается от средней."""
+    flat = float(market.get(f"kbb_{kind}") or 0)
+    cfg = costs.get("kbb_price_bands") or {}
+    band = next((float(share) for upper, share in cfg.get(kind) or [] if kbb < float(upper)), None)
+    if not flat or band is None or not kbb:
+        return flat, 1.0, ""
+    upper = next(float(u) for u, _ in cfg[kind] if kbb < float(u))
+    where = f"KBB до {_usd(upper)}" if upper < 9_000_000 else "дорогие"
+    if market.get("kbb_note") and cfg.get(f"base_{kind}"):
+        share = round(flat * band / float(cfg[f"base_{kind}"]), 3)
+        note = f"доля площадки с поправкой по цене ({where})"
+    else:
+        share = band
+        note = f"по цене машины ({where})"
+    return share, share / flat, note
+
+
+def _kbb_curve(points: list, kbb: float, kind: str, market: dict, costs: dict) -> list:
+    """Кривая шанса выиграть — сдвинута так же, как доля от KBB по цене машины."""
+    _, factor, _ = kbb_share(kbb, kind, market, costs)
+    return [[float(r) * factor, q] for r, q in points] if factor != 1.0 else points
+
+
 def _market_base(data: "BidInput", market: dict) -> str:
     """Какая база у доли рынка: «kbb» или «mmr»."""
     if market.get("prefer") == "mmr" and data.mmr and market.get("mmr_clean"):
@@ -363,8 +389,10 @@ def expected_market_price(data: "BidInput", costs: dict) -> tuple[float | None, 
                 break
         return data.mmr * share, f"MMR × {share:g} — {label}{note}"
     if data.kbb_private_party and market.get(f"kbb_{kind}"):
-        share = float(market[f"kbb_{kind}"])
-        hybrid_note = ""
+        # По цене машины — только с настоящим KBB: у прикидки своя поправка (kbb_estimate.market_factor), подобранная
+        # под одну долю; вместе с диапазонами она занижала цену (торги 17.11: +10% к прогнозу).
+        share, _, band_note = (float(market[f"kbb_{kind}"]), 1.0, "") if data.kbb_source else kbb_share(data.kbb_private_party, kind, market, costs)
+        hybrid_note = f"; {band_note}" if band_note else ""
         if data.kbb_source and "по вашим уточнениям" not in data.kbb_source:   # уже поправлена обучением — не дважды
             # Предварительный KBB (по похожим) выше настоящего: на торгах CarMax 19–20.10 цена продажи таких машин
             # была на 10–13% ниже нашей оценки рынка (162 продажи), с настоящим KBB — в пределах ±3%.
@@ -488,6 +516,8 @@ def win_chance_at(bid: float, data: BidInput, costs: dict) -> float | None:
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
     heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
     points = market.get(f"{base_kind}_{'heavy' if heavy else 'clean'}_curve") or []
+    if base_kind == "kbb" and base_value and not data.kbb_source:
+        points = _kbb_curve(points, base_value, "heavy" if heavy else "clean", market, costs)
     return win_chance(bid, base_value, points) if base_value and bid else None
 
 
@@ -531,6 +561,8 @@ def _calculate_scenarios(data: BidInput, costs: dict) -> BidResult:
     base_kind = _market_base(data, market)
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
     heavy_curve = market.get(f"{base_kind}_heavy_curve") or []
+    if base_kind == "kbb" and base_value and not data.kbb_source:
+        heavy_curve = _kbb_curve(heavy_curve, base_value, "heavy", market, costs)
     result.win_chance = win_chance(result.max_bid, base_value, heavy_curve) if base_value else None
     bid = result.max_bid
     verdict = f"ОСМОТР: до {_usd(bid)}, если дефект не подтвердится"
@@ -725,6 +757,8 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
     base_value = data.kbb_private_party if base_kind == "kbb" else data.mmr
     heavy = bool(_HEAVY.search(f"{data.history_text} {data.defects_text}"))
     points = market_cfg.get(f"{base_kind}_{'heavy' if heavy else 'clean'}_curve") or []
+    if base_kind == "kbb" and base_value and not data.kbb_source:
+        points = _kbb_curve(points, base_value, "heavy" if heavy else "clean", market_cfg, costs)
     chance = win_chance(bid, base_value, points) if base_value else None
     result.win_chance = chance
     if market:

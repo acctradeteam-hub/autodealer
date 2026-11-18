@@ -414,7 +414,7 @@ class HybridTest(unittest.TestCase):
         costs["hybrid"]["battery_only_if_reported"] = False                  # по-старому: всегда при большом пробеге
         self.assertEqual(plain.max_bid - calculate(BidInput(**base, miles=135000, hybrid=True), costs).max_bid, 750)
         price, note = expected_market_price(BidInput(**base, miles=135000, hybrid=True), costs)
-        self.assertAlmostEqual(price, 8000 * 0.72)
+        self.assertAlmostEqual(price, 8000 * round(0.76 * 0.9, 3))      # доля KBB $8–12k (0,76) × гибрид с пробегом 0,9
         self.assertIn("гибрид", note)
 
 
