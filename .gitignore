@@ -1,5 +1,9 @@
 __pycache__/
 *.py[cod]
+
+# Ключ подписи приложения на телефон — только в закрытом черновике релиза voice-app-key, не в git.
+*.keystore
+*.jks
 .venv/
 venv/
 

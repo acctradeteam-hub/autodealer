@@ -79,7 +79,7 @@ textarea{width:100%;box-sizing:border-box;min-height:84px;padding:10px 12px;bord
   padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
   display:flex;gap:10px;align-items:center;z-index:5}
 .bar .status{flex:1;min-width:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-details.cfg{font-size:14px;color:var(--muted)}.macbtn{width:100%;margin:6px 0 8px;padding:12px;font-size:17px;border:0;border-radius:10px;background:#1f3864;color:#fff}
+details.cfg{font-size:14px;color:var(--muted)}.cfgnote{margin-top:6px;font-size:13px}.macbtn{width:100%;margin:6px 0 8px;padding:12px;font-size:17px;border:0;border-radius:10px;background:#1f3864;color:#fff}
 details.cfg input,details.cfg button{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);margin-top:4px}
 @media (prefers-reduced-motion:no-preference){.car{transition:border-color .2s}}
 </style>
@@ -102,6 +102,7 @@ details.cfg input,details.cfg button{width:100%;box-sizing:border-box;padding:8p
     <input id="token" type="password" placeholder="github_pat_…" autocomplete="off">
     <button type="button" id="savecfg">Сохранить</button>
     <div id="cfgstate"></div>
+    <div class="cfgnote">Адрес и токен хранятся в телефоне. Новые версии приложения (с 1.7) ставятся поверх — вводить заново не нужно.</div>
   </details>
 </div>
 <div id="empty" class="empty" hidden>

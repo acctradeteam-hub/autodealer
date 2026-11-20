@@ -24,6 +24,27 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
+      # Постоянный ключ подписи: без него каждая сборка подписана новым ключом, Android не ставит её поверх старой —
+      # приложение приходилось удалять, и адрес Mac и токен в телефоне пропадали. Ключ создаётся один раз и хранится
+      # в черновике релиза voice-app-key: черновики видны только тем, у кого есть право записи в репозиторий.
+      - name: Signing key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          KS=tools/android_voice/voice-app.keystore
+          if gh release view voice-app-key > /dev/null 2> key_err.txt; then
+            gh release download voice-app-key --pattern voice-app.keystore --dir tools/android_voice --clobber
+            echo "ключ подписи: прежний"
+          elif grep -qi "not found" key_err.txt; then
+            keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias voiceapp \
+              -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=Auction Notes, O=Lot Analyzer" > /dev/null
+            gh release create voice-app-key "$KS" --draft --title "Ключ подписи приложения (не публиковать)" \
+              --notes "Ключ подписи «Аукцион: заметки». Черновик не публиковать и не удалять: без него новая версия не встанет поверх старой."
+            echo "ключ подписи: создан"
+          else
+            cat key_err.txt; exit 1
+          fi
+          test -s "$KS"
       - name: Build APK
         run: gradle -p tools/android_voice assembleDebug --no-daemon
       - name: Publish release

@@ -242,6 +242,21 @@ class TestOneWindow(unittest.TestCase):
         self.assertEqual(sorted(r.get("vin") or r.get("lot_number") for r in got), sorted(r.get("vin") or r.get("lot_number") for r in want))
 
 
+
+class PhoneAppSigningTest(unittest.TestCase):
+    """Приложение на телефон: одна постоянная подпись — новая версия ставится поверх, адрес Mac и токен не пропадают."""
+
+    def test_stable_signing(self) -> None:
+        gradle = (ROOT / "tools" / "android_voice" / "app" / "build.gradle").read_text(encoding="utf-8")
+        self.assertIn("signingConfig signingConfigs.stable", gradle)
+        self.assertIn('rootProject.file("voice-app.keystore")', gradle)
+        flow = (ROOT / ".github" / "workflows" / "android-voice.yml").read_text(encoding="utf-8")
+        self.assertLess(flow.index("name: Signing key"), flow.index("name: Build APK"))
+        self.assertIn("gh release create voice-app-key", flow)
+        self.assertIn("--draft", flow.split("gh release create voice-app-key")[1].split("\n")[0])   # ключ — не в открытом релизе
+        self.assertIn("*.keystore", (ROOT / ".gitignore").read_text(encoding="utf-8"))
+        self.assertEqual(list((ROOT / "tools" / "android_voice").rglob("*.keystore")), [])          # ключа в репозитории нет
+
 if __name__ == "__main__":
     unittest.main()
 

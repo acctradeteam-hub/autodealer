@@ -7,8 +7,28 @@ android {
         applicationId "com.lotanalyzer.voice"
         minSdk 24
         targetSdk 34
-        versionCode 7
-        versionName "1.6"
+        versionCode 8
+        versionName "1.7"
+    }
+    // Одна постоянная подпись: новая версия ставится поверх старой, адрес Mac и токен в телефоне сохраняются.
+    // Ключ (voice-app.keystore) в git не хранится: сборка на GitHub берёт его из закрытого черновика релиза voice-app-key.
+    signingConfigs {
+        stable {
+            def ks = rootProject.file("voice-app.keystore")
+            if (ks.exists()) {
+                storeFile ks
+                storePassword "android"
+                keyAlias "voiceapp"
+                keyPassword "android"
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (rootProject.file("voice-app.keystore").exists()) {
+                signingConfig signingConfigs.stable
+            }
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
