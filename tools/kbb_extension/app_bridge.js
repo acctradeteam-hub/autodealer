@@ -34,6 +34,14 @@
       try { chrome.runtime.sendMessage({ type: 'carfax-order', vin: String(e.data.vin || '') }); } catch (err) { /* связь умерла */ }
       return;
     }
+    /* «🔑 Открыть Carfax»: показать вкладку входа Carfax (войти можете только вы). */
+    if (e.data.type === 'carfax-login') {
+      var lid = String(e.data.id || '');
+      if (lid && document.documentElement.getAttribute('data-la-done') === lid) { return; }
+      if (lid) { document.documentElement.setAttribute('data-la-done', lid); }
+      try { chrome.runtime.sendMessage({ type: 'carfax-login' }); } catch (err) { /* связь умерла */ }
+      return;
+    }
     /* «📷 Проверить фото»: фон сам откроет карточки лотов «без фото» на CarMax (вкладка в фоне, закроется сама). */
     if (e.data.type === 'photos-start') {
       /* Две живые связи в одной вкладке — одна проверка: первая отмечает запрос как выполненный. */

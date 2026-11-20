@@ -48,8 +48,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.29"
-PROGRAM_VERSION = "2026-11-18.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.30"
+PROGRAM_VERSION = "2026-11-20.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -584,6 +584,10 @@ SITE_NOTES_PATH = DATA_DIR / "site_notes.json"         # ваш текст в No
 MANUAL_PATH = DATA_DIR / "inspect_manual.json"         # «На осмотр» из окна: VIN → {date, car, at}
 # Carfax сам: машине с KBB (любым) расширение по очереди открывает отчёт на Carfax Online. VIN → {n: попыток, at}.
 CARFAX_AUTO_PATH = DATA_DIR / "carfax_auto.json"
+# Вход на Carfax Online: сайт попросил войти или подтвердить вход по телефону — {need, note, at}. Пока need — заказов Carfax
+# нет (ни одной новой вкладки), окно показывает «Carfax: нужен вход»; снимает — отчёт пришёл или расширение увидело, что вы вошли.
+CARFAX_LOGIN_PATH = DATA_DIR / "carfax_login.json"
+CARFAX_LOGIN_NOTE = "Carfax просит войти — войдите на Carfax Online в Chrome на Mac"
 BMW_WMI = ("WBA", "WBS", "WBY", "WBX", "5UX", "5UJ", "5YM", "4US")    # первые знаки VIN у BMW
 KBB_BMW_FIXED_AT = dt.datetime(2026, 11, 14, 12, 0).timestamp()        # с этой версии BMW ищется на KBB по серии
 MB_WMI = ("WDD", "WDB", "WDC", "WDF", "W1K", "W1N", "W1V", "55S", "4JG")   # Mercedes-Benz
@@ -1409,6 +1413,26 @@ def carfax_auto_pool(row: dict) -> bool:
                 and not row.get("branded_hidden") and not row.get("inspect_off") and not row.get("carfax") and not row.get("tmu"))
 
 
+def load_carfax_login() -> dict:
+    """{"need": сайт просит вход / подтверждение, "note": что именно, "at": когда} — переживает перезапуск программы."""
+    try:
+        data = json.loads(CARFAX_LOGIN_PATH.read_text(encoding="utf-8")) if CARFAX_LOGIN_PATH.exists() else {}
+    except (OSError, ValueError):
+        data = {}
+    return {"need": bool(data.get("need")), "note": str(data.get("note") or ""), "at": float(data.get("at") or 0)}
+
+
+def set_carfax_login(need: bool, note: str = "") -> None:
+    """Carfax попросил вход (need=True) / вы вошли, отчёт пришёл (need=False). Записываем только перемену."""
+    was = load_carfax_login()
+    if was["need"] == need and (not need or was["note"] == note):
+        return
+    CARFAX_LOGIN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CARFAX_LOGIN_PATH.write_text(json.dumps({"need": need, "note": (note or CARFAX_LOGIN_NOTE) if need else "", "at": time.time()},
+                                            ensure_ascii=False), encoding="utf-8")
+    _SLOW_CACHE.pop("carfax_auto", None)
+
+
 def load_carfax_auto() -> dict[str, dict]:
     """{VIN: {"n": попыток, "at": когда заказали}} за 14 дней."""
     try:
@@ -1425,10 +1449,8 @@ def carfax_auto_pause(asked: dict[str, dict], costs: dict, now: float | None = N
     cfg = costs.get("carfax_auto") or {}
     if cfg.get("on") is False:
         return "off", "выключено (costs.json: carfax_auto.on)"
-    login = max((float(s.get("at") or 0) for s in CARFAX_STATUS.values() if s.get("status") == "login"), default=0.0)
-    signed_in = any(s.get("status") in ("opened", "done") and float(s.get("at") or 0) > login for s in CARFAX_STATUS.values())
-    if login and now - login < 3600 and not signed_in:         # после «войдите» отчёт открылся — вход есть, дальше
-        return "login", "войдите на carfaxonline.com в Chrome на Mac — заказы продолжатся сами"
+    if load_carfax_login()["need"]:       # сайт просит вход / код по телефону — ждём вас, новых вкладок не открываем
+        return "login", "Carfax просит вход — войдите на Carfax Online, заказы продолжатся сами"
     recent = [CARFAX_STATUS.get(v, {}) for v in CARFAX_AUTO_RECENT[-3:]]
     if len(recent) == 3 and all(s.get("status") == "error" for s in recent) and now - max(float(s.get("at") or 0) for s in recent) < 3600:
         return "errors", "три отчёта подряд не открылись — пауза на час"
@@ -1892,7 +1914,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                            "near": near_places(places, costs_now), "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "nottake_total": nottake_total, "nottake_bids": nottake_bids, "take_total": take_total, "take_nobid": take_nobid, "nophoto_total": nophoto_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
-                           "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "photos_status": PHOTOS_STATUS,
+                           "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "carfax_login": load_carfax_login(), "photos_status": PHOTOS_STATUS,
                            "kbb_week": {**cached("kbb_week", 120, lambda: kbb_week_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""))), "status": KBB_WEEK_STATUS},
                            "carfax_auto": cached("carfax_auto", 60, lambda: carfax_auto_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now)),
                            "win_level": cached("win_level", 300, lambda: review.win_level(review.load(), results.load_history())),
@@ -1908,7 +1930,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 pages = find_pages(folders, float(q.get("hours") or 24))
                 # + избранное CarMax: сняли звёздочку — окно пересчитывается сразу, не дожидаясь нового файла.
                 extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH) if path.exists()]
-                extra += [f"carfax-status:{v.get('at', 0)}" for v in CARFAX_STATUS.values()]
+                extra += [f"carfax-status:{v.get('at', 0)}" for v in CARFAX_STATUS.values()] + [f"carfax-login:{load_carfax_login()['at']}"]
                 voice.pull_soon()                     # заметки с телефона — раз в пару минут, в фоне
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages] + extra).encode("utf-8"))
             elif url.path == "/api/remote_status":      # окно: доступ с телефона, расширение на Mac (для телефона)
@@ -2217,8 +2239,13 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(min(length, 20000)) or b"{}")
                 vin = str(data.get("vin") or "").upper()
+                state = str(data.get("status") or "")[:20]
                 if carfax.VIN_RE.fullmatch(vin):
-                    CARFAX_STATUS[vin] = {"status": str(data.get("status") or "")[:20], "note": str(data.get("note") or "")[:300], "at": time.time()}
+                    CARFAX_STATUS[vin] = {"status": state, "note": str(data.get("note") or "")[:300], "at": time.time()}
+                if state == "login":                      # страница входа / подтверждения телефона — пауза до входа
+                    set_carfax_login(True, str(data.get("note") or "")[:300])
+                elif state == "done" or data.get("signed_in"):   # отчёт открылся / вы вошли на Carfax Online
+                    set_carfax_login(False)
                 self._send(b'{"ok":true}')
                 return
             if urlparse(self.path).path == "/api/carfax_pdf":     # расширение: PDF Carfax, заказанного кнопкой «📄 Carfax»
@@ -2246,6 +2273,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
                 rec = carfax.save(data.get("vin", ""), data.get("url", ""), str(data.get("text") or "")[:400000])
+                if rec:
+                    set_carfax_login(False)                 # отчёт пришёл — значит, вход на Carfax есть
                 self._send(json.dumps({"ok": bool(rec), "line": (rec or {}).get("line", "")}, ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path == "/api/photos":         # расширение: фото на карточке лота CarMax
@@ -2603,7 +2632,7 @@ button.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}.takenobi
 div.seen{font-size:11px;line-height:1.3;color:var(--mid);text-align:left;white-space:normal;min-width:110px;margin-top:2px}
 img.thumb{width:96px;height:72px;object-fit:cover;border-radius:6px;display:block}td.milescell{white-space:normal;width:96px}td.milescell .pill{white-space:normal;display:inline-block;line-height:1.25}
 div.result{margin-top:6px;min-width:150px}details.calc{text-align:left;font-weight:400;margin-top:4px}details.calc table{font-size:12px;min-width:300px;margin-top:4px}
-details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.neg{color:var(--bad)}.pos{color:var(--ok)}button[hidden],.btn[hidden],.tab[hidden]{display:none!important}tr.sep td{background:var(--bg);color:var(--muted);font-weight:700;padding:12px 8px 8px;border-top:3px solid var(--line)}.lowbid{color:#b25e00}.cfx-look{margin-top:3px;font-size:12px;color:#9a3412}
+details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space:normal}details.calc td.num{white-space:nowrap}details.calc tr.total td{font-weight:700;border-bottom:none}.cflogin{margin:6px 0;padding:8px 10px;border:1px solid #d33;border-radius:8px;background:#fff1f0;color:#a00}.cflogin button{margin-left:6px}.neg{color:var(--bad)}.pos{color:var(--ok)}button[hidden],.btn[hidden],.tab[hidden]{display:none!important}tr.sep td{background:var(--bg);color:var(--muted);font-weight:700;padding:12px 8px 8px;border-top:3px solid var(--line)}.lowbid{color:#b25e00}.cfx-look{margin-top:3px;font-size:12px;color:#9a3412}
 /* Телефон: карточки машин вместо широкой таблицы; кнопки и поля — под палец. */
 .remote .maconly,.remote #extstate{display:none!important}
 @media (max-width:760px){
@@ -2644,6 +2673,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Пароль<input id="vrppass" type="password" autocomplete="new-password" placeholder="пусто — оставить прежний"></label><button>Сохранить</button></form>
 <div id="vrpstate" class="muted" style="margin-top:6px">—</div></div>
 <div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
+<div id="cflogin" class="cflogin" hidden></div>
 <div class="card"><form id="f" class="top" onsubmit="event.preventDefault();refresh();loadLinks()">
 <label>Машина<input id="q" class="w-q" placeholder="Honda Civic" autofocus></label>
 <span id="modelbtns" class="modelbtns"></span>
@@ -2858,11 +2888,12 @@ function carfaxOrder(b){const vin=b.dataset.vin;
  // Заказ — сразу по нажатию, без окна подтверждения. Спрашиваем только повторный заказ: Carfax по машине уже есть, а отчёт платный.
  if(b.dataset.again&&!confirm(`Carfax по ${b.dataset.car} уже есть. Открыть отчёт заново?`))return;
  window.postMessage({source:'lot-analyzer',type:'carfax-order',vin},'*');CF[vin]={status:'sent',at:Date.now()/1000};b.textContent='⏳ Carfax…';b.disabled=true;
- toast(`📄 Carfax заказан: ${b.dataset.car} — отчёт придёт сюда сам`)}
+ toast(CF_LOGIN?`🔒 Carfax просит вход: ${b.dataset.car} — в очереди, откроется, когда войдёте на Carfax Online`:`📄 Carfax заказан: ${b.dataset.car} — отчёт придёт сюда сам`,CF_LOGIN)}
 /* Короткое сообщение внизу окна программы — само исчезает, нажимать ничего не нужно. */
 function toast(text,bad){let e=$('toast');if(!e){e=document.createElement('div');e.id='toast';document.body.appendChild(e)}
  e.textContent=text;e.className=bad?'bad':'';e.hidden=false;clearTimeout(e._t);e._t=setTimeout(()=>{e.hidden=true},5000)}
-const CF_TEXT={sent:'⏳ Carfax: открываю Carfax Online…',opened:'⏳ Carfax: отчёт открывается на Carfax Online…',login:'⚠ Carfax: войдите на carfaxonline.com в Chrome на Mac — отчёт откроется сам',
+const CF_TEXT={sent:'⏳ Carfax: открываю Carfax Online…',opened:'⏳ Carfax: отчёт открывается на Carfax Online…',login:'⚠ Carfax: нужен вход на Carfax Online — отчёт откроется сам, когда войдёте',
+ queued:'⏳ Carfax: в очереди — откроется после текущего отчёта',wait:'⏳ Carfax: ждёт вашего входа на Carfax Online — откроется сам',
  ordered:'⏳ Carfax: жду отчёт',manual:'⚠ Carfax: откройте отчёт на Carfax Online сами — он придёт сюда',
  error:'⚠ Carfax не получен',done:'✓ Carfax получен'};
 function cfStatus(x){const s=CF[x.vin];if(!s||Date.now()/1000-s.at>3600||(s.status==='done'&&x.carfax))return'';
@@ -2952,10 +2983,18 @@ function drawKbbWeek(d){const e=$('kbbweek'),k=d.kbb_week;if(!e||!k)return;const
  if(late&&k.left>0)line+=` · <b class="neg">⚠ к пятнице 9:00 не успели: осталось ${k.left}</b>`;
  e.innerHTML=`🔎 KBB на неделю (чт 18:00 → пт 9:00): ${line} <button type="button" class="tab" onclick="kbbWeekRun()" title="Взять KBB для всех кандидатов сейчас: популярные машины с торгами впереди, без стоп-факторов и Major Engine/Transmission (Civic, Corolla, Accord, Camry, CT 200h — все, и в любой день — сразу, как появились в списках). Вкладка kbb.com в фоне, по 25 машин, закрывается сама">▶ Взять KBB сейчас</button>`}
 /* «📄 Carfax сам»: каждой машине с KBB (любым, при любой цене) расширение по очереди открывает отчёт на Carfax Online. */
-function drawCarfaxAuto(d){const e=$('cfauto'),c=d.carfax_auto;if(!e||!c)return;if(!c.kbb){e.innerHTML='';return}
+let CF_LOGIN=false;
+function drawCarfaxAuto(d){const e=$('cfauto'),c=d.carfax_auto,L=d.carfax_login||{},b=$('cflogin');CF_LOGIN=!!L.need;
+ // Carfax просит вход / код по телефону: заказы на паузе (ни одной новой вкладки), программа работает без Carfax — видно сверху.
+ if(b){b.hidden=!L.need;b.innerHTML=L.need?`🔒 <b>Carfax: нужен вход</b> — ${esc(L.note||'')}. Заказы Carfax на паузе, программа работает без Carfax; войдёте — отчёты пойдут сами, по одному (вкладка закрывается сама). <button type="button" onclick="carfaxLogin()">🔑 Открыть Carfax</button>`:''}
+ if(!e)return;const login=L.need?'<b class="neg">🔒 пауза: нужен вход на Carfax (см. вверху)</b> · ':'';
+ if(!c||!c.kbb){e.innerHTML=L.need?login:'';return}
  let line=`машин с KBB ${c.kbb}: Carfax есть у <b>${c.have}</b>`+(c.left?`, в очереди <b>${c.left}</b>`:'')+(c.failed?`, <span title="${esc((c.failed_cars||[]).join('; '))}">не вышло ${c.failed} — закажите кнопкой «📄 Carfax»</span>`:'');
- if(c.why)line+=` · <b class="${/^(login|errors)$/.test(c.why)?'neg':''}">${/^(login|errors)$/.test(c.why)?'⚠ ':''}${esc(c.note)}</b>`;
- e.innerHTML=`📄 Carfax сам (каждой машине с KBB, по одной, в фоне): ${line}`}
+ if(c.why&&!(c.why==='login'&&L.need))line+=` · <b class="${/^(login|errors)$/.test(c.why)?'neg':''}">${/^(login|errors)$/.test(c.why)?'⚠ ':''}${esc(c.note)}</b>`;
+ e.innerHTML=login+`📄 Carfax сам (каждой машине с KBB, по одной, в фоне): ${line}`}
+/* «🔑 Открыть Carfax»: расширение показывает вкладку входа Carfax (или открывает Carfax Online) — войти можете только вы. */
+function carfaxLogin(){if(!hasExt()){toast('Войдите на Carfax Online в Chrome на Mac (там, где расширение «Lot Analyzer KBB»).',true);return}
+ window.postMessage({source:'lot-analyzer',type:'carfax-login',id:'cfl'+Date.now()},'*')}
 function kbbWeekRun(){if(!hasExt()||extV()<2.23){alert('Нужно расширение «Lot Analyzer KBB» 2.23 или новее: chrome://extensions → ⟳, потом обновите это окно.');return}
  window.postMessage({source:'lot-analyzer',type:'kbbweek-run'},'*');setTimeout(refresh,3000)}
 async function saveKbb(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;

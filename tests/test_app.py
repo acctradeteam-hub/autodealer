@@ -2232,11 +2232,14 @@ class CarfaxAutoTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.patch = mock.patch.object(app, "CARFAX_AUTO_PATH", self.tmp / "carfax_auto.json")
         self.patch.start()
+        self.patch_login = mock.patch.object(app, "CARFAX_LOGIN_PATH", self.tmp / "carfax_login.json")
+        self.patch_login.start()
         app.CARFAX_STATUS.clear()
         app.CARFAX_AUTO_RECENT.clear()
 
     def tearDown(self) -> None:
         self.patch.stop()
+        self.patch_login.stop()
         app.CARFAX_STATUS.clear()
         app.CARFAX_AUTO_RECENT.clear()
 
@@ -2268,11 +2271,13 @@ class CarfaxAutoTest(unittest.TestCase):
         self.assertEqual({second["vin"], third["vin"]}, {"4T1B11HK1JU000001", "4T1B11HK1JU000009"})
         self.assertEqual(app.carfax_next(rows, costs, now=t + 100)["why"], "done")         # повтор — не раньше чем через 2 часа
         self.assertEqual(app.load_carfax_auto()["4T1B11HK1JU000002"]["n"], 1)
-        # вход: пауза, пока отчёт не откроется
-        app.CARFAX_STATUS["4T1B11HK1JU000001"] = {"status": "login", "at": t + 200}
+        # вход: пауза, пока не войдёте (сколько бы ни прошло — новых вкладок нет)
+        app.set_carfax_login(True, "Carfax просит подтвердить вход по телефону (код)")
         later = t + app.CARFAX_AUTO_RETRY + 300
         self.assertEqual(app.carfax_next(rows, costs, now=t + 300)["why"], "login")
-        app.CARFAX_STATUS["4T1B11HK1JU000001"] = {"status": "done", "at": t + 400}
+        self.assertEqual(app.carfax_next(rows, costs, now=later + 86400)["why"], "login")
+        self.assertEqual(app.carfax_auto_summary(rows, costs)["why"], "login")
+        app.set_carfax_login(False)
         self.assertNotEqual(app.carfax_next(rows, costs, now=later)["why"], "login")
         # три ошибки подряд — пауза на час
         app.CARFAX_STATUS.clear()
@@ -2296,10 +2301,79 @@ class CarfaxAutoTest(unittest.TestCase):
         self.assertNotIn(".click(", auto)
         self.assertIn("'carfax_auto.js'", (ext / "background.js").read_text(encoding="utf-8"))
         online = (ext / "carfax_online.js").read_text(encoding="utf-8")
-        self.assertIn("closeIfAuto()", online)
         self.assertNotIn(".click(", online)
+        self.assertNotIn(".value =", online)                                  # ничего не вводит на сайте (вход — только вы)
+        self.assertNotIn(".submit(", online)
         self.assertIn("function drawCarfaxAuto(d)", app.PAGE)
         self.assertIn('<div id="cfauto"', app.PAGE)
+
+    def test_login_pause_until_signed_in(self) -> None:
+        """Carfax попросил вход / код по телефону → пауза (переживает перезапуск); вошли / пришёл отчёт → дальше."""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def post(path: str, body: dict) -> dict:
+            req = urllib.request.Request(base + path, data=json.dumps(body).encode("utf-8"), method="POST",
+                                         headers={"X-LA": "1", "Content-Type": "application/json"})
+            return json.loads(urllib.request.urlopen(req).read())
+        rows = [self.car("4T1B11HK1JU000001")]
+        costs = load_costs(COSTS)
+        try:
+            self.assertFalse(app.load_carfax_login()["need"])
+            post("/api/carfax_status", {"vin": "4T1B11HK1JU000001", "status": "login", "note": "Carfax просит подтвердить вход по телефону (код)"})
+            state = app.load_carfax_login()
+            self.assertTrue(state["need"])
+            self.assertIn("телефону", state["note"])
+            self.assertTrue(json.loads((self.tmp / "carfax_login.json").read_text(encoding="utf-8"))["need"])   # на диске — после перезапуска тоже
+            self.assertEqual(app.carfax_next(rows, costs, now=time.time() + 10 * 3600)["why"], "login")
+            self.assertTrue(json.loads(urllib.request.urlopen(base + "/api/rows").read())["carfax_login"]["need"])   # окно видит
+            post("/api/carfax_status", {"vin": "4T1B11HK1JU000001", "status": "opened"})
+            self.assertTrue(app.load_carfax_login()["need"])                 # страница открылась — это ещё не вход
+            post("/api/carfax_status", {"signed_in": True})                  # вы вошли на Carfax Online
+            self.assertFalse(app.load_carfax_login()["need"])
+            self.assertEqual(app.carfax_next(rows, costs)["why"], "busy")      # пауза снята; отчёт ещё открывается — по одному
+            app.CARFAX_STATUS.clear()
+            self.assertEqual(app.carfax_next(rows, costs)["vin"], "4T1B11HK1JU000001")
+            post("/api/carfax_status", {"vin": "4T1B11HK1JU000001", "status": "login"})
+            self.assertTrue(app.load_carfax_login()["need"])
+            post("/api/carfax_status", {"vin": "4T1B11HK1JU000001", "status": "done"})   # отчёт открылся — вход есть
+            self.assertFalse(app.load_carfax_login()["need"])
+        finally:
+            server.shutdown()
+
+    def test_window_login_banner(self) -> None:
+        page = app.PAGE
+        self.assertIn("Carfax: нужен вход", page)
+        self.assertIn("function carfaxLogin()", page)
+        self.assertIn("type:'carfax-login'", page)
+        self.assertIn("queued:", page.split("const CF_TEXT=")[1].split("};")[0])
+        bridge = (ROOT / "tools" / "kbb_extension" / "app_bridge.js").read_text(encoding="utf-8")
+        self.assertIn("type: 'carfax-login'", bridge)
+
+    def test_extension_one_tab(self) -> None:
+        """Вкладка Carfax — одна; вход на auth.carfax.com — тоже видим; готово / не вышло — закрываем; зависшие — убираем."""
+        ext = ROOT / "tools" / "kbb_extension"
+        manifest = json.loads((ext / "manifest.json").read_text(encoding="utf-8"))
+        block = next(c for c in manifest["content_scripts"] if "carfax_online.js" in c["js"])
+        self.assertIn("https://auth.carfax.com/*", block["matches"])
+        for host in ("https://www.carfaxonline.com/*", "https://auth.carfax.com/*"):
+            self.assertIn(host, manifest["host_permissions"])
+        bg = (ext / "background.js").read_text(encoding="utf-8")
+        order = bg.split("function laCarfaxOrder(vin, auto)")[1].split("\n}\n")[0]
+        self.assertIn("await cfoCurrent()", order)                           # открыта — вторую не открываем
+        self.assertIn("CFO_QUEUE", order)                                      # кнопка — в очередь
+        self.assertIn("chrome.tabs.onRemoved.addListener", bg)
+        self.assertIn("chrome.runtime.onStartup.addListener(cfoCleanup)", bg)
+        self.assertIn("cfoClose(tabId)", bg.split("function cfoTabEvent")[1].split("\n}\n")[0])
+        self.assertIn("4 * 60000", bg)
+        auto = (ext / "carfax_auto.js").read_text(encoding="utf-8")
+        tick = auto.split("function laCarfaxAutoTick()")[1].split("\n}\n")[0]
+        self.assertLess(tick.index("cfoCurrent()"), tick.index("/api/carfax_next"))   # сначала — нет ли открытой вкладки
+        online = (ext / "carfax_online.js").read_text(encoding="utf-8")
+        self.assertIn("accountprotection", online)
+        self.assertIn("auth0", online)
+        self.assertIn("carfax-signed-in", online)
 
     def test_endpoint_needs_extension(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
