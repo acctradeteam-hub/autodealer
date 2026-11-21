@@ -2126,6 +2126,9 @@ class RemoteAccessTest(unittest.TestCase):
         from lot_analyzer import popular
         costs = load_costs(COSTS)
         self.assertTrue(popular.is_popular({"make": "Toyota", "model": "Tacoma", "trim": "SR5 Double Cab", "year": "2016"}, costs))
+        self.assertTrue(popular.is_popular({"make": "Honda", "model": "Odyssey", "trim": "EX-L", "year": "2014"}, costs))
+        self.assertTrue(popular.is_popular({"make": "Toyota", "model": "Sienna", "trim": "LE 8-Passenger", "year": "2017"}, costs))
+        self.assertTrue(popular.is_popular({"make": "Honda", "model": "Odyssey", "trim": "Touring", "year": "2019"}, {}))   # и без costs.json
         self.assertFalse(popular.is_popular({"make": "Toyota", "model": "Tundra", "year": "2016"}, costs))
 
 

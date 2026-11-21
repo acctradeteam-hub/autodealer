@@ -22,6 +22,9 @@ DEFAULT = [
     {"make": "Toyota", "model": r"^prius(?!\s*[cv]\b)"},
     {"make": "Toyota", "model": r"^highlander"},
     {"make": "Toyota", "model": r"^avalon\b"},
+    {"make": "Toyota", "model": r"^tacoma\b"},
+    {"make": "Honda", "model": r"^odyssey\b"},          # минивэны
+    {"make": "Toyota", "model": r"^sienna\b"},
     {"make": "Honda", "model": r"^clarity\b"},
     {"make": "Honda", "model": r"^insight\b"},
     {"make": "Chevrolet", "model": r"^volt\b"},
