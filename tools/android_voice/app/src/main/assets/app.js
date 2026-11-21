@@ -116,7 +116,7 @@ function render() {
         ${c.no_pics ? '<span class="nopics">NO PICTURES</span>' : ""}</div></div>
       ${(c.major || []).map(k => `<div class="major">⚠ MAJOR ${esc(String(k).toUpperCase())} DEFECT</div>`).join("")}
       ${c.key ? `<div class="keyneed">${esc(c.key)}</div>` : ""}
-      ${(c.carfax_check || []).length ? `<div class="cfx"><b>Carfax — смотреть:</b>${c.carfax_check.map(p => `<div>• ${esc(p)}</div>`).join("")}</div>` : ""}
+      ${c.carfax || (c.carfax_check || []).length ? `<div class="cfx"><b>Carfax:</b>${c.carfax ? `<div class="cfxsum">${esc(c.carfax)}</div>` : ""}${c.carfax_service ? `<div class="cfxsvc">🔧 ${esc(c.carfax_service)}</div>` : ""}${(c.carfax_check || []).length ? `<b>Смотреть:</b>${c.carfax_check.map(p => `<div>• ${esc(p)}</div>`).join("")}` : ""}${c.carfax_saved ? `<button type="button" class="cfxopen" data-cfx="${esc(c.vin)}">📄 Открыть Carfax (с Mac)</button>` : ""}</div>` : ""}
       ${c.manual ? '<div class="manual">✋ Добавлено вручную — смотреть внимательно</div>' : ""}
       <div class="kbb"><span>KBB</span>${c.kbb ? money(c.kbb) : c.kbb_est ? "≈" + money(c.kbb_est) : "—"}</div>
       ${progNotes(c).length || (c.own || []).length ? `<div class="prog">${progNotes(c).map(x => `<div>${esc(x)}</div>`).join("")}${(c.own || []).map(x => `<div>Мои: ${esc(x)}</div>`).join("")}</div>` : ""}
@@ -174,6 +174,15 @@ window.onVoiceError = msg => { $("sync").textContent = msg; };
 
 $("list").addEventListener("input", e => { const t = e.target; if (t.tagName === "TEXTAREA") saveNote(t.dataset.vin, {text: t.value}); });
 $("list").addEventListener("click", e => {
+  /* «📄 Открыть Carfax»: полный отчёт, сохранённый в программе на Mac (через Tailscale, как «🖥 Программа на Mac»). */
+  const cfx = e.target.closest("button[data-cfx]");
+  if (cfx) {
+    const base = (store.get("vn-mac", "") || "").trim().replace(/\/+$/, "");
+    if (!/^https?:\/\/[^\s]+$/.test(base)) { $("cfg").open = true; $("macurl").focus(); $("cfgstate").textContent = "Впишите адрес программы на Mac."; return; }
+    const c = carOf(cfx.dataset.cfx), url = `${base}/carfax/${encodeURIComponent(cfx.dataset.cfx)}?mi=${encodeURIComponent(c.miles || "")}&car=${encodeURIComponent(c.car || "")}`;
+    if (window.Native && window.Native.open) window.Native.open(url); else window.open(url, "_blank");
+    return;
+  }
   const mic = e.target.closest("button[data-mic]");
   if (mic) { if (window.Native) window.Native.voice(mic.dataset.mic); else $("sync").textContent = "Голос работает в приложении на телефоне."; return; }
   const star = e.target.closest("button[data-star]");

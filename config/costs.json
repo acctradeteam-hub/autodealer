@@ -140,8 +140,10 @@
     "altered suspension": 500,
     "major transfer case defect|transfer case": 1500,
     "vehicle wrap": 300,
-    "aftermarket mechanical modifications": 500
+    "aftermarket mechanical modifications": 500,
+    "timing belt due": 1000
   },
+  "_timing_belt_due": "«timing belt due» — ремень ГРМ по регламенту пора менять (config/maintenance.json), а записи о замене в Carfax нет: ремень + помпа + натяжитель ≈ $900–1,200. Не закладывать — belt_to_recon: false в config/maintenance.json.",
   "_obd": "За каждый код ошибки OBD (P0xxx) сверх «check engine».",
   "obd_code_usd": 100,
   "_tires": "Шина с протектором не больше tire_min_32nds/32\" — под замену, tire_usd за штуку.",

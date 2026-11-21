@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from pathlib import Path
 from lot_analyzer import app
 from lot_analyzer.bid import load_costs
 from lot_analyzer import inspection as _inspection
+from lot_analyzer import carfax
 
 # Общие тесты списка на осмотр — на машинах любых площадок; правило «только куда ездите» — в VisitPlacesTest.
 _REAL_VISIT_PLACES = _inspection.VISIT_PLACES
@@ -255,6 +257,110 @@ class PhotoOpensLotTest(unittest.TestCase):
         self.assertIn('class="lotbtn"', page)
         handler = page.split("document.addEventListener('click',e=>{")[1].split("},true);")[0]
         self.assertIn('a[target="_blank"]', handler)                                       # фото — тоже соседней вкладкой в фоне
+
+
+class CarfaxServiceTest(unittest.TestCase):
+    """Carfax: итоги по-английски, сервисные записи, календарь ТО (ремень ГРМ), отчёт хранится в программе (синтетика)."""
+
+    REPORT = ("US $49.99\n2012 Honda Odyssey EX-L\n112,480 mi | VIN: 5FNRL5H65CB000001\nMinivan | 3.5L V6 F SOHC 24V | Gasoline | Front wheel drive\n"
+              "CARFAX 1-Owner Vehicle\nPersonal Vehicle\nNo accidents or damage reported to CARFAX\n14 Service History Records\n"
+              "Detailed History\n"
+              "03/10/2013\t7,950\tHonda Dealer\nIrvine, CA\tVehicle serviced\n- Oil and filter changed\n- Tires rotated\n"
+              "04/02/2014\t16,200\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n- Brake fluid flushed/changed\n"
+              "05/11/2015\t25,600\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n"
+              "06/01/2016\t35,100\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n- Transmission fluid changed\n"
+              "07/15/2017\t46,000\tQuick Lube\tVehicle serviced\n- Oil and filter changed\n"
+              "08/20/2018\t58,300\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n- Tires rotated\n"
+              "09/09/2019\t69,900\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n"
+              "10/10/2020\t80,200\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n- Spark plugs replaced\n"
+              "11/11/2021\t90,500\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n"
+              "12/12/2022\t100,700\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n"
+              "06/05/2023\t104,000\tCalifornia Smog\tEmissions inspection performed\n"
+              "01/15/2024\t108,900\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n- Tires rotated\n"
+              "Ownership History\nOwner 1\nPersonal\nOwned in the following states California\n") + "Service note line. " * 60
+
+    def setUp(self) -> None:
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patches = [mock.patch.object(carfax, "PATH", self.tmp / "carfax.json"), mock.patch.object(carfax, "TEXT_DIR", self.tmp / "text")]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self) -> None:
+        for p in self.patches:
+            p.stop()
+
+    def test_english_line(self) -> None:
+        self.assertEqual(carfax.line({"owners": 1, "accidents": 0}), "1 owner · No accidents")
+        self.assertEqual(carfax.line({"owners": 2, "accidents": 1, "severity": ["лёгкое"]}), "2 owners · 1 minor accident")
+        self.assertEqual(carfax.line({"owners": 1, "accidents": 1, "severity": ["среднее"], "impact": ["спереди"]}), "1 owner · 1 moderate accident (front)")
+        self.assertEqual(carfax.line({"owners": 3, "accidents": 2, "severity": ["лёгкое", "среднее"], "usage": ["аренда"]}),
+                         "3 owners · 2 accidents (minor, moderate) · rental")
+        self.assertEqual(carfax.flags({"owners": 4, "usage": ["аренда"]}), ["4 owners", "rental"])
+
+    def test_service_and_plan(self) -> None:
+        s = carfax.parse(self.REPORT)
+        self.assertEqual((s["engine"], s["car"]), ("3.5L V6", "2012 Honda Odyssey EX-L"))
+        evts = carfax.events(self.REPORT)
+        svc = [e for e in evts if e["kind"] == "service"]
+        self.assertEqual(len(svc), 11)                                                 # смог-тест — не сервис
+        self.assertEqual(svc[0], {"date": "2013-03-10", "miles": 7950, "kind": "service", "types": ["oil", "rotation"]})
+        st = carfax.service_stats(evts, today=dt.date(2026, 11, 21))
+        self.assertEqual((st["records"], st["verdict"], st["oil_changes"]), (11, "regular", 11))
+        self.assertIn("Service: 11 records, regular", carfax.stats_line(st))
+        done = carfax.last_done(evts)
+        self.assertEqual(done["spark_plugs"], ["2020-10-10", 80200])
+        cfg = carfax.load_maintenance()
+        items = {r["type"]: r for r in carfax.plan("Honda", 2012, "112480", s["engine"], done, cfg, today=dt.date(2026, 11, 21))}
+        self.assertEqual(items["timing_belt"]["status"], "due")                       # V6 Honda — ремень, 105 тыс. прошли, записи нет
+        self.assertEqual(items["spark_plugs"]["status"], "ok")                        # меняли на 80 тыс.
+        warn = carfax.plan_warnings(list(items.values()))
+        self.assertTrue(warn[0].startswith("Timing belt due — no record (every 105k mi / 7 yrs)"))
+        # ремень меняли — не пора; Camry 2.5 I4 — цепь; двигатель не известен — так и пишем
+        ok = carfax.plan("Honda", 2012, "112480", "3.5L V6", {**done, "timing_belt": ["2021-11-11", 90500]}, cfg, today=dt.date(2026, 11, 21))
+        self.assertEqual(next(r for r in ok if r["type"] == "timing_belt")["status"], "ok")
+        self.assertEqual(next(r for r in carfax.plan("Toyota", 2014, "130000", "2.5L I4", {}, cfg) if r["type"] == "timing_belt")["status"], "skip")
+        self.assertEqual(next(r for r in carfax.plan("Toyota", 2005, "95000", "3.3L V6", {}, cfg) if r["type"] == "timing_belt")["status"], "due")
+        self.assertEqual(next(r for r in carfax.plan("Honda", 2012, "112480", "", {}, cfg) if r["type"] == "timing_belt")["status"], "unknown")
+
+    def test_saved_report_and_recon(self) -> None:
+        vin = "5FNRL5H65CB000001"
+        self.assertTrue(carfax.save(vin, "https://www.carfaxonline.com/vhr/" + vin, self.REPORT))
+        self.assertIn(self.REPORT[:200], carfax.saved_text(vin))                      # полный текст — в программе
+        row = {"vin": vin, "year": "2012", "make": "Honda", "model": "Odyssey", "odometer_miles": "112480"}
+        carfax.attach([row])
+        self.assertEqual(row["carfax_saved"], "1")
+        self.assertIn("Timing belt due — no record", row["carfax_service"])
+        self.assertIn("timing belt due", row["carfax_autocheck"])
+        self.assertIn("Ремень ГРМ", row["carfax_check"])
+        carfax.attach([row])
+        self.assertEqual(row["carfax_autocheck"].count("timing belt due"), 1)          # повторный расчёт — не дважды
+        from lot_analyzer.bid import estimate_recon
+        recon, found = estimate_recon(row["carfax_autocheck"], load_costs(COSTS))
+        self.assertGreaterEqual(recon, 1000)                                           # ремень — в ремонт (потолок ниже)
+        page = carfax.page(vin, "112480", "2012 Honda Odyssey EX-L")
+        for text in ("1 owner · No accidents", "Timing belt", "due — no record", "Service history — 11", "Полный текст отчёта", "Spark plugs"):
+            self.assertIn(text, page)
+        self.assertEqual(carfax.page("1HGCM82633A000000"), "")
+        # окно и телефон: страница /carfax/<VIN>
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            body = urllib.request.urlopen(f"{base}/carfax/{vin}?mi=112480").read().decode("utf-8")
+            self.assertIn("CARFAX — 2012 Honda Odyssey EX-L", body)
+            with self.assertRaises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(f"{base}/carfax/1HGCM82633A000000")
+            self.assertEqual(err.exception.code, 404)
+        finally:
+            server.shutdown()
+        self.assertIn("/carfax/${esc(x.vin)}?mi=", app.PAGE)                          # «Открыть Carfax» — отчёт в программе
+
+    def test_engine_from_vin_decode(self) -> None:
+        from lot_analyzer.vin_features import _engine_text
+        self.assertEqual(_engine_text({"DisplacementL": "3.5", "EngineCylinders": "6", "EngineConfiguration": "V-Shaped", "EngineModel": "J35Z8"}), "3.5L V6 J35Z8")
+        self.assertEqual(_engine_text({"DisplacementL": "2.5", "EngineCylinders": "4", "EngineConfiguration": "Horizontally opposed (boxer)"}), "2.5L H4")
+        self.assertEqual(_engine_text({"FuelTypePrimary": "Electric"}), "Electric")
 
 
 class PhoneAppSigningTest(unittest.TestCase):
@@ -1187,7 +1293,7 @@ class CarfaxTest(unittest.TestCase):
     def test_real_report_layout(self):
         from lot_analyzer import carfax
         s = carfax.parse(self.CLEAN)
-        self.assertEqual(carfax.line(s), "1 влад. · без ДТП · штаты: California · сервис 32")
+        self.assertEqual(carfax.line(s), "1 owner · No accidents · owned in California · 32 service records")
         self.assertEqual(carfax.flags(s), [])
         self.assertEqual(s["last_miles"], 151503)
         bad = carfax.parse(self.CLEAN.replace("Lemon\nGuaranteed\nNo Problem", "Lemon\nGuaranteed\nProblem Reported")
@@ -1203,18 +1309,18 @@ class CarfaxTest(unittest.TestCase):
         self.assertEqual(s["salt"], ["Ohio"])
         self.assertFalse(s["rollback"])
         self.assertEqual(s["title"], [])
-        self.assertIn("сильное ДТП", carfax.flags(s))                            # подушки сработали
+        self.assertIn("severe accident", carfax.flags(s))                            # подушки сработали
         clean = carfax.parse("CARFAX 1-Owner. No accidents or damage reported to CARFAX. Owned in: California. Personal vehicle." + "x" * 600)
-        self.assertEqual(carfax.line(clean), "1 влад. · без ДТП · штаты: California")
+        self.assertEqual(carfax.line(clean), "1 owner · No accidents · owned in California")
         self.assertEqual(carfax.flags(clean), [])
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(carfax, "PATH", Path(tmp) / "c.json"):
             self.assertIsNone(carfax.save("bad", "u", self.REPORT))
             carfax.save("1hgcr2f31ea090990", "https://www.vin-reports-pro.com/share/abc", self.REPORT)
             rows = [{"vin": "1HGCR2F31EA090990", "auction": "CarMax"}]
             carfax.attach(rows)
-        self.assertTrue(rows[0]["carfax"].startswith("2 влад."))
+        self.assertTrue(rows[0]["carfax"].startswith("2 owners"))
         self.assertEqual(rows[0]["carfax_url"], "https://www.vin-reports-pro.com/share/abc")
-        self.assertIn("Carfax: 2 влад.", notes.lot_note(rows[0]))
+        self.assertIn("Carfax: 2 owners", notes.lot_note(rows[0]))
 
 
 class AuctionLoggerTest(unittest.TestCase):
@@ -1313,7 +1419,7 @@ class CarfaxPdfTest(unittest.TestCase):
     def test_pdf_layout(self):
         from lot_analyzer import carfax
         s = carfax.parse(self.PDF)
-        self.assertEqual(carfax.line(s), "1 влад. · 1 ДТП (лёгкое) · штаты: California · сервис 18")
+        self.assertEqual(carfax.line(s), "1 owner · 1 minor accident · owned in California · 18 service records")
         self.assertEqual(carfax.flags(s), [])
 
     def test_pdf_text_without_columns(self):
@@ -1328,7 +1434,7 @@ class CarfaxPdfTest(unittest.TestCase):
                 "Ownership History\nLast reported odometer reading\n\n94,438\n\n152,023\n\n160,563\n" + "x" * 600)
         s = carfax.parse(text)
         self.assertEqual((s["title"], s["value"], s["last_miles"]), ([], 13750, 160563))
-        self.assertEqual(carfax.flags(s), ["4 владельцев"])
+        self.assertEqual(carfax.flags(s), ["4 owners"])
         # блок «Structural Damage» только с общей рекомендацией, статусы — ниже в таблице: рамы нет
         s = carfax.parse(text.replace("Title History", "Additional History\nStructural Damage\nCARFAX recommends that you have this vehicle inspected "
                                       "by a collision repair specialist.\nAirbag Deployment\nNo airbag deployment reported to CARFAX.\nTitle History"))
@@ -2149,7 +2255,7 @@ class CarfaxOnlineTest(unittest.TestCase):
         from lot_analyzer import carfax
         vin = "19XFC2F7XGE000001"
         rec = carfax.save(vin, "https://www.carfaxonline.com/vhr/" + vin, self.REPORT)
-        self.assertIn("без ДТП", rec["line"])
+        self.assertIn("No accidents", rec["line"])
         self.assertFalse((carfax.PDF_DIR / f"{vin}.txt").exists())                     # копии текста больше нет
         row = {"vin": vin}
         carfax.attach([row])
@@ -2196,7 +2302,7 @@ class CarfaxInspectTest(unittest.TestCase):
         carfax.attach([row])
         self.assertEqual(row["carfax_check"].split("\n"), points)
         page = inspection.render_html([row])
-        self.assertIn("Carfax — смотреть:", page)
+        self.assertIn("<b>Смотреть:</b>", page)
         self.assertIn("Удар спереди", page)
         self.assertEqual(voice.car_of(row)["carfax_check"], points)
         self.assertIn("carfax_check", app.COLUMNS)

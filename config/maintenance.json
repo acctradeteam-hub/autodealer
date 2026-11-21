@@ -1,0 +1,52 @@
+{
+  "_about": "Календарь ТО по маркам — ориентир по руководствам производителей (точнее всего — руководство владельца на модель и год). Программа сверяет его с записями сервиса в Carfax: что и когда делали, что пора по пробегу / возрасту, а записи нет. miles — интервал в милях, months — в месяцах (что наступит раньше); first_miles / first_months — первый раз (потом — miles / months). type — как программа понимает записи Carfax: oil, brake_fluid, transmission, coolant, spark_plugs, timing_belt. Записей мало — не значит, что не делали: у независимых мастерских и у тех, кто меняет масло сам, записей в Carfax нет.",
+
+  "_belt_engines": "Двигатели с ремнём ГРМ (у остальных — цепь, по регламенту не меняется). engine — регулярное выражение по строке двигателя из Carfax («3.5L V6») или NHTSA; year_from / year_to — модельные годы.",
+  "belt_engines": [
+    {"make": "Honda|Acura", "engine": "V6", "note": "все V6 Honda / Acura (J-серия: 3.0, 3.2, 3.5, 3.7) — Accord V6, Odyssey, Pilot, Ridgeline, MDX, TL, TLX V6, RL"},
+    {"make": "Honda|Acura", "engine": "I4", "year_to": 2002, "note": "4 цилиндра до 2002 (F22 / F23, D-серия); K-серия с 2002 года — цепь"},
+    {"make": "Toyota|Lexus", "engine": "3\\.0L V6|3\\.3L V6", "year_to": 2008, "note": "1MZ-FE / 3MZ-FE: Camry, Avalon, Sienna, Highlander, Solara, ES 300 / 330, RX 300 / 330 / 400h"},
+    {"make": "Toyota", "engine": "3\\.4L V6", "note": "5VZ-FE: Tacoma, 4Runner, Tundra, T100"},
+    {"make": "Toyota|Lexus", "engine": "4\\.7L V8", "note": "2UZ-FE: Tundra, Sequoia, 4Runner V8, Land Cruiser, GX 470, LX 470"},
+    {"make": "Lexus", "engine": "4\\.0L V8|4\\.3L V8", "year_to": 2006, "note": "1UZ / 3UZ: LS 400 / 430, GS 400 / 430, SC 430"},
+    {"make": "Subaru", "engine": "H4", "year_to": 2011, "note": "EJ 2.0 / 2.5; FB (с 2011–2013 в зависимости от модели) — цепь"},
+    {"make": "Hyundai|Kia", "engine": "2\\.7L V6", "note": "2.7 Delta V6"},
+    {"make": "Mitsubishi", "engine": "V6|2\\.4L I4", "year_to": 2012},
+    {"make": "Volvo", "engine": "I5|2\\.4L|2\\.5L", "year_to": 2016, "note": "5 цилиндров"},
+    {"make": "Volkswagen|Audi", "engine": "TDI|Diesel|1\\.8L I4", "year_to": 2014}
+  ],
+
+  "_schedules": "По марке — первая подходящая строка; «*» — для остальных. Ремень ГРМ — только у двигателей из belt_engines.",
+  "schedules": [
+    {"make": "Honda|Acura", "items": [
+      {"type": "oil", "miles": 7500, "months": 12},
+      {"type": "brake_fluid", "months": 36},
+      {"type": "transmission", "miles": 60000, "note": "АКПП / вариатор — по Maintenance Minder обычно каждые 30–60 тыс."},
+      {"type": "spark_plugs", "miles": 105000},
+      {"type": "coolant", "first_miles": 120000, "first_months": 120, "miles": 60000, "months": 60},
+      {"type": "timing_belt", "miles": 105000, "months": 84, "note": "ремень + помпа + натяжитель; в тяжёлых условиях — раньше"}]},
+    {"make": "Toyota|Lexus|Scion", "items": [
+      {"type": "oil", "miles": 10000, "months": 12},
+      {"type": "brake_fluid", "months": 36},
+      {"type": "transmission", "miles": 60000, "note": "Toyota пишет «на весь срок»; после 60 тыс. для перепродажи лучше заменить"},
+      {"type": "spark_plugs", "miles": 120000},
+      {"type": "coolant", "first_miles": 100000, "first_months": 120, "miles": 50000, "months": 60},
+      {"type": "timing_belt", "miles": 90000, "months": 108, "note": "ремень + помпа"}]},
+    {"make": "Mazda", "items": [
+      {"type": "oil", "miles": 7500, "months": 12},
+      {"type": "brake_fluid", "months": 36},
+      {"type": "transmission", "miles": 60000},
+      {"type": "spark_plugs", "miles": 75000},
+      {"type": "coolant", "first_miles": 120000, "first_months": 120, "miles": 50000, "months": 60}]},
+    {"make": "*", "items": [
+      {"type": "oil", "miles": 7500, "months": 12},
+      {"type": "brake_fluid", "months": 36},
+      {"type": "transmission", "miles": 60000},
+      {"type": "spark_plugs", "miles": 100000},
+      {"type": "coolant", "first_miles": 100000, "first_months": 120, "miles": 50000, "months": 60},
+      {"type": "timing_belt", "miles": 90000, "months": 84}]}
+  ],
+
+  "_belt_to_recon": "Ремень ГРМ пора менять (по пробегу / возрасту), а записи о замене в Carfax нет — в ремонт идёт сумма из costs.json (recon_keywords: «timing belt due»), потолок ниже. false — только пометка у машины.",
+  "belt_to_recon": true
+}

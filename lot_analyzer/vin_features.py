@@ -92,10 +92,31 @@ def decode(vins: list[str], fetch=None, timeout: float = 40) -> int:
                 if not vin:
                     continue
                 cache[vin] = {"keyless": str(d.get("KeylessIgnition") or ""), "camera": str(d.get("RearVisibilitySystem") or d.get("BackupCamera") or ""),
-                              "at": time.time()}
+                              "engine": _engine_text(d), "at": time.time()}
                 done += 1
             _write(CACHE_PATH, cache)
     return done
+
+
+def _engine_text(d: dict) -> str:
+    """Двигатель из NHTSA одной строкой, как в Carfax: «3.5L V6» (ремень ГРМ или цепь — config/maintenance.json)."""
+    if re.search(r"electric", str(d.get("FuelTypePrimary") or ""), re.I) and not d.get("DisplacementL"):
+        return "Electric"
+    try:
+        litres = float(d.get("DisplacementL") or 0)
+    except ValueError:
+        litres = 0.0
+    cyl = str(d.get("EngineCylinders") or "").strip()
+    conf = str(d.get("EngineConfiguration") or "").lower()
+    letter = "V" if conf.startswith("v") else "H" if "opposed" in conf or "boxer" in conf else "I" if conf else ("I" if cyl in ("3", "4", "5") else "V" if cyl else "")
+    text = f"{litres:.1f}L {letter}{cyl}".strip() if litres and cyl else ""
+    model = str(d.get("EngineModel") or "").strip()
+    return f"{text} {model}".strip() if text else model
+
+
+def engine(row: dict) -> str:
+    """Двигатель машины по VIN (NHTSA): «2.4L I4 K24Z7»; '' — ещё не расшифровали."""
+    return str(_read(CACHE_PATH).get(str(row.get("vin") or "").upper(), {}).get("engine") or "")
 
 
 def model_key(row: dict) -> str:
@@ -172,7 +193,7 @@ def warm(get_rows, every: int = 900, first: int = 60) -> threading.Thread:
             try:
                 cache = _read(CACHE_PATH)
                 vins = [str(r.get("vin") or "").upper() for r in get_rows()]
-                todo = [v for v in dict.fromkeys(vins) if v and v not in cache][:500]
+                todo = [v for v in dict.fromkeys(vins) if v and (v not in cache or "engine" not in cache[v])][:500]   # + двигатель у старых
                 if todo:
                     decode(todo)
             except Exception:  # нет сети, файл занят — в следующий раз

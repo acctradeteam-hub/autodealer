@@ -7,8 +7,8 @@ android {
         applicationId "com.lotanalyzer.voice"
         minSdk 24
         targetSdk 34
-        versionCode 8
-        versionName "1.7"
+        versionCode 9
+        versionName "1.8"
     }
     // Одна постоянная подпись: новая версия ставится поверх старой, адрес Mac и токен в телефоне сохраняются.
     // Ключ (voice-app.keystore) в git не хранится: сборка на GitHub берёт его из закрытого черновика релиза voice-app-key.
