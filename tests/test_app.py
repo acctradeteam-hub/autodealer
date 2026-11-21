@@ -243,6 +243,20 @@ class TestOneWindow(unittest.TestCase):
 
 
 
+class PhotoOpensLotTest(unittest.TestCase):
+    """Нажатие на фото машины — лот в соседней вкладке (как «Открыть лот ↗»); видно, что фото нажимается."""
+
+    def test_photo_link(self) -> None:
+        page = app.PAGE
+        cell = page.split('<td>${x.photo_main_url?')[1].split("</td>")[0]
+        self.assertIn('href="${esc(x.lot_url||x.photo_main_url)}" target="_blank"', cell)   # ссылка на лот; нет лота — на фото
+        self.assertIn("Открыть лот ↗", cell)                                              # подпись при наведении
+        self.assertIn('class="thumbl nopic" href="${esc(x.lot_url)}"', cell)               # «нет фото» — тоже на лот
+        self.assertIn('class="lotbtn"', page)
+        handler = page.split("document.addEventListener('click',e=>{")[1].split("},true);")[0]
+        self.assertIn('a[target="_blank"]', handler)                                       # фото — тоже соседней вкладкой в фоне
+
+
 class PhoneAppSigningTest(unittest.TestCase):
     """Приложение на телефон: одна постоянная подпись — новая версия ставится поверх, адрес Mac и токен не пропадают."""
 
