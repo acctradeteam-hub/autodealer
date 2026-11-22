@@ -201,7 +201,7 @@ def _money(value: str) -> str:
 def _carfax_html(row: dict[str, str]) -> str:
     """Carfax под машиной (рамкой): итоги по-английски, сервис / ТО и куда смотреть на осмотре."""
     points = [p for p in str(row.get("carfax_check") or "").split("\n") if p.strip()]
-    head = "".join(f"<div>{html.escape(x)}</div>" for x in (row.get("carfax"), row.get("carfax_service")) if x)
+    head = "".join(f"<div>{html.escape(x)}</div>" for x in (row.get("carfax"), row.get("carfax_service"), row.get("carfax_checks")) if x)
     if not points and not head:
         return ""
     return ("<div class='cfx'><b>Carfax:</b>" + head + ("<b>Смотреть:</b>" if points else "")

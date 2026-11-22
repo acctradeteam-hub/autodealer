@@ -421,6 +421,8 @@ class BidInput:
     location: str = ""                   # площадка / город — для стоимости доставки
     no_photos: bool = False              # лот без фотографий: осматривать самому, конкурентов меньше
     sale_price: float | None = None      # своя оценка цены продажи
+    fb_price: float | None = None        # Facebook Marketplace: медиана цен похожих объявлений (Muse, fb_market.py)
+    fb_note: str = ""
     kbb_private_party: float | None = None
     kbb_source: str = ""                 # пусто — KBB из заметки; иначе — своя оценка (откуда)
     auction_retail: float | None = None  # розничная оценка самого аукциона (Manheim, ADESA)
@@ -600,6 +602,15 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         result.sale_source = f"KBB PP × {factor:g}" + (f" {offset:+,.0f}" if offset else "")
         if data.kbb_source:
             result.sale_source += f"; KBB — прикидка (на kbb.com не смотрели): {data.kbb_source}"
+        fb = {"use_in_sale": True, "asking_to_sale": 0.93, "weight": 0.5, **(costs.get("fb_market") or {})}
+        if data.fb_price and fb.get("use_in_sale"):
+            # Facebook Marketplace (Muse): там своя цена — продажа = KBB + доля × (объявления × уступка − KBB).
+            fb_sale = data.fb_price * float(fb["asking_to_sale"])
+            kbb_sale = result.sale_price
+            result.sale_price = kbb_sale + float(fb["weight"]) * (fb_sale - kbb_sale)
+            result.sale_source += (f"; Facebook: объявления ${data.fb_price:,.0f} × {float(fb['asking_to_sale']):g} = ${fb_sale:,.0f}, "
+                                   f"вес {float(fb['weight']):.0%} → {_usd(result.sale_price)}")
+        if data.kbb_source:
             cap = float(costs.get("kbb_estimate_max_to_mmr", 0))
             if cap and data.mmr and result.sale_price > data.mmr * cap:
                 # Прикидка считает машину «Good», а низкий MMR обычно значит плохое состояние или историю.
@@ -852,6 +863,8 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         location=row.get("location", ""),
         no_photos=row.get("no_photos", "") == "да",
         sale_price=parse_money(row.get("retail_estimate_usd")) or parse_money(row.get("cargurus_retail_usd")),
+        fb_price=parse_money(row.get("fb_median_usd")),
+        fb_note=row.get("fb_note", ""),
         kbb_private_party=parse_money(row.get("kbb_private_party_usd")),
         mmr=parse_money(row.get("mmr_adjusted_usd")) or parse_money(row.get("wholesale_usd")),
         auction_retail=parse_money(row.get("auction_retail_usd")),

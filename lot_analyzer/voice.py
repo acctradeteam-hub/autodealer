@@ -56,7 +56,8 @@ def car_of(row: dict) -> dict:
             "notes": notes, "own": own, "url": row.get("lot_url", ""), "manual": bool(row.get("inspect_manual")),
             "major": major_defects(row),             # «Major Engine / Transmission Defect» — крупно на телефоне
             "carfax_check": [p for p in str(row.get("carfax_check") or "").split("\n") if p.strip()],   # Carfax: куда смотреть
-            "carfax": row.get("carfax", ""), "carfax_service": row.get("carfax_service", ""),               # итоги и сервис (по-английски)
+            "carfax": " · ".join(x for x in (row.get("carfax", ""), row.get("carfax_checks", "")) if x),  # итоги + проверки истории
+            "carfax_service": row.get("carfax_service", ""),                                                 # сервис (по-английски)
             "carfax_saved": bool(row.get("carfax_saved")),                                                   # отчёт — в программе на Mac
             "key": vin_features.key_note(row),       # Oceanside: кнопка Start/Stop — ключ у CarMax
             "camera": vin_features.camera(row)}      # камера заднего вида: отметка с осмотра или подсказка

@@ -304,7 +304,7 @@ class CarfaxServiceTest(unittest.TestCase):
         evts = carfax.events(self.REPORT)
         svc = [e for e in evts if e["kind"] == "service"]
         self.assertEqual(len(svc), 11)                                                 # смог-тест — не сервис
-        self.assertEqual(svc[0], {"date": "2013-03-10", "miles": 7950, "kind": "service", "types": ["oil", "rotation"]})
+        self.assertEqual(svc[0], {"date": "2013-03-10", "miles": 7950, "kind": "service", "types": ["oil", "rotation"], "state": "CA", "what": ""})
         st = carfax.service_stats(evts, today=dt.date(2026, 11, 21))
         self.assertEqual((st["records"], st["verdict"], st["oil_changes"]), (11, "regular", 11))
         self.assertIn("Service: 11 records, regular", carfax.stats_line(st))
@@ -361,6 +361,196 @@ class CarfaxServiceTest(unittest.TestCase):
         self.assertEqual(_engine_text({"DisplacementL": "3.5", "EngineCylinders": "6", "EngineConfiguration": "V-Shaped", "EngineModel": "J35Z8"}), "3.5L V6 J35Z8")
         self.assertEqual(_engine_text({"DisplacementL": "2.5", "EngineCylinders": "4", "EngineConfiguration": "Horizontally opposed (boxer)"}), "2.5L H4")
         self.assertEqual(_engine_text({"FuelTypePrimary": "Electric"}), "Electric")
+
+
+class CarfaxHistoryChecksTest(unittest.TestCase):
+    """Carfax: перерывы в регистрации, сколько держали владельцы, миль в год, скрутка, отзывные кампании, наводнения, перепродажи."""
+
+    BAD = ("2016 Toyota Camry SE\n85,500 mi | VIN: 4T1BF1FK0GU000009\nSedan 4 DR | 2.5L I4 F DOHC 16V | Gasoline\n"
+           "Manufacturer Recall\n1 Open Recall\nBasic Warranty\nWarranty Expired\n"
+           "Ownership History\tOwner 1\tOwner 2\tOwner 3\n"
+           "Year purchased\t2016\t2017\t2018\n"
+           "Estimated length of ownership\t1 yr. 2 mo.\t4 mo.\t7 years\n"
+           "Estimated miles driven per year\t12,000/yr\t9,000/yr\t14,000/yr\n"
+           "Last reported odometer reading\t14,200\t17,800\t85,500\n"
+           "Detailed History\n"
+           "02/10/2016\t12\tToyota of Houston\nHouston, TX\tVehicle sold\n"
+           "03/01/2016\tTexas Motor Vehicle Dept.\nHouston, TX\tRegistration issued or renewed\n"
+           "10/15/2017\t17,800\tHouston Auto Auction\nHouston, TX\tSold at auction\n"
+           "11/20/2017\t17,900\tAuto Dealer\nDallas, TX\tVehicle offered for sale\n"
+           "03/05/2018\tTexas Motor Vehicle Dept.\tRegistration issued or renewed\n"
+           "06/01/2018\t52,000\tQuick Lube\nLos Angeles, CA\tVehicle serviced\n- Oil and filter changed\n"
+           "06/01/2021\t41,000\tCalifornia DMV\tRegistration issued or renewed\n"
+           "01/10/2025\t80,000\tCarMax\nOntario, CA\tVehicle offered for sale\n"
+           "06/10/2025\t83,000\tAuto Auction\nFontana, CA\tOffered for sale at auction\n"
+           "11/01/2025\t85,500\tAuto Dealer\nIrvine, CA\tVehicle offered for sale\n") + "Filler line. " * 80
+
+    def test_checks(self) -> None:
+        evts = carfax.events(self.BAD)
+        h = carfax.history(self.BAD, evts, today=dt.date(2026, 11, 22))
+        self.assertEqual([o["months"] for o in h["owners"]], [14, 4, 84])
+        self.assertEqual([o["per_year"] for o in h["owners"]], [12000, 9000, 14000])
+        self.assertEqual(h["recalls_open"], 1)
+        self.assertEqual((h["odo_drops"][0][1], h["odo_drops"][0][3]), (52000, 41000))
+        self.assertIn(["2018-03-05", "2021-06-01"], [g[:2] for g in h["reg_gaps"]])   # регистрация не продлевалась 3 года
+        self.assertEqual(h["flood"][0]["event"], "Hurricane Harvey")                  # Houston, TX — в даты Harvey
+        self.assertEqual(h["listings"]["recent"], 3)
+        text = " · ".join(c for c, _ in carfax.history_checks(h, "61000"))
+        for part in ("Auction miles 61,000 < Carfax 85,500", "Odometer went down: 52,000 (06/2018) → 41,000 (06/2021)",
+                     "In TX around Hurricane Harvey (08/2017)", "Owner 2 kept it 4 mo", "Offered for sale 3× since 01/2025",
+                     "Registration gap 2018–2021", "1 open recall"):
+            self.assertIn(part, text)
+        levels = dict(carfax.history_checks(h, "61000"))
+        self.assertEqual(levels["Owner 2 kept it 4 mo"], "bad")
+        self.assertNotIn("Owner 3", text)                                              # последний ещё владеет
+        # чистая история — ничего лишнего
+        clean = "2019 Honda Civic LX\nManufacturer Recall\nNo Recalls Reported\nEstimated length of ownership\t6 years\n" \
+                "Estimated miles driven per year\t11,000/yr\n05/01/2020\t10,000\tHonda Dealer\tVehicle serviced\n- Oil and filter changed\n"
+        hc = carfax.history(clean, carfax.events(clean))
+        self.assertEqual(carfax.history_checks(hc, "70000"), [("~11,000 mi/yr", "info")])
+
+    def test_attach_and_page(self) -> None:
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        with mock.patch.object(carfax, "PATH", tmp / "carfax.json"), mock.patch.object(carfax, "TEXT_DIR", tmp / "text"):
+            vin = "4T1BF1FK0GU000009"
+            self.assertTrue(carfax.save(vin, "", self.BAD))
+            row = {"vin": vin, "year": "2016", "make": "Toyota", "model": "Camry", "odometer_miles": "61000"}
+            carfax.attach([row])
+            self.assertEqual(row["carfax_checks_bad"], "1")
+            self.assertIn("Hurricane Harvey", row["carfax_flags"])
+            self.assertIn("Наводнение", row["carfax_check"])
+            self.assertIn("Пробег: сверить", row["carfax_check"])
+            page = carfax.page(vin, "61000")
+            for part in ("History checks", "Owner 2: bought 2017, 4 mo", "Вся история", "Sold at auction".lower()):
+                self.assertIn(part, page if part != "sold at auction" else page.lower())
+            # запись старой версии разбора с сохранённым текстом — пересчитывается сама
+            data = json.loads((tmp / "carfax.json").read_text(encoding="utf-8"))
+            data[vin].pop("hist")
+            data[vin]["v"] = 1
+            (tmp / "carfax.json").write_text(json.dumps(data), encoding="utf-8")
+            row2 = {"vin": vin, "year": "2016", "make": "Toyota", "model": "Camry", "odometer_miles": "86000"}
+            carfax.attach([row2])
+            self.assertIn("Odometer went down", row2["carfax_checks"])
+            self.assertEqual(json.loads((tmp / "carfax.json").read_text(encoding="utf-8"))[vin]["v"], carfax.PARSE_V)
+
+
+class FbMarketTest(unittest.TestCase):
+    """Facebook Marketplace через Muse: редкое короткое задание, ответ CSV, цены объявлений — в цену продажи (синтетика)."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+        from lot_analyzer import fb_market
+        self.fb = fb_market
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patch = mock.patch.object(fb_market, "PATH", self.tmp / "fb_market.json")
+        self.patch.start()
+        self.costs = load_costs(COSTS)
+
+    def tearDown(self) -> None:
+        self.patch.stop()
+
+    def rows(self) -> list[dict]:
+        car = lambda vin, model, year, miles, **kw: {"vin": vin, "make": "Honda" if model in ("Odyssey", "Accord") else "Toyota", "model": model,
+                                                      "trim": "EX", "year": str(year), "odometer_miles": str(miles), "popular": "да",
+                                                      "kbb_private_party_usd": "14000", **kw}
+        return [car("A" * 17, "Odyssey", 2014, 112000), car("B" * 17, "Odyssey", 2015, 118000), car("C" * 17, "Sienna", 2012, 150000),
+                car("D" * 17, "Accord", 2016, 90000, passed="1"), car("E" * 17, "Sienna", 2013, 140000, rejected="2026-11-20"),
+                car("F" * 17, "Accord", 2018, 60000, kbb_private_party_usd=""),                  # без KBB, ставки и осмотра — не спрашиваем
+                car("G" * 17, "Accord", 2010, 200000, calc_verdict="НЕВЫГОДНО: дорого")]
+
+    def test_task_answer_and_price(self) -> None:
+        t = self.fb.task(self.rows(), self.costs, now=1_800_000_000)
+        self.assertEqual([g["key"] for g in t["groups"]], ["honda|odyssey|2013-2015|80000-120000", "toyota|sienna|2010-2012|120000-160000"])
+        self.assertIn("G1: Honda Odyssey 2013-2015, 80,000-120,000 miles", t["text"])
+        self.assertIn("Do not message sellers", t["text"])
+        self.assertIn("group,year,make,model,trim,miles,price,city,days_listed,seller,url", t["text"])
+        self.fb.mark_asked(t["ids"], now=1_800_000_000)
+        self.assertEqual(self.fb.task(self.rows(), self.costs, now=1_800_000_000 + 3600)["groups"], [])   # уже спросили — не повторяем
+        answer = ("Here are the results:\n```csv\ngroup,year,make,model,trim,miles,price,city,days_listed,seller,url\n"
+                  "G1,2014,Honda,Odyssey,EX-L,110000,$11,500,Irvine,3,private,https://fb.example/1\n"
+                  "G1,2015,Honda,Odyssey,EX,121000,12000,Anaheim,10,private,https://fb.example/2\n"
+                  "G1,2013,Honda,Odyssey,LX,105000,10000,Tustin,,private,https://fb.example/3\n"
+                  "G1,2014,Honda,Odyssey,Touring,98000,13500,Orange,5,dealer,https://fb.example/4\n"
+                  "G1,2014,Honda,Odyssey,EX,,,Irvine,,private,https://fb.example/5\n```\nLet me know if you need more.")
+        out = self.fb.add_answer(answer, now=1_800_000_000 + 7200)
+        self.assertEqual((out["ok"], out["added"], out["groups"]), (True, 4, 1))           # без цены — пропущено
+        self.assertEqual(self.fb.add_answer(answer, now=1_800_000_000 + 7300)["added"], 0)  # тот же ответ дважды — не задваиваем
+        self.assertFalse(self.fb.add_answer("sorry, nothing found")["ok"])
+        rows = self.rows()
+        self.fb.attach(rows, self.costs, now=1_800_000_000 + 8000)
+        self.assertEqual((rows[0]["fb_median_usd"], rows[0]["fb_n"]), ("11750", "4"))      # медиана 10,000 / 11,500 / 12,000 / 13,500
+        self.assertIn("Facebook: медиана 4 объявлений", rows[0]["fb_note"])
+        self.assertEqual(rows[2]["fb_median_usd"], "")                                     # по Sienna объявлений нет
+        self.fb.attach(rows, self.costs, now=1_800_000_000 + 40 * 86400)
+        self.assertEqual(rows[0]["fb_median_usd"], "")                                     # устарели (max_age_days)
+        # цена продажи: KBB 14,000; объявления 11,750 × 0,93 = 10,927; вес 50% → 12,464
+        from lot_analyzer.bid import BidInput, calculate
+        plain = calculate(BidInput(auction="CarMax", kbb_private_party=14000), self.costs)
+        fbr = calculate(BidInput(auction="CarMax", kbb_private_party=14000, fb_price=11750), self.costs)
+        self.assertEqual(round(plain.sale_price), 14000)
+        self.assertEqual(round(fbr.sale_price), round(14000 + 0.5 * (11750 * 0.93 - 14000)))
+        self.assertIn("Facebook: объявления $11,750", fbr.sale_source)
+        self.assertLess(fbr.max_bid, plain.max_bid)
+        off = calculate(BidInput(auction="CarMax", kbb_private_party=14000, fb_price=11750), dict(self.costs, fb_market={"use_in_sale": False}))
+        self.assertEqual(round(off.sale_price), 14000)
+
+    def test_file_and_endpoints(self) -> None:
+        downloads = self.tmp / "dl"
+        downloads.mkdir()
+        (downloads / "fb_market_2026-11-22.csv").write_text("group,year,make,model,trim,miles,price,city,days_listed,seller,url\n"
+                                                           "G1,2014,Honda,Odyssey,EX,110000,11500,Irvine,3,private,\n", encoding="utf-8")
+        self.assertEqual(self.fb.import_files([downloads]), 1)
+        self.assertEqual(self.fb.import_files([downloads]), 0)                             # тот же файл — один раз
+        self.assertEqual(len(self.fb.load()["listings"]), 1)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            t = json.loads(urllib.request.urlopen(base + "/api/fb_task").read())
+            self.assertEqual(t["text"], "")                                                # машин нет — и задания нет
+            req = urllib.request.Request(base + "/api/fb_answer", data=json.dumps({"text": "group,year,make,model,trim,miles,price,city,days_listed,seller,url\nG2,2012,Toyota,Sienna,LE,150000,9000,Garden Grove,,private,https://fb.example/9"}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            self.assertEqual(json.loads(urllib.request.urlopen(req).read())["added"], 1)
+        finally:
+            server.shutdown()
+        page = app.PAGE
+        for part in ("function drawFb(d)", "📋 Задание для Muse", "📥 Ответ Muse", "🛒 FB"):
+            self.assertIn(part, page)
+
+
+class LiquidityTest(unittest.TestCase):
+    """Ликвидность лота: ваши итоги торгов по модели + MMR ÷ KBB; MMR можно вписать в окне."""
+
+    def test_liquidity_and_manual_mmr(self) -> None:
+        from unittest import mock
+        from lot_analyzer import liquidity
+        tmp = Path(tempfile.mkdtemp())
+        with mock.patch.object(liquidity, "MMR_PATH", tmp / "mmr_manual.json"):
+            hist = {}
+            for i in range(14):
+                hist[f"o{i}"] = {"date": "2026-11-10", "make": "Honda", "model": "Odyssey EX-L", "outcome": "Sold"}
+            hist["o-ns"] = {"date": "2026-11-10", "make": "Honda", "model": "Odyssey", "outcome": "No Sale"}
+            hist["old"] = {"date": "2026-01-10", "make": "Mazda", "model": "CX-9", "outcome": "Sold"}
+            hist["cx"] = {"date": "2026-11-03", "make": "Mazda", "model": "CX-9 Touring", "outcome": "No Sale"}
+            st = liquidity.model_stats(hist, today=dt.date(2026, 11, 22))
+            self.assertEqual(st["honda|odyssey"], {"offered": 15, "sold": 14})
+            self.assertTrue(liquidity.save_mmr("5FNRL5H65CB000001", "$9,800"))
+            rows = [{"vin": "5FNRL5H65CB000001", "make": "Honda", "model": "Odyssey", "kbb_private_party_usd": "12500"},
+                    {"vin": "JM3TB3CV0D0000001", "make": "Mazda", "model": "CX-9", "kbb_private_party_usd": "11000", "mmr_adjusted_usd": "5500"},
+                    {"vin": "1G1ZD5ST0JF000001", "make": "Chevrolet", "model": "Malibu"}]
+            liquidity.attach_mmr(rows)
+            self.assertEqual((rows[0]["mmr_adjusted_usd"], rows[0]["mmr_manual"]), ("9800", "1"))
+            self.assertEqual(rows[1]["mmr_manual"], "")                                    # свой MMR (Manheim) не трогаем
+            liquidity.attach(rows, hist, today=dt.date(2026, 11, 22))
+            self.assertEqual(rows[0]["liq"], "высокая")                                    # 14 из 15 продано, MMR/KBB 0.78
+            self.assertIn("продано 14 из 15", rows[0]["liq_note"])
+            self.assertEqual(rows[1]["liq"], "низкая")                                     # 0 из 1, MMR/KBB 0.50
+            self.assertEqual(rows[2]["liq"], "")                                           # данных нет — не выдумываем
+            self.assertTrue(liquidity.save_mmr("5FNRL5H65CB000001", ""))                  # пусто — убрать
+            self.assertEqual(liquidity.load_mmr(), {})
+        self.assertIn("function saveMmr(el)", app.PAGE)
+        self.assertIn("💧", app.PAGE)
 
 
 class PhoneAppSigningTest(unittest.TestCase):

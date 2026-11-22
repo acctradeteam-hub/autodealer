@@ -1,0 +1,20 @@
+{
+  "_about": "Крупные наводнения и ураганы в США: машина, которая в эти даты была (сервис, регистрация, продажа) в пострадавших штатах, — проверить на затопление. Carfax сам ставит «Flood» только если об этом сообщили. days_after — сколько дней после события ещё считаем (машины после потопа всплывают на продажу месяцами). Список можно дополнять.",
+  "days_after": 180,
+  "events": [
+    {"name": "Hurricane Katrina", "from": "2005-08-25", "to": "2005-09-30", "states": ["LA", "MS", "AL", "FL"]},
+    {"name": "Hurricane Rita", "from": "2005-09-20", "to": "2005-10-15", "states": ["TX", "LA"]},
+    {"name": "Hurricane Ike", "from": "2008-09-10", "to": "2008-10-15", "states": ["TX", "LA"]},
+    {"name": "Hurricane Sandy", "from": "2012-10-28", "to": "2012-11-30", "states": ["NJ", "NY", "CT"]},
+    {"name": "Hurricane Harvey", "from": "2017-08-25", "to": "2017-09-30", "states": ["TX", "LA"]},
+    {"name": "Hurricane Irma", "from": "2017-09-08", "to": "2017-10-10", "states": ["FL", "GA", "SC"]},
+    {"name": "Hurricane Florence", "from": "2018-09-13", "to": "2018-10-15", "states": ["NC", "SC"]},
+    {"name": "Hurricane Michael", "from": "2018-10-09", "to": "2018-11-10", "states": ["FL", "GA"]},
+    {"name": "Hurricane Laura", "from": "2020-08-26", "to": "2020-09-30", "states": ["LA", "TX"]},
+    {"name": "Hurricane Ida", "from": "2021-08-29", "to": "2021-09-30", "states": ["LA", "MS", "NJ", "NY", "PA"]},
+    {"name": "Hurricane Ian", "from": "2022-09-27", "to": "2022-10-31", "states": ["FL", "SC"]},
+    {"name": "Hurricane Beryl", "from": "2024-07-07", "to": "2024-08-07", "states": ["TX"]},
+    {"name": "Hurricane Helene", "from": "2024-09-25", "to": "2024-10-31", "states": ["FL", "GA", "NC", "SC", "TN"]},
+    {"name": "Hurricane Milton", "from": "2024-10-09", "to": "2024-11-10", "states": ["FL"]}
+  ]
+}

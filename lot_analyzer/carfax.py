@@ -31,6 +31,8 @@ PATH = DATA_DIR / "carfax.json"
 PDF_DIR = DATA_DIR / "carfax"
 TEXT_DIR = PDF_DIR / "text"                # полный текст отчётов: <VIN>.txt.gz — смотреть в программе, без сайта
 MAINT_PATH = Path(__file__).resolve().parent.parent / "config" / "maintenance.json"
+DISASTERS_PATH = Path(__file__).resolve().parent.parent / "config" / "disasters.json"
+PARSE_V = 2                                # версия разбора: старые записи с сохранённым текстом пересчитываются сами
 VIN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 
 STATES = ("Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia",
@@ -39,6 +41,16 @@ STATES = ("Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", 
           "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island",
           "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia",
           "Wisconsin", "Wyoming", "District of Columbia")
+ABBR = {"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California", "CO": "Colorado", "CT": "Connecticut",
+        "DE": "Delaware", "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+        "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan",
+        "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire",
+        "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+        "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee",
+        "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin",
+        "WY": "Wyoming", "DC": "District of Columbia"}
+STATE_CODE = {v.lower(): k for k, v in ABBR.items()}
+_SALE = re.compile(r"offered for sale|listed (?:for sale|as (?:a )?dealer vehicle)|for sale at auction|sold at auction|auction", re.I)
 # Соль на дорогах зимой — ржавчина днища и рамы.
 SALT = {"Connecticut", "Delaware", "Illinois", "Indiana", "Iowa", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota",
         "Missouri", "Nebraska", "New Hampshire", "New Jersey", "New York", "North Dakota", "Ohio", "Pennsylvania", "Rhode Island",
@@ -226,7 +238,20 @@ def events(text: str) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        out.append({"date": day.isoformat(), "miles": miles, "kind": kind, "types": types})
+        head_text = re.sub(r"\s+", " ", block[:220])
+        state = ""
+        m_full = re.search(r"\b(" + "|".join(STATES) + r")\b", head_text)
+        m_abbr = re.search(r",\s*([A-Z]{2})\b", head_text)
+        if m_abbr and m_abbr.group(1) in ABBR and (not m_full or m_abbr.start() < m_full.start()):
+            state = m_abbr.group(1)
+        elif m_full:
+            state = STATE_CODE.get(m_full.group(1).lower(), "")
+        sale = bool(_SALE.search(head_text))
+        if sale and kind in ("other", "title", "odometer", "registration"):
+            kind = "sale"
+        what = next((w for w in ("sold at auction", "for sale at auction", "offered for sale", "listed as dealer vehicle", "listed for sale",
+                                 "vehicle sold", "registration", "title issued", "odometer reading") if w in head_text.lower()), "")
+        out.append({"date": day.isoformat(), "miles": miles, "kind": kind, "types": types, "state": state, "what": what})
     return sorted(out, key=lambda e: e["date"])
 
 
@@ -252,6 +277,120 @@ def service_stats(evts: list[dict], today: dt.date | None = None) -> dict:
         out["verdict"] = "gaps"
     else:
         out["verdict"] = "regular"
+    return out
+
+
+def _label_values(t: str, label: str) -> str:
+    """Строка таблицы «Ownership History» после подписи (значения владельцев — колонками / через табуляцию)."""
+    m = re.search(label + r"[ \t]*(.*)", t, re.I)
+    return m.group(1) if m else ""
+
+
+def load_disasters(path: Path | None = None) -> dict:
+    try:
+        return json.loads((path or DISASTERS_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def history(text: str, evts: list[dict], today: dt.date | None = None, disasters: dict | None = None) -> dict:
+    """Проверки истории по отчёту: владельцы (сколько держали, миль в год), скрутка, отзывные кампании, перерывы в
+    регистрации и в записях, штаты с наводнениями около дат стихий, выставления на продажу."""
+    today = today or dt.date.today()
+    t = re.sub(r"[\u00a0]", " ", text or "")
+    cut = re.search(r"\bfull glossary\b", t, re.I)
+    t = t[:cut.start()] if cut else t
+    out: dict = {}
+    # Владельцы: «Estimated length of ownership  2 yrs. 11 mo.  13 years», «Estimated miles driven per year  11,301/yr  7,252/yr»
+    lengths = []
+    for y, mo, only in re.findall(r"(?:(\d{1,2})\s*(?:yrs?|years?)\.?(?:\s*(\d{1,2})\s*mo(?:s|nths?)?\.?)?|(\d{1,2})\s*mo(?:s|nths?)?\.?)",
+                                  _label_values(t, r"estimated length of ownership")):
+        lengths.append(int(y or 0) * 12 + int(mo or 0) if (y or mo) else int(only or 0))
+    per_year = [int(x.replace(",", "")) for x in re.findall(r"([\d,]{2,7})\s*/\s*yr", _label_values(t, r"estimated miles driven per year"))]
+    bought = [int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", _label_values(t, r"year purchased"))]
+    out["owners"] = [{"months": lengths[i] if i < len(lengths) else None, "per_year": per_year[i] if i < len(per_year) else None,
+                      "bought": bought[i] if i < len(bought) else None} for i in range(max(len(lengths), len(per_year), len(bought)))]
+    # Пробег: по записям по порядку — уменьшился больше чем на 1,000 — скрутка или ошибка в записи
+    readings = [(e["date"], e["miles"]) for e in evts if e.get("miles") and e["miles"] > 10]
+    drops, top = [], (None, 0)
+    for d, m in readings:
+        if top[1] and m < top[1] - 1000:
+            drops.append([top[0], top[1], d, m])
+        if m > top[1]:
+            top = (d, m)
+    out["odo_drops"] = drops[:3]
+    out["max_miles"] = max([m for _, m in readings] + [int(x.replace(",", "")) for x in re.findall(r"[\d,]{3,8}", _label_values(t, r"last reported odometer reading"))] or [0]) or None
+    if readings:
+        first_d = dt.date.fromisoformat(readings[0][0])
+        last_d, last_m = dt.date.fromisoformat(readings[-1][0]), readings[-1][1]
+        years = max((last_d - first_d).days / 365.25, 0.5)
+        out["miles_per_year"] = int((last_m - readings[0][1]) / years) if last_m > readings[0][1] and years >= 1 else None
+    # Отзывные кампании: «Manufacturer Recall … No Recalls Reported» / «1 Open Recall»
+    rec = _section(t, r"^\s*manufacturer recall\s*$", r"^\s*(?:basic warranty|title history|ownership history|additional history)\b")
+    m = re.search(r"(\d{1,2})\s+open\s+recalls?", rec, re.I)
+    out["recalls_open"] = int(m.group(1)) if m else (0 if not rec or re.search(r"no (?:open )?recalls?", rec, re.I) else 1 if re.search(r"open recall|recall reported", rec, re.I) else 0)
+    # Перерывы в регистрации (ежегодное продление) и вообще без записей — машина не ездила
+    regs = [dt.date.fromisoformat(e["date"]) for e in evts if e["kind"] == "registration"]
+    out["reg_gaps"] = [[a.isoformat(), b.isoformat(), round((b - a).days / 30.44)] for a, b in zip(regs, regs[1:]) if (b - a).days > 548][:3]
+    alld = sorted({dt.date.fromisoformat(e["date"]) for e in evts})
+    out["quiet_gaps"] = [[a.isoformat(), b.isoformat(), round((b - a).days / 30.44)] for a, b in zip(alld, alld[1:]) if (b - a).days > 1095][:3]
+    # Наводнения: запись в пострадавшем штате в даты стихии (и полгода после)
+    cfg = load_disasters() if disasters is None else disasters
+    after = int(cfg.get("days_after") or 180)
+    flood = []
+    for ev in cfg.get("events") or []:
+        a, b = dt.date.fromisoformat(ev["from"]), dt.date.fromisoformat(ev["to"]) + dt.timedelta(days=after)
+        hit = next((e for e in evts if e.get("state") in ev["states"] and a <= dt.date.fromisoformat(e["date"]) <= b), None)
+        if hit:
+            flood.append({"event": ev["name"], "date": ev["from"], "state": hit["state"], "seen": hit["date"]})
+    out["flood"] = flood
+    # Выставления на продажу: эпизоды (записи в пределах 60 дней — один эпизод), аукционы
+    sales = sorted(dt.date.fromisoformat(e["date"]) for e in evts if e["kind"] == "sale")
+    episodes = []
+    for d in sales:
+        if not episodes or (d - episodes[-1]).days > 60:
+            episodes.append(d)
+    recent = [d for d in episodes if (today - d).days <= 3 * 365]
+    out["listings"] = {"episodes": len(episodes), "recent": len(recent), "since": recent[0].isoformat() if recent else "",
+                       "auctions": sum(1 for e in evts if "auction" in (e.get("what") or ""))}
+    return out
+
+
+def history_checks(h: dict, auction_miles=None) -> list[tuple[str, str]]:
+    """Находки по истории — по-английски, с уровнем: bad (настораживает), warn (обратить внимание), info."""
+    out: list[tuple[str, str]] = []
+    if not h:
+        return out
+    now = int(str(auction_miles or "0").replace(",", "") or 0)
+    top = h.get("max_miles") or 0
+    if now and top and now < top - 1000:
+        out.append((f"Auction miles {now:,} < Carfax {top:,} — rollback / TMU?", "bad"))
+    for d1, m1, d2, m2 in h.get("odo_drops") or []:
+        out.append((f"Odometer went down: {m1:,} ({d1[5:7]}/{d1[:4]}) → {m2:,} ({d2[5:7]}/{d2[:4]})", "bad"))
+    for f in h.get("flood") or []:
+        out.append((f"In {f['state']} around {f['event']} ({f['date'][5:7]}/{f['date'][:4]}) — check for flood damage", "bad"))
+    owners = h.get("owners") or []
+    for i, o in enumerate(owners):
+        if o.get("months") is not None and o["months"] < 12 and i < len(owners) - 1:      # последний владелец — ещё владеет
+            out.append((f"Owner {i + 1} kept it {o['months']} mo", "bad" if o["months"] < 6 else "warn"))
+    lst = h.get("listings") or {}
+    if lst.get("recent", 0) >= 3 or lst.get("auctions", 0) >= 3:
+        out.append((f"Offered for sale {lst.get('recent') or lst.get('episodes')}× since {lst['since'][5:7]}/{lst['since'][:4]}"
+                    if lst.get("since") else f"Offered for sale {lst.get('episodes')}×", "bad"))
+        if lst.get("auctions", 0) >= 3:
+            out[-1] = (out[-1][0] + f", {lst['auctions']} auction records", "bad")
+    elif lst.get("recent") == 2:
+        out.append((f"Offered for sale 2× since {lst['since'][5:7]}/{lst['since'][:4]}", "warn"))
+    for a, b, months in h.get("reg_gaps") or []:
+        out.append((f"Registration gap {a[:4]}–{b[:4]} ({months} mo) — off the road?", "bad" if months > 24 else "warn"))
+    if not h.get("reg_gaps"):
+        for a, b, months in h.get("quiet_gaps") or []:
+            out.append((f"No records {a[5:7]}/{a[:4]}–{b[5:7]}/{b[:4]} ({months // 12} yrs)", "warn"))
+    if h.get("recalls_open"):
+        out.append((f"{h['recalls_open']} open recall" + ("s" if h["recalls_open"] > 1 else "") + " — free fix at a dealer", "warn"))
+    mpy = h.get("miles_per_year") or next((o["per_year"] for o in reversed(owners) if o.get("per_year")), None)
+    if mpy:
+        out.append((f"~{mpy:,} mi/yr", "warn" if mpy > 20000 else "info"))
     return out
 
 
@@ -509,7 +648,7 @@ def save(vin: str, url: str, text: str, source: str = "text", pdf: str = "") -> 
     evts = events(text)
     data[vin] = {"url": str(url or "")[:1000], "at": time.time(), "summary": summary, "line": line(summary), "flags": flags(summary),
                  "source": source, "pdf": pdf or (old.get("pdf", "") if source != "pdf" else ""),
-                 "stats": service_stats(evts), "done": last_done(evts)}
+                 "stats": service_stats(evts), "done": last_done(evts), "hist": history(text, evts), "v": PARSE_V}
     TEXT_DIR.mkdir(parents=True, exist_ok=True)             # полный отчёт — в программе: смотреть без сайта Carfax
     (TEXT_DIR / f"{vin}.txt.gz").write_bytes(gzip.compress(text.encode("utf-8")))
     PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -560,6 +699,17 @@ def attach(rows: list[dict], engine_of=None) -> None:
     data = load()
     cfg = load_maintenance()
     saved = {p.name[:17] for p in TEXT_DIR.glob("*.txt.gz")} if TEXT_DIR.is_dir() else set()
+    # Разбор стал подробнее — записи с сохранённым текстом пересчитываем сами (один раз).
+    stale = [v for v, r in data.items() if v in saved and r.get("v") != PARSE_V]
+    for vin in stale:
+        text = saved_text(vin)
+        if text:
+            evts = events(text)
+            s = parse(text)
+            data[vin].update({"summary": s, "line": line(s), "flags": flags(s), "stats": service_stats(evts), "done": last_done(evts),
+                              "hist": history(text, evts), "v": PARSE_V})
+    if stale:
+        PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
     for row in rows:
         vin = str(row.get("vin", "")).upper()
         rec = data.get(vin)
@@ -585,6 +735,18 @@ def attach(rows: list[dict], engine_of=None) -> None:
                                   f"последняя замена {belt['last'][0][:7]}") + " — спросить чек / наклейку под капотом; заложить замену")
                     if cfg.get("belt_to_recon", True) and "timing belt due" not in row.get("carfax_autocheck", ""):   # в ремонт: recon_keywords
                         row["carfax_autocheck"] = " | ".join(x for x in (row.get("carfax_autocheck", ""), "timing belt due") if x)
+            checks = history_checks(rec.get("hist") or {}, row.get("odometer_miles"))
+            row["carfax_checks"] = " · ".join(c for c, _ in checks)
+            row["carfax_checks_bad"] = "1" if any(lvl == "bad" for _, lvl in checks) else ""
+            bad = [c for c, lvl in checks if lvl == "bad"]
+            if bad:
+                row["carfax_flags"] = "; ".join(x for x in (row["carfax_flags"], "; ".join(bad)) if x)
+            h = rec.get("hist") or {}
+            if h.get("flood"):
+                points.append(f"Наводнение ({h['flood'][0]['event']}, {h['flood'][0]['state']}): запах сырости, ил и вода под коврами и в "
+                              "запаске, ржавчина болтов сидений и под приборной панелью, электрика, конденсат в фарах")
+            if h.get("odo_drops") or any(c.startswith("Auction miles") for c, _ in checks):
+                points.append("Пробег: сверить с Carfax — износ педалей, руля, сиденья водителя, наклейки замены масла")
             row["carfax_check"] = "\n".join(points)    # что смотреть на осмотре
             found = history_text(s)
             if found and found not in row.get("carfax_autocheck", ""):          # в расчёт: скидки и стоп-факторы истории
@@ -629,6 +791,14 @@ def page(vin: str, miles_now: str = "", car: str = "", engine: str = "") -> str:
     hist = "".join(f"<tr><td>{e['date'][5:7]}/{e['date'][8:10]}/{e['date'][:4]}</td><td class='num'>{(format(e['miles'], ',') if e['miles'] else '—')}</td>"
                    f"<td>{esc(', '.join(SERVICE_NAMES.get(k, k) for k in e['types']) or 'Vehicle serviced')}</td></tr>" for e in reversed(svc))
     belt = has_belt(make, eng, year, load_maintenance())
+    h = history(text, evts) if text else (rec or {}).get("hist") or {}
+    checks = history_checks(h, miles_now)
+    timeline = "".join(f"<tr><td>{e['date'][5:7]}/{e['date'][8:10]}/{e['date'][:4]}</td><td class='num'>{(format(e['miles'], ',') if e['miles'] else '—')}</td>"
+                       f"<td>{esc(e.get('state') or '')}</td><td>{esc(', '.join(SERVICE_NAMES.get(k, k) for k in e['types']) if e['kind'] == 'service' else (e.get('what') or e['kind']))}</td></tr>"
+                       for e in reversed(evts))
+    owners_html = "".join(f"<div>Owner {i + 1}: " + ", ".join(x for x in (f"bought {o['bought']}" if o.get("bought") else "",
+                          (f"{o['months'] // 12} yrs {o['months'] % 12} mo" if o["months"] >= 12 else f"{o['months']} mo") if o.get("months") is not None else "",
+                          f"{o['per_year']:,} mi/yr" if o.get("per_year") else "") if x) + "</div>" for i, o in enumerate(h.get("owners") or []))
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Carfax {esc(vin)}</title><style>
 body{{font:15px/1.45 -apple-system,Segoe UI,Arial,sans-serif;margin:0;padding:16px;background:#f6f7f9;color:#1d2330}}
@@ -648,7 +818,9 @@ details summary{{cursor:pointer;font-weight:600}}a{{color:#2f5597}}.tbl{{overflo
 <div style="margin-top:6px">{esc(stats_line(st))}</div>
 {f'<div class="muted">Ремень ГРМ: {"да — менять по регламенту" if belt else "нет, цепь" if belt is False else "двигатель не известен"}</div>' if make else ''}</div>
 {('<div class="card"><h2>Maintenance — по регламенту для ' + esc(make or 'этой марки') + (f' при {int(str(miles).replace(",", "")):,} mi' if str(miles).replace(",", "").isdigit() else '') + '</h2><div class="tbl"><table><tr><th>Работа</th><th>Интервал</th><th>Последний раз (Carfax)</th><th>Статус</th><th></th></tr>' + ''.join(rows) + '</table></div><div class="muted">Нет записи — не значит, что не делали: у независимых мастерских и при замене самим записей в Carfax нет. Спросите чеки / наклейку под капотом.</div></div>') if rows else ''}
+{('<div class="card"><h2>History checks</h2>' + ''.join(f'<div class="{"flag" if lvl == "bad" else "rsoon" if lvl == "warn" else ""}">{"⚠ " if lvl != "info" else ""}{esc(c)}</div>' for c, lvl in checks) + (('<div class="muted" style="margin-top:6px">' + owners_html + '</div>') if owners_html else '') + '</div>') if checks or owners_html else ''}
 {('<div class="card"><h2>Что смотреть на осмотре</h2>' + ''.join(f'<div>• {esc(p)}</div>' for p in points) + '</div>') if points else ''}
 {('<div class="card"><h2>Service history — ' + str(len(svc)) + '</h2><div class="tbl"><table><tr><th>Дата</th><th>Пробег</th><th>Что делали</th></tr>' + hist + '</table></div></div>') if svc else ''}
+{('<div class="card"><details><summary>Вся история — ' + str(len(evts)) + ' записей</summary><div class="tbl"><table><tr><th>Дата</th><th>Пробег</th><th>Штат</th><th>Что</th></tr>' + timeline + '</table></div></details></div>') if evts else ''}
 {('<div class="card"><details><summary>Полный текст отчёта</summary><pre>' + esc(text) + '</pre></details></div>') if text else '<div class="card muted">Полного текста нет: отчёт пришёл до версии 2026-11-21 — откройте его на сайте, и он сохранится здесь.</div>'}
 </div></body></html>"""
