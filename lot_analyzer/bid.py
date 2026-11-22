@@ -423,6 +423,7 @@ class BidInput:
     sale_price: float | None = None      # своя оценка цены продажи
     fb_price: float | None = None        # Facebook Marketplace: медиана цен похожих объявлений (Muse, fb_market.py)
     fb_note: str = ""
+    cg_price: float | None = None        # CarGurus: медиана IMV похожих объявлений (или их цен) — Claude в Chrome, cargurus.py
     kbb_private_party: float | None = None
     kbb_source: str = ""                 # пусто — KBB из заметки; иначе — своя оценка (откуда)
     auction_retail: float | None = None  # розничная оценка самого аукциона (Manheim, ADESA)
@@ -602,14 +603,19 @@ def _calculate(data: BidInput, costs: dict) -> BidResult:
         result.sale_source = f"KBB PP × {factor:g}" + (f" {offset:+,.0f}" if offset else "")
         if data.kbb_source:
             result.sale_source += f"; KBB — прикидка (на kbb.com не смотрели): {data.kbb_source}"
-        fb = {"use_in_sale": True, "asking_to_sale": 0.93, "weight": 0.5, **(costs.get("fb_market") or {})}
-        if data.fb_price and fb.get("use_in_sale"):
-            # Facebook Marketplace (Muse): там своя цена — продажа = KBB + доля × (объявления × уступка − KBB).
-            fb_sale = data.fb_price * float(fb["asking_to_sale"])
+        # Объявления (Facebook — Muse, CarGurus — Claude в Chrome): там своя цена — продажа = KBB + доля × (по объявлениям − KBB).
+        ests = []
+        for label, price, key, k0 in (("Facebook: объявления", data.fb_price, "fb_market", 0.93), ("CarGurus: IMV", data.cg_price, "cargurus", 0.9)):
+            cfg = {"use_in_sale": True, "asking_to_sale": k0, "weight": 0.5, **(costs.get(key) or {})}
+            if price and cfg.get("use_in_sale"):
+                ests.append((label, price, float(cfg["asking_to_sale"]), float(cfg["weight"])))
+        if ests:
             kbb_sale = result.sale_price
-            result.sale_price = kbb_sale + float(fb["weight"]) * (fb_sale - kbb_sale)
-            result.sale_source += (f"; Facebook: объявления ${data.fb_price:,.0f} × {float(fb['asking_to_sale']):g} = ${fb_sale:,.0f}, "
-                                   f"вес {float(fb['weight']):.0%} → {_usd(result.sale_price)}")
+            market_sale = sum(p * k * w for _, p, k, w in ests) / sum(w for *_, w in ests)
+            weight = max(w for *_, w in ests)
+            result.sale_price = kbb_sale + weight * (market_sale - kbb_sale)
+            result.sale_source += ("; " + "; ".join(f"{lbl} ${p:,.0f} × {k:g} = ${p * k:,.0f}" for lbl, p, k, _ in ests)
+                                   + f", вес {weight:.0%} → {_usd(result.sale_price)}")
         if data.kbb_source:
             cap = float(costs.get("kbb_estimate_max_to_mmr", 0))
             if cap and data.mmr and result.sale_price > data.mmr * cap:
@@ -865,6 +871,7 @@ def input_from_row(row: dict[str, str]) -> BidInput:
         sale_price=parse_money(row.get("retail_estimate_usd")) or parse_money(row.get("cargurus_retail_usd")),
         fb_price=parse_money(row.get("fb_median_usd")),
         fb_note=row.get("fb_note", ""),
+        cg_price=parse_money(row.get("cg_imv_usd")) or parse_money(row.get("cg_median_usd")),
         kbb_private_party=parse_money(row.get("kbb_private_party_usd")),
         mmr=parse_money(row.get("mmr_adjusted_usd")) or parse_money(row.get("wholesale_usd")),
         auction_retail=parse_money(row.get("auction_retail_usd")),

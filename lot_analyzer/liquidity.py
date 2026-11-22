@@ -90,7 +90,8 @@ def attach(rows: list[dict], history: dict[str, dict], today: dt.date | None = N
         mmr = _num(row.get("mmr_adjusted_usd"))
         kbb = _num(row.get("kbb_private_party_usd"))          # только настоящий KBB: прикидка для этого слишком грубая
         ratio = mmr / kbb if mmr and kbb else None
-        if not st and ratio is None:
+        days, rivals = _num(row.get("cg_days")), _num(row.get("cg_n"))
+        if not st and ratio is None and not days:
             continue
         score, notes = 0, []
         if st:
@@ -100,5 +101,8 @@ def attach(rows: list[dict], history: dict[str, dict], today: dt.date | None = N
         if ratio is not None:
             score += 1 if ratio >= 0.72 else -1 if ratio <= 0.55 else 0
             notes.append(f"MMR ${mmr:,.0f} ÷ KBB ${kbb:,.0f} = {ratio:.2f}" + (" (MMR вписан вручную)" if row.get("mmr_manual") else ""))
+        if days:
+            score += 1 if days <= 30 else -1 if days >= 60 else 0
+            notes.append(f"CarGurus: {rivals:.0f} похожих в 50 милях, в продаже ~{days:.0f} дн.")
         row["liq"] = "высокая" if score >= 2 else "низкая" if score < 0 else "средняя"
         row["liq_note"] = "; ".join(notes)

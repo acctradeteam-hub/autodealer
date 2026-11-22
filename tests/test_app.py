@@ -553,6 +553,49 @@ class LiquidityTest(unittest.TestCase):
         self.assertIn("💧", app.PAGE)
 
 
+class CarGurusTest(unittest.TestCase):
+    """CarGurus через Claude в Chrome: задание, ответ с IMV, цена продажи вместе с Facebook, ликвидность (синтетика)."""
+
+    def test_task_answer_price_liquidity(self) -> None:
+        from unittest import mock
+        from lot_analyzer import cargurus, fb_market, liquidity
+        tmp = Path(tempfile.mkdtemp())
+        costs = load_costs(COSTS)
+        rows = [{"vin": "A" * 17, "make": "Toyota", "model": "Sienna", "trim": "LE", "year": "2014", "odometer_miles": "120000",
+                 "kbb_private_party_usd": "13000", "popular": "да"}]
+        with mock.patch.object(cargurus, "PATH", tmp / "cargurus.json"), mock.patch.object(fb_market, "PATH", tmp / "fb.json"):
+            t = cargurus.task(rows, costs, now=1_800_000_000)
+            self.assertIn("On CarGurus.com", t["text"])
+            self.assertIn("within 50 miles", t["text"])
+            self.assertIn("group,year,make,model,trim,miles,price,imv,deal,days_on_market,distance,city,seller,url", t["text"])
+            self.assertIn("G1: Toyota Sienna 2013-2015, 120,000-160,000 miles", t["text"])
+            self.assertIn("Do not contact dealers", t["text"])
+            self.assertEqual(fb_market.task(rows, costs, now=1_800_000_000)["due"], 1)        # Facebook — отдельно, своя база
+            cargurus.mark_asked(t["ids"], now=1_800_000_000)
+            answer = "group,year,make,model,trim,miles,price,imv,deal,days_on_market,distance,city,seller,url\n" + "\n".join(
+                f"G1,2014,Toyota,Sienna,LE,{118000 + i * 3000},{14500 + i * 300},{14000 + i * 200},{'Good Deal' if i % 2 else 'Fair Deal'},{20 + i * 5},{5 + i},Irvine,dealer,https://cg.example/{i}"
+                for i in range(5))
+            out = cargurus.add_answer(answer, now=1_800_000_100)
+            self.assertEqual((out["ok"], out["added"]), (True, 5))
+            self.assertEqual(cargurus.load()["listings"][0]["deal"], "fair")
+            cargurus.attach(rows, costs, now=1_800_000_200)
+            self.assertEqual((rows[0]["cg_imv_usd"], rows[0]["cg_n"], rows[0]["cg_days"]), ("14400", "5", "30"))
+            self.assertIn("IMV $14,400", rows[0]["cg_note"])
+        # цена продажи: CarGurus IMV 14,400 × 0,9 = 12,960; вместе с Facebook 11,750 × 0,93 = 10,927 — среднее 11,944, вес 50%
+        from lot_analyzer.bid import BidInput, calculate
+        only_cg = calculate(BidInput(auction="CarMax", kbb_private_party=13000, cg_price=14400), costs)
+        self.assertEqual(round(only_cg.sale_price), round(13000 + 0.5 * (14400 * 0.9 - 13000)))
+        both = calculate(BidInput(auction="CarMax", kbb_private_party=13000, cg_price=14400, fb_price=11750), costs)
+        self.assertEqual(round(both.sale_price), round(13000 + 0.5 * ((14400 * 0.9 + 11750 * 0.93) / 2 - 13000)))
+        self.assertIn("CarGurus: IMV $14,400 × 0.9", both.sale_source)
+        self.assertIn("Facebook: объявления $11,750", both.sale_source)
+        # ликвидность: в продаже ~30 дней — плюс
+        liquidity.attach(rows, {}, today=dt.date(2026, 11, 22))
+        self.assertIn("CarGurus: 5 похожих в 50 милях, в продаже ~30 дн.", rows[0]["liq_note"])
+        for part in ("🅲 CarGurus (Claude в Chrome)", "📋 Задание для CarGurus", "🅲 CG"):
+            self.assertIn(part, app.PAGE)
+
+
 class PhoneAppSigningTest(unittest.TestCase):
     """Приложение на телефон: одна постоянная подпись — новая версия ставится поверх, адрес Mac и токен не пропадают."""
 
