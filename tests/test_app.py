@@ -547,6 +547,144 @@ class FbMarketTest(unittest.TestCase):
             self.assertIn(part, page)
 
 
+class AgentAutoTest(unittest.TestCase):
+    """«🤖 сам»: Muse — расширение берёт задание из программы, отдаёт ответ; CarGurus — страница /agent/cg для Claude в Chrome."""
+
+    CSV = ("group,year,make,model,trim,miles,price,city,days_listed,seller,url\n"
+           "G1,2014,Honda,Odyssey,EX,110000,11500,Irvine,3,private,https://fb.example/a1\n"
+           "G1,2015,Honda,Odyssey,EX-L,118000,12900,Tustin,5,private,https://fb.example/a2\n")
+
+    def setUp(self) -> None:
+        from unittest import mock
+        from lot_analyzer import agent_auto, cargurus, fb_market
+        self.aa, self.fb, self.cg = agent_auto, fb_market, cargurus
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patches = [mock.patch.object(agent_auto, "PATH", self.tmp / "agent_auto.json"),
+                        mock.patch.object(fb_market, "PATH", self.tmp / "fb_market.json"),
+                        mock.patch.object(cargurus, "PATH", self.tmp / "cargurus.json")]
+        for x in self.patches:
+            x.start()
+
+    def tearDown(self) -> None:
+        for x in self.patches:
+            x.stop()
+
+    @staticmethod
+    def task(text: str = "Search Facebook Marketplace near ZIP 92620\nReply ONLY with CSV\n\nG1: Honda Odyssey 2013-2015") -> dict:
+        return {"text": text, "ids": {"G1": "honda|odyssey|2013-2015|80000-120000"} if text else {}, "groups": [{}] if text else []}
+
+    def test_queue_take_report(self) -> None:
+        aa, t0 = self.aa, 1_800_000_000
+        self.assertFalse(aa.queue("fb", self.task(""), now=t0)["ok"])                       # спрашивать нечего
+        out = aa.queue("fb", self.task(), "picked", ["A" * 17, "B" * 17], now=t0)
+        self.assertTrue(out["ok"])
+        self.assertEqual((out["job"]["state"], out["job"]["cars"]), ("queued", 2))
+        job = aa.next_job("fb", lambda: self.fail("общее задание не нужно"), now=t0 + 30)
+        self.assertEqual((job["state"], job["kind"]), ("taken", "picked"))
+        self.assertIsNone(aa.next_job("fb", lambda: self.fail("занято"), now=t0 + 60))      # одно задание за раз
+        self.assertFalse(aa.queue("fb", self.task(), now=t0 + 90)["ok"])                    # агент работает — не мешаем
+        aa.report("fb", job["id"], "sent", now=t0 + 100)
+        self.assertEqual(aa.summary(now=t0 + 200)["fb"]["job"]["state"], "sent")
+        aa.report("fb", job["id"], "done", "загружено 5", now=t0 + 900)
+        sm = aa.summary(now=t0 + 901)["fb"]
+        self.assertIsNone(sm["job"])
+        self.assertEqual((sm["last"]["state"], sm["last"]["note"]), ("done", "загружено 5"))
+        self.assertIsNone(aa.report("fb", "чужой", "done", now=t0 + 902))                   # чужое задание — не трогаем
+        # взяли и пропали (вкладку закрыли, Mac уснул) — через 45 минут можно снова, в итоге — ошибка
+        aa.queue("fb", self.task(), now=t0 + 1000)
+        aa.next_job("fb", dict, now=t0 + 1000)
+        self.assertTrue(aa.queue("fb", self.task(), now=t0 + 1000 + 46 * 60)["ok"])
+        self.assertEqual(aa.summary(now=t0 + 1000 + 46 * 60)["fb"]["last"]["state"], "error")
+
+    def test_auto_once_a_day(self) -> None:
+        aa, calls = self.aa, []
+        build = lambda: calls.append(1) or self.task()
+        day = lambda d, h: time.strptime(f"2026-11-{d} {h}:10", "%Y-%m-%d %H:%M")
+        self.assertIsNone(aa.next_job("fb", build, now=1, local_now=day(23, 20)))           # авто выключено
+        aa.set_auto("fb", True)
+        self.assertIsNone(aa.next_job("fb", build, now=2, local_now=day(23, 18)))           # до 19:00 — нет
+        self.assertEqual(calls, [])
+        job = aa.next_job("fb", build, now=3, local_now=day(23, 19))
+        self.assertEqual((job["kind"], len(calls)), ("auto", 1))
+        aa.report("fb", job["id"], "done", "ok", now=4)
+        self.assertIsNone(aa.next_job("fb", build, now=5, local_now=day(23, 22)))           # в тот же день — больше нет
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(aa.next_job("fb", lambda: calls.append(1) or self.task(""), now=6, local_now=day(24, 19)))
+        self.assertIn("свежие", aa.summary(now=7)["fb"]["last"]["note"])                    # назавтра спрашивать нечего
+        aa.set_auto("fb", False)
+        self.assertFalse(aa.summary()["fb"]["auto"])
+
+    def test_endpoints_muse_and_claude_page(self) -> None:
+        from unittest import mock
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def post(path: str, body: dict, la: bool = True) -> dict:
+            req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json", **({"X-LA": "1"} if la else {})})
+            return json.loads(urllib.request.urlopen(req).read())
+        try:
+            with mock.patch.object(self.fb, "task", lambda rows, costs, now=None, src=self.fb.FB, vins=None: self.task()), \
+                 mock.patch.object(self.cg, "task", lambda rows, costs, now=None, vins=None: self.task("On CarGurus.com …\nReply ONLY with CSV")):
+                with self.assertRaises(urllib.error.HTTPError) as no:                         # чужой сайт без заголовка — нельзя
+                    post("/api/agent_next", {"src": "fb"}, la=False)
+                self.assertEqual(no.exception.code, 403)
+                self.assertEqual(post("/api/agent_next", {"src": "fb"}), {})                  # заданий нет
+                self.assertTrue(post("/api/agent_run", {"src": "fb", "vins": ["a" * 17]}, la=False)["ok"])   # кнопка окна
+                job = post("/api/agent_next", {"src": "fb"})
+                self.assertEqual(job["url"], "https://muse.ai/")
+                self.assertIn("Reply ONLY with CSV", job["text"])
+                self.assertIn("honda|odyssey|2013-2015|80000-120000", self.fb.load()["asked"])   # спросили — номера G1 известны
+                self.assertEqual(post("/api/agent_report", {"src": "fb", "id": job["id"], "state": "sent"}), {"ok": True})
+                out = post("/api/agent_report", {"src": "fb", "id": job["id"], "state": "done", "text": "Here you go:\n" + self.CSV + "Muse can make mistakes."})
+                self.assertTrue(out["close"])
+                self.assertIn("загружено объявлений: 2", out["note"])
+                self.assertEqual(len(self.fb.load()["listings"]), 2)
+                self.assertEqual(self.aa.summary()["fb"]["last"]["state"], "done")
+                # ответ без таблицы: вкладка остаётся, группы можно спросить снова
+                post("/api/agent_run", {"src": "fb"}, la=False)
+                job = post("/api/agent_next", {"src": "fb"})
+                out = post("/api/agent_report", {"src": "fb", "id": job["id"], "state": "done", "text": "Sorry, I can't search Marketplace now."})
+                self.assertEqual(out, {"ok": False, "close": False})
+                self.assertIn("без таблицы", self.aa.summary()["fb"]["last"]["note"])
+                self.assertNotIn("honda|odyssey|2013-2015|80000-120000", self.fb.load()["asked"])
+                post("/api/agent_auto", {"src": "fb", "on": True}, la=False)
+                self.assertTrue(self.aa.summary()["fb"]["auto"])
+                # CarGurus: страница для Claude в Chrome — задание, поле ответа; ответ со страницы — в программу
+                page = urllib.request.urlopen(base + "/agent/cg").read().decode("utf-8")
+                for part in ("On CarGurus.com", "Load answer", "do not contact sellers or dealers", "/api/agent_answer", "'X-LA':'1'"):
+                    self.assertIn(part, page)
+                self.assertEqual(self.aa.summary()["cg"]["job"]["state"], "sent")
+                self.assertIn("On CarGurus.com", urllib.request.urlopen(base + "/agent/cg").read().decode("utf-8"))   # обновили — то же задание
+                with self.assertRaises(urllib.error.HTTPError):
+                    post("/api/agent_answer", {"src": "cg", "text": self.CSV}, la=False)
+                out = post("/api/agent_answer", {"src": "cg", "text": self.CSV.replace("city,days_listed", "city,days_on_market")})
+                self.assertEqual((out["ok"], out["found"]), (True, 2))
+                self.assertEqual(self.aa.summary()["cg"]["last"]["state"], "done")
+            with mock.patch.object(self.cg, "task", lambda rows, costs, now=None, vins=None: self.task("")):
+                self.assertIn("Nothing to do now", urllib.request.urlopen(base + "/agent/cg").read().decode("utf-8"))
+        finally:
+            server.shutdown()
+        for part in ("function agentBlock(s,A)", "🤖 Muse сам", "авто раз в день", "agentRun('cg',MKT)", "/agent/cg", "CG_SHORTCUT", "type:'agent-tick'"):
+            self.assertIn(part, app.PAGE)
+
+    def test_extension_muse(self) -> None:
+        ext = Path(__file__).resolve().parent.parent / "tools" / "kbb_extension"
+        manifest = json.loads((ext / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], app.EXTENSION_VERSION)
+        self.assertIn("https://*.muse.ai/*", manifest["host_permissions"])
+        self.assertIn({"matches": ["https://*.muse.ai/*"], "js": ["muse_page.js"], "run_at": "document_idle"}, manifest["content_scripts"])
+        self.assertIn("'muse_auto.js'", (ext / "background.js").read_text(encoding="utf-8"))
+        self.assertIn("agent-tick", (ext / "app_bridge.js").read_text(encoding="utf-8"))
+        page = (ext / "muse_page.js").read_text(encoding="utf-8")
+        self.assertEqual(page.count(".click("), page.count("b.click()"))        # нажимает только «Отправить» рядом с полем
+        self.assertIn("muse-hello", page)                                         # только во вкладке задания
+        auto = (ext / "muse_auto.js").read_text(encoding="utf-8")
+        self.assertIn("'X-LA': '1'", auto)
+        self.assertIn("muse\\.ai", auto)
+
+
 class LiquidityTest(unittest.TestCase):
     """Ликвидность лота: ваши итоги торгов по модели + MMR ÷ KBB; MMR можно вписать в окне."""
 

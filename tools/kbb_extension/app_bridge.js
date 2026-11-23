@@ -34,6 +34,14 @@
       try { chrome.runtime.sendMessage({ type: 'carfax-order', vin: String(e.data.vin || '') }); } catch (err) { /* связь умерла */ }
       return;
     }
+    /* «🤖 Muse сам»: задание в программе — расширение берёт его сразу (muse_auto.js), не дожидаясь минуты. */
+    if (e.data.type === 'agent-tick') {
+      var aid = String(e.data.id || '');
+      if (aid && document.documentElement.getAttribute('data-la-done') === aid) { return; }
+      if (aid) { document.documentElement.setAttribute('data-la-done', aid); }
+      try { chrome.runtime.sendMessage({ type: 'agent-tick' }); } catch (err) { /* связь умерла — возьмёт по будильнику */ }
+      return;
+    }
     /* «🔑 Открыть Carfax»: показать вкладку входа Carfax (войти можете только вы). */
     if (e.data.type === 'carfax-login') {
       var lid = String(e.data.id || '');

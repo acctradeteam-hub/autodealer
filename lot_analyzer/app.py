@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs, transport_cost
 from .normalize import parse_money
 from .inspection import render_html
-from . import cargurus, fb_market, liquidity, vin_features
+from . import agent_auto, cargurus, fb_market, liquidity, vin_features
 from . import analytics, carfax, inbox, inspection, kbb_learning, kbb_page, photo_wait, voice, review, schedule, kbb_site, manheim_csv, notes, popular, remote, results
 from .pages import read_page
 from .parsers import parse_page
@@ -48,8 +48,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.31"
-PROGRAM_VERSION = "2026-11-23.5"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.32"
+PROGRAM_VERSION = "2026-11-23.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1965,6 +1965,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                            "kbb_week": {**cached("kbb_week", 120, lambda: kbb_week_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""))), "status": KBB_WEEK_STATUS},
                            "fb_market": cached("fb_market", 60, lambda: {k: v for k, v in fb_market.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now).items() if k in ("due", "total", "last_answer", "listings")}),
                            "cargurus": cached("cargurus", 60, lambda: {k: v for k, v in cargurus.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now).items() if k in ("due", "total", "last_answer", "listings")}),
+                           "agents": agent_auto.summary(),          # «🤖 Muse сам» / Claude в Chrome: идёт ли задание, последний итог
                            "carfax_auto": cached("carfax_auto", 60, lambda: carfax_auto_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now)),
                            "win_level": cached("win_level", 300, lambda: review.win_level(review.load(), results.load_history())),
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
@@ -1982,7 +1983,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 if cargurus.import_files(folders):        # ответ CarGurus файлом cargurus*.csv
                     _SLOW_CACHE.pop("cargurus", None)
                 # + избранное CarMax: сняли звёздочку — окно пересчитывается сразу, не дожидаясь нового файла.
-                extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH) if path.exists()]
+                extra = [f"{path.name}:{path.stat().st_mtime:.0f}" for path in (FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH, agent_auto.PATH) if path.exists()]
                 extra += [f"carfax-status:{v.get('at', 0)}" for v in CARFAX_STATUS.values()] + [f"carfax-login:{load_carfax_login()['at']}"]
                 voice.pull_soon()                     # заметки с телефона — раз в пару минут, в фоне
                 self._send(json.dumps([f"{p.name}:{p.stat().st_mtime:.0f}" for p in pages] + extra).encode("utf-8"))
@@ -2013,6 +2014,15 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(path.read_bytes(), "application/pdf")
                 else:
                     self._send(b"not found", "text/plain; charset=utf-8", status=404)
+            elif url.path in ("/agent/cg", "/agent/fb"):   # Claude в Chrome (ярлык по расписанию): задание + поле ответа — agent_auto.py
+                s = url.path[-2:]
+                costs_now = load_costs(costs_path)
+                mod = cargurus if s == "cg" else fb_market
+                job = agent_auto.page_task(s, lambda: mod.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now))
+                if job.get("text"):
+                    mod.mark_asked(job.get("ids") or {})    # номера G1… / C1… — чтобы понять ответ
+                    _SLOW_CACHE.pop("cargurus" if s == "cg" else "fb_market", None)
+                self._send(agent_auto.page(s, job).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path in ("/api/fb_task", "/api/cg_task"):   # окно: задание для Muse / CarGurus — только группы без свежих цен
                 costs_now = load_costs(costs_path)
                 mod = fb_market if url.path == "/api/fb_task" else cargurus
@@ -2348,6 +2358,56 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(min(length, 10000)) or b"{}")
                 self._send(json.dumps({"ok": liquidity.save_mmr(data.get("vin", ""), data.get("usd", ""))}).encode("utf-8"))
+                return
+            if urlparse(self.path).path in ("/api/agent_run", "/api/agent_auto", "/api/agent_next", "/api/agent_report", "/api/agent_answer"):
+                path_ = urlparse(self.path).path
+                if path_ in ("/api/agent_next", "/api/agent_report", "/api/agent_answer") and self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)          # только расширение и страница программы — не чужой сайт
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(min(length, 2_000_000)) or b"{}")
+                s = "cg" if data.get("src") == "cg" else "fb"
+                mod = cargurus if s == "cg" else fb_market
+                costs_now = load_costs(costs_path)
+
+                def build(vins=None):
+                    return mod.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now, vins=vins)
+                if path_ == "/api/agent_run":                  # окно: «🤖 Muse сам» / «🤖 CarGurus сам» (+ отмеченные «🛒 Рынок»)
+                    vins = [v for v in re.split(r"[^A-Za-z0-9]+", ",".join(map(str, data.get("vins") or []))) if len(v) == 17]
+                    out = agent_auto.queue(s, build(vins or None), "picked" if vins else "button", vins)
+                elif path_ == "/api/agent_auto":               # окно: «Авто раз в день»
+                    out = {"ok": True, **agent_auto.set_auto(s, bool(data.get("on")), data.get("hour"))}
+                elif path_ == "/api/agent_next":               # расширение (раз в минуту): есть задание для Muse?
+                    job = agent_auto.next_job(s, build) if s == "fb" else None
+                    out = {}
+                    if job:
+                        mod.mark_asked(job.get("ids") or {})
+                        url_ = str(fb_market.config(costs_now).get("agent_url") or "https://muse.ai/")
+                        out = {"id": job["id"], "text": job["text"], "kind": job["kind"], "url": url_}
+                elif path_ == "/api/agent_report":             # расширение: отправлено / ответ / не вышло
+                    state, job_id = str(data.get("state") or ""), str(data.get("id") or "")
+                    out = {"ok": True}
+                    if state == "done":
+                        res = mod.add_answer(str(data.get("text") or ""))
+                        if res.get("ok"):
+                            note = f"загружено объявлений: {res['added']} новых (в ответе {res['found']}, групп {res['groups']})"
+                            agent_auto.report(s, job_id, "done", note)
+                            out = {"ok": True, "close": True, "note": note}
+                        else:
+                            state, data["note"] = "error", "Muse ответил без таблицы — вкладка muse.ai оставлена открытой, посмотрите ответ"
+                    if state == "error":
+                        job = agent_auto.report(s, job_id, "error", str(data.get("note") or "не вышло"))
+                        if job:
+                            mod.unmark_asked(job.get("ids") or {})   # не дошло — эти группы можно спросить снова
+                        out = {"ok": False, "close": False}
+                    elif state != "done":
+                        agent_auto.report(s, job_id, "sent", str(data.get("note") or ""))
+                else:                                          # /api/agent_answer — страница /agent/cg (Claude в Chrome)
+                    out = mod.add_answer(str(data.get("text") or ""))
+                    if out.get("ok"):
+                        agent_auto.answered(s, f"загружено объявлений: {out['added']} новых (в ответе {out['found']}, групп {out['groups']})")
+                _SLOW_CACHE.pop("cargurus" if s == "cg" else "fb_market", None)
+                self._send(json.dumps(out, ensure_ascii=False).encode("utf-8"))
                 return
             if urlparse(self.path).path in ("/api/fb_task", "/api/fb_answer", "/api/cg_task", "/api/cg_answer"):   # задание скопировано / ответ
                 length = int(self.headers.get("Content-Length") or 0)
@@ -3108,13 +3168,41 @@ function mktToggle(b){const v=b.dataset.vin;if(MKT.includes(v)){MKT=MKT.filter(x
 function mktClear(){MKT=[];MKT_CAR={};document.querySelectorAll('button.mkt.on').forEach(b=>b.classList.remove('on'));mktSave()}
 function drawMkt(){const e=$('mktbar');if(!e)return;e.hidden=!MKT.length;if(!MKT.length){e.innerHTML='';return}
  e.innerHTML=`🛒 <b>Рынок по выбранным машинам (${MKT.length}):</b> ${MKT.map(v=>esc(MKT_CAR[v]||v)).join(', ')} · `+
+  `<button type="button" onclick="agentRun('fb',MKT)" title="Расширение само отдаст задание Muse на muse.ai и загрузит ответ">🤖 Muse сам</button> `+
+  `<button type="button" onclick="agentRun('cg',MKT)" title="Задание — на странице программы для Claude в Chrome; запустите ярлык /cargurus">🤖 CarGurus сам</button> `+
   `<button type="button" onclick="srcTask('fb',MKT)">📋 Задание для Muse (Facebook)</button> <button type="button" onclick="srcTask('cg',MKT)">📋 Задание для CarGurus</button> `+
   `<button type="button" onclick="mktClear()">✕ Очистить</button>`}
 function drawFb(d){for(const s of ['fb','cg']){const e=$(s+'m'),f=d[SRC[s].key];if(!e||!f)continue;
  const last=f.last_answer?new Date(f.last_answer*1000).toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'}):'';
  e.innerHTML=`${SRC[s].title}: ${f.listings?`объявлений ${f.listings}${last?', последний ответ '+last:''}`:'цен пока нет'}`+
   (f.due?` · <b>пора обновить групп: ${f.due}</b> <button type="button" onclick="srcTask('${s}')">${SRC[s].task}</button>`:' · свежие')+
-  ` <button type="button" onclick="srcAnswerOpen('${s}')">${SRC[s].ans}</button>`}}
+  ` <button type="button" onclick="srcAnswerOpen('${s}')">${SRC[s].ans}</button>`+agentBlock(s,(d.agents||{})[s]||{})}}
+/* «🤖 сам»: Muse — расширение само вставит задание на muse.ai, дождётся таблицы и загрузит её; CarGurus — ярлык Claude в Chrome
+   открывает страницу программы /agent/cg (задание + поле ответа). */
+function agentState(s,A){const who=s==='fb'?'Muse':'Claude в Chrome';const j=A.job,l=A.last;
+ const tm=t=>t?new Date(t*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+ if(j){const what=j.cars?`по ${j.cars} отмеченным машинам`:`групп: ${j.groups}`;
+  if(s==='cg')return ` · 🤖 <b>задание для ${who} готово</b> (${what}) — запустите ярлык /cargurus в Claude в Chrome`;
+  return ` · 🤖 <b>${who}: ${j.state==='queued'?'задание ждёт расширение (до минуты)':j.state==='taken'?'открываю muse.ai…':'отправлено, жду таблицу (обычно 5–20 мин)'}</b> (${what})`}
+ if(l)return ` · ${l.state==='done'?'✅':'⚠'} ${who} ${tm(l.at)}: ${esc(l.note||'')}`;return ''}
+function agentBlock(s,A){if(s==='fb')return ` · <button type="button" onclick="agentRun('fb')" title="Расширение само откроет muse.ai, вставит задание (группы без свежих цен), дождётся таблицы и загрузит её сюда">🤖 Muse сам</button>`+
+  ` <label class="muted" title="Раз в день после ${A.hour||19}:00 — если есть группы без свежих цен (то же правило, что у задания: не чаще раза в 14 дней на группу)"><input type="checkbox" ${A.auto?'checked':''} onchange="agentAuto('fb',this.checked)"> авто раз в день</label>`+agentState(s,A);
+ return ` · <button type="button" onclick="agentHelp()" title="Claude в Chrome по расписанию сам берёт задание со страницы программы и загружает ответ">🤖 CarGurus сам — настроить</button>`+agentState(s,A)}
+async function agentRun(s,vins){let d={};try{const r=await fetch('/api/agent_run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:s,vins:vins||[]})});d=await r.json()}catch(e){d={note:'нет связи с программой'}}
+ if(d.ok){window.postMessage({source:'lot-analyzer',type:'agent-tick',id:String(Date.now())},'*');if(s==='cg')agentHelp(true)}
+ else{const p=$('fbpanel');p.hidden=false;p.innerHTML=`🤖 ${esc(d.note||'не вышло')} <button type="button" onclick="$('fbpanel').hidden=true">Закрыть</button>`;p.scrollIntoView({behavior:'smooth',block:'start'})}
+ refresh()}
+async function agentAuto(s,on){await fetch('/api/agent_auto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:s,on})});refresh()}
+const CG_SHORTCUT='Open http://127.0.0.1:8765/agent/cg in a new tab and follow the instructions on that page. Use CarGurus.com only to look at listings: do not contact dealers, do not fill forms or buy anything there, do not share any personal info. When done, paste the CSV into the answer box on that page and press "Load answer". If the page says there is nothing to do, stop.';
+function agentHelp(ready){const p=$('fbpanel');p.hidden=false;
+ p.innerHTML=(ready?'<b>🤖 Задание для CarGurus готово.</b> Запустите в Claude в Chrome ярлык <b>/cargurus</b> — Claude сам возьмёт задание и загрузит ответ сюда.<br><br>':'')+
+  '<b>CarGurus сам — настройка один раз:</b> откройте Claude в Chrome → создайте ярлык (shortcut) с именем <b>cargurus</b> и текстом ниже → значок часов — расписание, например каждый день в 20:00 (Mac не спит, Chrome открыт). '+
+  'Claude откроет страницу программы <a href="/agent/cg" target="_blank">/agent/cg</a>, сделает задание на CarGurus и сам вставит ответ. Если спрашивать нечего — сразу закончит (лимит не тратится). '+
+  'Отметили машины «🛒 Рынок» → «🤖 CarGurus сам» → запустите ярлык /cargurus.<br>'+
+  `<textarea id="fbtext" rows="5" readonly>${esc(CG_SHORTCUT)}</textarea><br><button type="button" onclick="agentCopy()">📋 Скопировать текст ярлыка</button> <button type="button" onclick="$('fbpanel').hidden=true">Закрыть</button> <span id="fbst" class="muted"></span>`;
+ setTimeout(()=>{try{p.scrollIntoView({behavior:'smooth',block:'start'})}catch(e){}},0)}
+async function agentCopy(){const t=$('fbtext');t.select();let ok=false;try{await navigator.clipboard.writeText(t.value);ok=true}catch(e){try{ok=document.execCommand('copy')}catch(e2){}}
+ $('fbst').textContent=ok?'Скопировано.':'Выделите текст и скопируйте (⌘C).'}
 async function srcTask(s,vins){const r=await fetch(`/api/${s}_task`+(vins&&vins.length?`?vins=${vins.join(',')}`:''));const t=TASKS[s]=await r.json();const p=$('fbpanel');p.hidden=false;
  setTimeout(()=>{try{p.scrollIntoView({behavior:'smooth',block:'start'})}catch(e){}},0);
  if(!t.text){p.innerHTML=vins&&vins.length?'Выбранных машин нет в текущем списке (торги прошли или скрыты фильтром) — снимите отметку ✕ и выберите заново.':'Все группы свежие — задание не нужно. <button type="button" onclick="$(\'fbpanel\').hidden=true">Закрыть</button>';return}

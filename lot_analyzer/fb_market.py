@@ -29,7 +29,8 @@ from .paths import DATA_DIR
 PATH = DATA_DIR / "fb_market.json"
 HEADER = ["group", "year", "make", "model", "trim", "miles", "price", "city", "days_listed", "seller", "url"]
 DEFAULTS = {"zip": "92620", "radius_miles": 75, "per_group": 12, "max_groups": 8, "refresh_days": 14, "asked_wait_days": 3,
-            "max_age_days": 30, "min_listings": 3, "asking_to_sale": 0.93, "weight": 0.5, "use_in_sale": True}
+            "max_age_days": 30, "min_listings": 3, "asking_to_sale": 0.93, "weight": 0.5, "use_in_sale": True,
+            "agent_url": "https://muse.ai/"}          # «🤖 Muse сам»: где открывать Muse (только *.muse.ai)
 MILES_STEP = 40000
 
 
@@ -192,6 +193,14 @@ def mark_asked(ids: dict, now: float | None = None, src: Source = FB) -> None:
     data["task"] = {"ids": {**old, **ids}, "at": now}    # общее (G1…) и по выбранным машинам (C1…) — оба ответа поймём
     _save(data, src)
 
+
+
+def unmark_asked(ids: dict, src: Source = FB) -> None:
+    """Задание не дошло до агента или он не ответил (нужен вход, нет таблицы) — эти группы можно спросить снова сразу."""
+    data = load(src)
+    for key in ids.values():
+        data["asked"].pop(key, None)
+    _save(data, src)
 
 # Заголовки, как их может назвать агент (файл от Claude, таблица Muse) → наши колонки.
 SYNONYMS = {"mileage": "miles", "odometer": "miles", "mi": "miles", "list_price": "price", "asking_price": "price", "price_usd": "price",
