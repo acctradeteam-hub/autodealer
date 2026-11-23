@@ -592,6 +592,21 @@ class CarGurusTest(unittest.TestCase):
         # ликвидность: в продаже ~30 дней — плюс
         liquidity.attach(rows, {}, today=dt.date(2026, 11, 22))
         self.assertIn("CarGurus: 5 похожих в 50 милях, в продаже ~30 дн.", rows[0]["liq_note"])
+        # файл ответа в «Загрузках» — с любым именем со словом CarGurus; в окне — «📂 Выбрать файл» и перетаскивание
+        dl = Path(tempfile.mkdtemp())
+        (dl / "CarGurus Results (1).csv").write_text(answer.replace("cg.example", "cg2.example"), encoding="utf-8")
+        (dl / "other.csv").write_text(answer, encoding="utf-8")
+        with mock.patch.object(cargurus, "PATH", tmp / "cargurus2.json"):
+            self.assertEqual(cargurus.import_files([dl]), 1)
+            self.assertEqual(len(cargurus.load()["listings"]), 5)
+        # заголовки «как получилось» (Mileage, Deal Rating, Instant Market Value), без колонки group — тоже читаем
+        loose = ("Year,Make,Model,Trim,Mileage,Price,Instant Market Value,Deal Rating,Days on CarGurus,Distance (mi),City,Seller Type,Link\n"
+                 "2014,Toyota,Sienna,LE,121000,\"$14,900\",\"$14,300\",Good Deal,12,8,Tustin,Dealer,https://cg.example/x\n")
+        got = fb_market.parse_answer(loose, cargurus.CG)
+        self.assertEqual((got[0]["price"], got[0]["imv"], got[0]["miles"], got[0]["deal"], got[0]["days"]), (14900, 14300, 121000, "good", 12))
+        self.assertIn('type="file"', app.PAGE)
+        self.assertIn("function srcFile(s,f)", app.PAGE)
+        self.assertIn("ondrop=", app.PAGE)
         for part in ("🅲 CarGurus (Claude в Chrome)", "📋 Задание для CarGurus", "🅲 CG"):
             self.assertIn(part, app.PAGE)
 

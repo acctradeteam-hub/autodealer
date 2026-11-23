@@ -163,18 +163,35 @@ def mark_asked(ids: dict, now: float | None = None, src: Source = FB) -> None:
     _save(data, src)
 
 
+# Заголовки, как их может назвать агент (файл от Claude, таблица Muse) → наши колонки.
+SYNONYMS = {"mileage": "miles", "odometer": "miles", "mi": "miles", "list_price": "price", "asking_price": "price", "price_usd": "price",
+            "instant_market_value": "imv", "cargurus_imv": "imv", "imv_usd": "imv", "market_value": "imv", "deal_rating": "deal",
+            "days_on_cargurus": "days_on_market", "days_on_site": "days_on_market", "dom": "days_on_market", "days_listed": "days_listed",
+            "location": "city", "link": "url", "listing_url": "url", "seller_type": "seller", "distance_mi": "distance",
+            "distance_miles": "distance", "group_id": "group", "model_year": "year"}
+
+
+def _head(cell: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", str(cell or "").strip().lower()).strip("_")
+    return SYNONYMS.get(key, key)
+
+
 def parse_answer(text: str, src: Source = FB) -> list[dict]:
-    """CSV из ответа агента (можно с ```csv … ``` и пояснениями вокруг) → объявления."""
-    body = str(text or "")
+    """CSV из ответа агента (можно с ```csv … ``` и пояснениями вокруг, заголовки — как получилось: Mileage, Deal Rating …)
+    → объявления."""
+    body = str(text or "").lstrip("\ufeff")
     fenced = re.search(r"```(?:csv)?\s*\n(.*?)```", body, re.S | re.I)
     body = fenced.group(1) if fenced else body
     lines = body.splitlines()
-    start = next((i for i, ln in enumerate(lines) if re.match(r"\s*group\s*,\s*year\s*,", ln, re.I)), None)
+    def is_head(ln: str) -> bool:
+        cells = {_head(c) for c in next(csv.reader([ln]), [])}
+        return {"year", "make", "price"} <= cells or {"year", "model", "price"} <= cells
+    start = next((i for i, ln in enumerate(lines) if "," in ln and is_head(ln)), None)
     if start is None:
         return []
     out = []
     reader = csv.reader(io.StringIO("\n".join(lines[start:])))
-    head = [h.strip().lower() for h in next(reader, [])]
+    head = [_head(h) for h in next(reader, [])]
     for cells in reader:
         cells = _fix_thousands(cells, len(head))
         rec = {k: (cells[i].strip() if i < len(cells) else "") for i, k in enumerate(head)}
@@ -209,20 +226,24 @@ def add_answer(text: str, now: float | None = None, src: Source = FB) -> dict:
         return {"ok": False, "error": f"в ответе нет CSV с заголовком «group,year,make,model,…» — попросите {src.agent} ответить только CSV"}
     data = load(src)
     ids = (data.get("task") or {}).get("ids") or {}
+    asked = set(ids.values())
     seen = {(x.get("url") or "", x["price"], x["year"], x.get("miles")) for x in data["listings"]}
     added = 0
     for x in found:
         x["at"] = now
         x["group_key"] = ids.get(x["group"], "")
+        if not x["group_key"]:                     # нет колонки group — группа по самой машине (марка, модель, годы, пробег)
+            g = group_of(x.get("make", ""), x.get("model", ""), x.get("year"), x.get("miles"))
+            if g and g["key"] in asked:
+                x["group_key"] = g["key"]
         sig = (x.get("url") or "", x["price"], x["year"], x.get("miles"))
         if sig in seen:
             continue
         seen.add(sig)
         data["listings"].append(x)
         added += 1
-    for gid in {x["group"] for x in found}:
-        if ids.get(gid):
-            data["answered"][ids[gid]] = now
+    for key in {x["group_key"] for x in found if x["group_key"]}:
+        data["answered"][key] = now
     keep = now - 120 * 86400                       # объявления старше 4 месяцев — не нужны
     data["listings"] = [x for x in data["listings"] if float(x.get("at") or 0) > keep]
     _save(data, src)
@@ -236,8 +257,8 @@ def import_files(folders: list[Path], src: Source = FB) -> int:
     for folder in folders:
         if not Path(folder).is_dir():
             continue
-        for path in Path(folder).glob(src.files + "*"):
-            if path.suffix.lower() not in (".csv", ".txt") or not path.is_file():
+        for path in Path(folder).iterdir():           # имя — любое со словом источника: «CarGurus_results (1).csv», «fb_market.csv»
+            if src.files not in path.name.lower().replace(" ", "").replace("-", "_") or path.suffix.lower() not in (".csv", ".txt") or not path.is_file():
                 continue
             stamp = f"{path.stat().st_mtime:.0f}"
             if data["files"].get(path.name) == stamp:
