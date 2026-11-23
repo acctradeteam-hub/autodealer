@@ -41,8 +41,8 @@ CG = Source(name="CarGurus", agent="Claude в Chrome", path=lambda: PATH, header
             files="cargurus", prefix="cg", intro=_intro, extra=_extra)
 
 
-def task(rows: list[dict], costs: dict, now: float | None = None) -> dict:
-    return fb_market.task(rows, costs, now, src=CG)
+def task(rows: list[dict], costs: dict, now: float | None = None, vins: list[str] | None = None) -> dict:
+    return fb_market.task(rows, costs, now, src=CG, vins=vins)
 
 
 def mark_asked(ids: dict, now: float | None = None) -> None:

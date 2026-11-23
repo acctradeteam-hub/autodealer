@@ -495,6 +495,31 @@ class FbMarketTest(unittest.TestCase):
         off = calculate(BidInput(auction="CarMax", kbb_private_party=14000, fb_price=11750), dict(self.costs, fb_market={"use_in_sale": False}))
         self.assertEqual(round(off.sale_price), 14000)
 
+    def test_task_for_picked_cars(self) -> None:
+        """«🛒 Рынок» у машины: задание только по выбранным машинам — строка на машину (год ±1, пробег ±20 тыс., комплектация),
+        даже если её группу уже спрашивали и машина не в «кандидатах»; ответ C1… понимается рядом с общим G1…."""
+        rows = self.rows()
+        t = self.fb.task(rows, self.costs, now=1_800_000_000)
+        self.fb.mark_asked(t["ids"], now=1_800_000_000)                                  # общее задание уже скопировано
+        picked = self.fb.task(rows, self.costs, now=1_800_000_100, vins=["a" * 17, "F" * 17, "Z" * 17])
+        self.assertEqual(picked["ids"], {"C1": "honda|odyssey|2013-2015|80000-120000", "C2": "honda|accord|2016-2018|40000-80000"})
+        self.assertIn("C1: Honda Odyssey 2013-2015, 92,000-132,000 miles (like EX)", picked["text"])
+        self.assertIn("C2: Honda Accord 2017-2019, 40,000-80,000 miles (like EX)", picked["text"])   # без KBB — всё равно по просьбе
+        self.assertNotIn("Sienna", picked["text"])
+        self.assertIn("group = C1, C2", picked["text"])
+        self.assertIn("Do not message sellers", picked["text"])
+        self.assertEqual(picked["missing"], ["Z" * 17])                                   # такой машины в списке нет
+        self.fb.mark_asked(picked["ids"], now=1_800_000_200)
+        self.assertEqual(set(self.fb.load()["task"]["ids"]), {"G1", "G2", "C1", "C2"})     # оба задания поймём
+        out = self.fb.add_answer("group,year,make,model,trim,miles,price,city,days_listed,seller,url\n"
+                                 "C2,2018,Honda,Accord,EX,61000,17500,Irvine,2,private,https://fb.example/c2\n"
+                                 "G2,2012,Toyota,Sienna,LE,150000,9000,Tustin,,private,https://fb.example/g2", now=1_800_000_300)
+        self.assertEqual((out["added"], out["groups"]), (2, 2))
+        keys = {x["url"]: x["group_key"] for x in self.fb.load()["listings"]}
+        self.assertEqual(keys["https://fb.example/c2"], "honda|accord|2016-2018|40000-80000")
+        self.assertEqual(keys["https://fb.example/g2"], "toyota|sienna|2010-2012|120000-160000")
+        self.assertEqual(self.fb.task(rows, self.costs, vins=["Z" * 17])["text"], "")       # нет машин — нет задания
+
     def test_file_and_endpoints(self) -> None:
         downloads = self.tmp / "dl"
         downloads.mkdir()
@@ -509,13 +534,16 @@ class FbMarketTest(unittest.TestCase):
         try:
             t = json.loads(urllib.request.urlopen(base + "/api/fb_task").read())
             self.assertEqual(t["text"], "")                                                # машин нет — и задания нет
+            t = json.loads(urllib.request.urlopen(base + "/api/cg_task?vins=" + "A" * 17 + ",bad").read())
+            self.assertEqual((t["text"], t["missing"]), ("", ["A" * 17]))                  # выбранной машины в списке нет
             req = urllib.request.Request(base + "/api/fb_answer", data=json.dumps({"text": "group,year,make,model,trim,miles,price,city,days_listed,seller,url\nG2,2012,Toyota,Sienna,LE,150000,9000,Garden Grove,,private,https://fb.example/9"}).encode(),
                                          headers={"Content-Type": "application/json"})
             self.assertEqual(json.loads(urllib.request.urlopen(req).read())["added"], 1)
         finally:
             server.shutdown()
         page = app.PAGE
-        for part in ("function drawFb(d)", "📋 Задание для Muse", "📥 Ответ Muse", "🛒 FB"):
+        for part in ("function drawFb(d)", "📋 Задание для Muse", "📥 Ответ Muse", "🛒 FB", "mktToggle(this)", "🛒 Рынок",
+                     '<div id="mktbar"', "srcTask('cg',MKT)", "?vins="):
             self.assertIn(part, page)
 
 

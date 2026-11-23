@@ -117,11 +117,14 @@ def candidates(rows: list[dict]) -> list[dict]:
             and r.get("year") and r.get("make") and r.get("model")]
 
 
-def task(rows: list[dict], costs: dict, now: float | None = None, src: Source = FB) -> dict:
-    """Задание агенту: группы без свежих цен (больше машин — раньше), не больше max_groups. → {text, groups, due, total}."""
+def task(rows: list[dict], costs: dict, now: float | None = None, src: Source = FB, vins: list[str] | None = None) -> dict:
+    """Задание агенту: группы без свежих цен (больше машин — раньше), не больше max_groups. → {text, groups, due, total}.
+    vins — конкретные машины («🛒 Рынок» в окне): по каждой своя строка (год ±1, пробег ±20 тыс.), без правила «раз в 14 дней»."""
     cfg = config(costs, src)
     now = time.time() if now is None else now
     data = load(src)
+    if vins:
+        return _task_for(rows, cfg, data, src, [v.upper() for v in vins])
     from .inspection import _day as sale_day
     groups: dict[str, dict] = {}
     for r in candidates(rows):
@@ -153,13 +156,40 @@ def task(rows: list[dict], costs: dict, now: float | None = None, src: Source = 
             "agent": src.agent, "name": src.name}
 
 
+def _task_for(rows: list[dict], cfg: dict, data: dict, src: Source, vins: list[str]) -> dict:
+    """Задание по выбранным машинам: по строке на машину — марка, модель, годы ±1, пробег ±20 тыс., комплектация."""
+    cars = [r for r in rows if str(r.get("vin", "")).upper() in vins and r.get("year") and r.get("make") and r.get("model")]
+    lines, ids, picked = [], {}, []
+    for i, r in enumerate(cars[:10], 1):
+        g = group_of(r.get("make", ""), r.get("model", ""), r.get("year"), r.get("odometer_miles"))
+        if not g:
+            continue
+        gid = f"C{i}"                                   # C1, C2 … — не путать с G1… общего задания
+        ids[gid] = g["key"]
+        y, miles = _num(r.get("year")), _num(r.get("odometer_miles"))
+        span = f", {max(0, miles - 20000) // 1000 * 1000:,}-{(miles + 20999) // 1000 * 1000:,} miles" if miles else ""   # ±20 тыс., до тысяч
+        trim = f" (like {r['trim']})" if r.get("trim") else ""
+        lines.append(f"{gid}: {r['make']} {str(r['model']).split()[0]} {y - 1}-{y + 1}{span}{trim}")
+        picked.append({**g, "cars": 1, "car": f"{y} {r['make']} {r['model']}", "vin": r.get("vin", "")})
+    text = ""
+    if lines:
+        text = (src.intro(cfg) + "Reply ONLY with CSV, no other text. Header exactly:\n" + ",".join(src.header) + "\n"
+                "group = C1, C2 … (the line the listing is for); " + ("seller = private or dealer; days_listed = number of days since posted (empty if not shown); "
+                                                                       if "days_listed" in src.header else "")
+                + "prices and miles = numbers only.\n\n" + "\n".join(lines))
+    return {"text": text, "groups": picked, "ids": ids, "due": len(picked), "total": len(picked),
+            "last_answer": max([float(v) for v in data["answered"].values()] or [0]), "listings": len(data["listings"]),
+            "agent": src.agent, "name": src.name, "missing": [v for v in vins if v not in {str(r.get('vin', '')).upper() for r in cars}]}
+
+
 def mark_asked(ids: dict, now: float | None = None, src: Source = FB) -> None:
     """Задание скопировали агенту — эти группы не просим снова несколько дней; номера G1… — чтобы понять ответ."""
     now = time.time() if now is None else now
     data = load(src)
     for key in ids.values():
         data["asked"][key] = now
-    data["task"] = {"ids": ids, "at": now}
+    old = (data.get("task") or {}).get("ids") or {}
+    data["task"] = {"ids": {**old, **ids}, "at": now}    # общее (G1…) и по выбранным машинам (C1…) — оба ответа поймём
     _save(data, src)
 
 
