@@ -29,7 +29,7 @@ from .paths import DATA_DIR
 PATH = DATA_DIR / "fb_market.json"
 HEADER = ["group", "year", "make", "model", "trim", "miles", "price", "city", "days_listed", "seller", "url"]
 DEFAULTS = {"zip": "92620", "radius_miles": 75, "per_group": 12, "max_groups": 8, "refresh_days": 14, "asked_wait_days": 3,
-            "max_age_days": 30, "min_listings": 4, "asking_to_sale": 0.93, "weight": 0.5, "use_in_sale": True}
+            "max_age_days": 30, "min_listings": 3, "asking_to_sale": 0.93, "weight": 0.5, "use_in_sale": True}
 MILES_STEP = 40000
 
 
@@ -168,7 +168,8 @@ SYNONYMS = {"mileage": "miles", "odometer": "miles", "mi": "miles", "list_price"
             "instant_market_value": "imv", "cargurus_imv": "imv", "imv_usd": "imv", "market_value": "imv", "deal_rating": "deal",
             "days_on_cargurus": "days_on_market", "days_on_site": "days_on_market", "dom": "days_on_market", "days_listed": "days_listed",
             "location": "city", "link": "url", "listing_url": "url", "seller_type": "seller", "distance_mi": "distance",
-            "distance_miles": "distance", "group_id": "group", "model_year": "year"}
+            "distance_miles": "distance", "group_id": "group", "model_year": "year", "car": "vehicle", "title": "vehicle",
+            "listing": "vehicle", "listing_title": "vehicle", "year_make_model": "vehicle", "name": "vehicle", "vehicle_name": "vehicle"}
 
 
 def _head(cell: str) -> str:
@@ -176,25 +177,51 @@ def _head(cell: str) -> str:
     return SYNONYMS.get(key, key)
 
 
+def _split(line: str, delim: str) -> list[str]:
+    if delim == "|":                                  # таблица Markdown: | Year | Make | … |
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+    return next(csv.reader([line], delimiter=delim), [])
+
+
+def _is_head(heads: list[str]) -> bool:
+    cells = set(heads)
+    return "price" in cells and (({"year", "make"} <= cells or {"year", "model"} <= cells) or "vehicle" in cells)
+
+
 def parse_answer(text: str, src: Source = FB) -> list[dict]:
-    """CSV из ответа агента (можно с ```csv … ``` и пояснениями вокруг, заголовки — как получилось: Mileage, Deal Rating …)
-    → объявления."""
+    """Ответ агента → объявления. Понимает CSV (можно с ```csv … ``` и пояснениями вокруг), табуляцию, «;» и таблицу Markdown;
+    заголовки — как получилось (Mileage, Deal Rating, Instant Market Value …); машина может быть одной колонкой
+    («Vehicle: 2014 Toyota Sienna LE»)."""
     body = str(text or "").lstrip("\ufeff")
-    fenced = re.search(r"```(?:csv)?\s*\n(.*?)```", body, re.S | re.I)
+    fenced = re.search(r"```(?:csv|tsv)?\s*\n(.*?)```", body, re.S | re.I)
     body = fenced.group(1) if fenced else body
     lines = body.splitlines()
-    def is_head(ln: str) -> bool:
-        cells = {_head(c) for c in next(csv.reader([ln]), [])}
-        return {"year", "make", "price"} <= cells or {"year", "model", "price"} <= cells
-    start = next((i for i, ln in enumerate(lines) if "," in ln and is_head(ln)), None)
-    if start is None:
+    head, delim, start = None, ",", 0
+    for i, ln in enumerate(lines):
+        for d in (",", "\t", ";", "|"):
+            if d in ln and _is_head([_head(c) for c in _split(ln, d)]):
+                head, delim, start = [_head(c) for c in _split(ln, d)], d, i + 1
+                break
+        if head:
+            break
+    if not head:
         return []
     out = []
-    reader = csv.reader(io.StringIO("\n".join(lines[start:])))
-    head = [_head(h) for h in next(reader, [])]
-    for cells in reader:
-        cells = _fix_thousands(cells, len(head))
+    for ln in lines[start:]:
+        if not ln.strip() or re.fullmatch(r"[\s|:\-+]+", ln):    # пустые строки и черта под заголовком Markdown
+            continue
+        cells = _split(ln, delim)
+        if delim == ",":
+            cells = _fix_thousands(cells, len(head))
         rec = {k: (cells[i].strip() if i < len(cells) else "") for i, k in enumerate(head)}
+        if rec.get("vehicle") and not (rec.get("year") and rec.get("model")):
+            m = re.search(r"\b((?:19|20)\d{2})\s+([A-Za-z-]+)\s+([A-Za-z0-9-]+)\s*(.*)", rec["vehicle"])
+            if m:
+                rec.setdefault("year", m.group(1))
+                rec["year"] = rec["year"] or m.group(1)
+                rec["make"] = rec.get("make") or m.group(2)
+                rec["model"] = rec.get("model") or m.group(3)
+                rec["trim"] = rec.get("trim") or m.group(4)
         price, miles, year = _num(rec.get("price")), _num(rec.get("miles")), _num(rec.get("year"))
         if not (1000 <= price <= 300000 and 1990 < year < 2100 and rec.get("model")):
             continue
@@ -247,7 +274,8 @@ def add_answer(text: str, now: float | None = None, src: Source = FB) -> dict:
     keep = now - 120 * 86400                       # объявления старше 4 месяцев — не нужны
     data["listings"] = [x for x in data["listings"] if float(x.get("at") or 0) > keep]
     _save(data, src)
-    return {"ok": True, "added": added, "found": len(found), "groups": len({x["group"] for x in found})}
+    return {"ok": True, "added": added, "found": len(found), "dup": len(found) - added, "total": len(data["listings"]),
+            "groups": len({x["group_key"] or x["group"] for x in found})}
 
 
 def import_files(folders: list[Path], src: Source = FB) -> int:
@@ -276,10 +304,14 @@ def import_files(folders: list[Path], src: Source = FB) -> int:
 
 def comps(row: dict, listings: list[dict], cfg: dict, now: float) -> list[dict]:
     """Похожие объявления: та же марка и модель, год ±1, пробег ±25 тыс. (мало — ±40 тыс.), не старше max_age_days."""
-    make, model, year, miles = str(row.get("make", "")).lower(), _model(row.get("model", "")), _num(row.get("year")), _num(row.get("odometer_miles"))
+    make, model, year, miles = (str(row.get("make", "")).lower().split() or [""])[0], _model(row.get("model", "")), _num(row.get("year")), _num(row.get("odometer_miles"))
     fresh = now - float(cfg["max_age_days"]) * 86400
-    base = [x for x in listings if float(x.get("at") or 0) >= fresh and str(x.get("make", "")).lower() == make
-            and _model(x.get("model")) == model and abs(int(x["year"]) - year) <= 1]
+
+    def same_car(x: dict) -> bool:
+        x_make = (str(x.get("make", "")).lower().split() or [""])[0]
+        words = re.findall(r"[a-z0-9\-]+", f"{x.get('make', '')} {x.get('model', '')}".lower())
+        return (not x_make or x_make == make) and model in words
+    base = [x for x in listings if float(x.get("at") or 0) >= fresh and same_car(x) and abs(int(x["year"]) - year) <= 1]
     for spread in (25000, 40000):
         near = [x for x in base if not miles or not x.get("miles") or abs(int(x["miles"]) - miles) <= spread]
         if len(near) >= int(cfg["min_listings"]):

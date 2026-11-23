@@ -18,7 +18,7 @@ from .paths import DATA_DIR
 PATH = DATA_DIR / "cargurus.json"
 HEADER = ["group", "year", "make", "model", "trim", "miles", "price", "imv", "deal", "days_on_market", "distance", "city", "seller", "url"]
 DEFAULTS = {"zip": "92620", "radius_miles": 50, "per_group": 15, "max_groups": 8, "refresh_days": 14, "asked_wait_days": 3,
-            "max_age_days": 30, "min_listings": 4, "asking_to_sale": 0.9, "weight": 0.5, "use_in_sale": True}
+            "max_age_days": 30, "min_listings": 3, "asking_to_sale": 0.9, "weight": 0.5, "use_in_sale": True}
 DEALS = ("great", "good", "fair", "high", "overpriced")
 
 

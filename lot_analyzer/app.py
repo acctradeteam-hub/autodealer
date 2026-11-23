@@ -49,7 +49,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.30"
-PROGRAM_VERSION = "2026-11-23.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-23.2"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -2316,6 +2316,12 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     out = {"ok": True}
                 else:
                     out = mod.add_answer(str(data.get("text") or ""))
+                    if out.get("ok"):                      # у скольких машин теперь есть цены этого источника
+                        costs_now = load_costs(costs_path)
+                        rows = search_rows(find_pages(folders, 168), cache, costs_now, "")
+                        field = "fb_median_usd" if mod is fb_market else "cg_median_usd"
+                        out["cars"] = sum(1 for r in rows if r.get(field))
+                        out["candidates"] = len(fb_market.candidates(rows))
                 _SLOW_CACHE.pop("fb_market" if mod is fb_market else "cargurus", None)
                 self._send(json.dumps(out, ensure_ascii=False).encode("utf-8"))
                 return
@@ -2635,6 +2641,10 @@ def main(argv: list[str] | None = None) -> int:
     inbox.start(lambda: [p for p in find_pages(folders, 72) if p.parent != Path("samples")]      # + PDF Carfax за 3 дня
                 + [p for p in (sorted(carfax.PDF_DIR.glob("*.pdf")) + sorted(carfax.PDF_DIR.glob("vrp_order_page_*.html")) if carfax.PDF_DIR.is_dir() else [])
                    if p.stat().st_mtime > time.time() - 72 * 3600]
+                # + ответы агентов (CarGurus, Facebook) из «Загрузок» — открытые объявления, без ваших данных
+                + [p for f in folders if Path(f).is_dir() for p in Path(f).iterdir()
+                   if p.is_file() and p.suffix.lower() in (".csv", ".txt") and re.search(r"cargurus|fb_market", p.name, re.I)
+                   and p.stat().st_mtime > time.time() - 72 * 3600]
                 # + полные отчёты Carfax (data/carfax/text) — копия в вашем закрытом репозитории
                 + [p for p in (sorted(carfax.TEXT_DIR.glob("*.txt.gz")) if carfax.TEXT_DIR.is_dir() else []) if p.stat().st_mtime > time.time() - 72 * 3600])
     address = f"http://127.0.0.1:{args.port}"
@@ -3065,8 +3075,13 @@ function srcAnswerOpen(s){const p=$('fbpanel');p.hidden=false;
 /* Файл ответа (CSV от агента): прочитать в браузере, показать в поле и сразу загрузить. */
 function srcFile(s,f){if(!f)return;const rd=new FileReader();rd.onload=()=>{$('fbans').value=String(rd.result||'');$('fbst').textContent='Файл «'+f.name+'» прочитан, загружаю…';srcAnswer(s)};
  rd.onerror=()=>{$('fbst').textContent='Файл не прочитался: '+f.name};rd.readAsText(f)}
-async function srcAnswer(s){const r=await fetch(`/api/${s}_answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:$('fbans').value})});const d=await r.json();
- $('fbst').textContent=d.ok?`Загружено объявлений: ${d.added} (в ответе ${d.found}, групп ${d.groups}). Цены пересчитываются.`:('Не загружено: '+(d.error||'ошибка'));if(d.ok)setTimeout(refresh,800)}
+async function srcAnswer(s){$('fbst').textContent='Загружаю и пересчитываю…';
+ const r=await fetch(`/api/${s}_answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:$('fbans').value})});const d=await r.json();
+ if(!d.ok){$('fbst').textContent='Не загружено: '+(d.error||'ошибка');return}
+ $('fbst').innerHTML=`✓ В ответе объявлений: <b>${d.found}</b> (групп ${d.groups}) — новых ${d.added}`+(d.dup?`, уже были загружены раньше ${d.dup}`:'')+
+  `. Всего в программе: ${d.total}. <b>Цены ${s==='cg'?'CarGurus':'Facebook'} сейчас у машин: ${d.cars}</b>`+
+  (d.cars?` — у машины «${s==='cg'?'🅲 CG':'🛒 FB'}» под KBB, и цена продажи учитывает их.`:` — похожих не нашлось (та же модель, год ±1, пробег ±40 тыс., хотя бы 3 объявления). Пришлите файл ответа — посмотрю.`);
+ setTimeout(refresh,800)}
 function kbbWeekRun(){if(!hasExt()||extV()<2.23){alert('Нужно расширение «Lot Analyzer KBB» 2.23 или новее: chrome://extensions → ⟳, потом обновите это окно.');return}
  window.postMessage({source:'lot-analyzer',type:'kbbweek-run'},'*');setTimeout(refresh,3000)}
 async function saveMmr(el){const v=el.value.replace(/[$,\s]/g,'');el.disabled=true;

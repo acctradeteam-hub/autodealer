@@ -479,8 +479,8 @@ class FbMarketTest(unittest.TestCase):
         self.assertFalse(self.fb.add_answer("sorry, nothing found")["ok"])
         rows = self.rows()
         self.fb.attach(rows, self.costs, now=1_800_000_000 + 8000)
-        self.assertEqual((rows[0]["fb_median_usd"], rows[0]["fb_n"]), ("11750", "4"))      # медиана 10,000 / 11,500 / 12,000 / 13,500
-        self.assertIn("Facebook: медиана 4 объявлений", rows[0]["fb_note"])
+        self.assertEqual((rows[0]["fb_median_usd"], rows[0]["fb_n"]), ("11500", "3"))      # частные (их 3 — хватает): 10,000 / 11,500 / 12,000
+        self.assertIn("Facebook: медиана 3 объявлений", rows[0]["fb_note"])
         self.assertEqual(rows[2]["fb_median_usd"], "")                                     # по Sienna объявлений нет
         self.fb.attach(rows, self.costs, now=1_800_000_000 + 40 * 86400)
         self.assertEqual(rows[0]["fb_median_usd"], "")                                     # устарели (max_age_days)
@@ -604,6 +604,16 @@ class CarGurusTest(unittest.TestCase):
                  "2014,Toyota,Sienna,LE,121000,\"$14,900\",\"$14,300\",Good Deal,12,8,Tustin,Dealer,https://cg.example/x\n")
         got = fb_market.parse_answer(loose, cargurus.CG)
         self.assertEqual((got[0]["price"], got[0]["imv"], got[0]["miles"], got[0]["deal"], got[0]["days"]), (14900, 14300, 121000, "good", 12))
+        md = ("| Vehicle | Mileage | Price | IMV | Deal Rating |\n|---|---|---|---|---|\n"
+              "| 2014 Toyota Sienna LE 8-Passenger | 119,500 | $14,900 | $14,200 | Good Deal |\n"
+              "| 2015 Toyota Sienna XLE | 125,000 | $15,500 | $15,100 | Fair Deal |\n")
+        got = fb_market.parse_answer(md, cargurus.CG)
+        self.assertEqual([(g["year"], g["make"], g["model"], g["miles"], g["price"], g["imv"]) for g in got],
+                         [(2014, "Toyota", "Sienna", 119500, 14900, 14200), (2015, "Toyota", "Sienna", 125000, 15500, 15100)])
+        tsv = "Year\tMake\tModel\tMileage\tPrice\n2014\tToyota\tToyota Sienna LE\t120000\t14000\n"
+        x = fb_market.parse_answer(tsv, cargurus.CG)[0]
+        self.assertTrue(fb_market.comps({"make": "Toyota", "model": "Sienna", "year": "2014", "odometer_miles": "121000"},
+                                        [dict(x, at=time.time())], {"max_age_days": 30, "min_listings": 1}, time.time()))   # «Toyota Sienna LE» = Sienna
         self.assertIn('type="file"', app.PAGE)
         self.assertIn("function srcFile(s,f)", app.PAGE)
         self.assertIn("ondrop=", app.PAGE)
