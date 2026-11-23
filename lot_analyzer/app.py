@@ -49,7 +49,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.31"
-PROGRAM_VERSION = "2026-11-23.3"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-23.4"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -123,6 +123,34 @@ PAGE_CACHE_DAYS = 21                     # не нужны столько дне
 _PARSE_MODULES = ("acv", "extract", "kbb_page", "lists", "manheim", "manheim_csv", "market", "normalize", "notes", "pages",
                   "parsers", "paths", "results", "schema", "sites_text")
 _PARSER_STAMP: list[str] = []
+
+
+ERRORS_PATH = DATA_DIR / "errors.log"            # ошибки программы — для разбора (уходит и в закрытый репозиторий)
+_RECENT_ERRORS: list[tuple[float, str]] = []
+
+
+def log_error(where: str, exc: BaseException) -> None:
+    """Ошибку — в data/errors.log (с подробностями) и в окно (коротко); программа работает дальше."""
+    import traceback
+    text = (f"{time.strftime('%Y-%m-%d %H:%M:%S')} {PROGRAM_VERSION} {where}\n"
+            + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) + "\n")
+    try:
+        ERRORS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        old = ERRORS_PATH.read_text(encoding="utf-8")[-200_000:] if ERRORS_PATH.exists() else ""
+        ERRORS_PATH.write_text(old + text, encoding="utf-8")
+    except OSError:
+        pass
+    _RECENT_ERRORS.append((time.time(), f"{where}: {type(exc).__name__}: {exc}"[:300]))
+    del _RECENT_ERRORS[:-20]
+
+
+def _safe(where: str, fn, *args, **kwargs):
+    """Необязательный шаг расчёта (Carfax, CarGurus, Facebook, ликвидность): ошибка — в лог, список считается дальше без него."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — любой сбой дополнения не должен ломать весь список
+        log_error(where, exc)
+        return None
 
 
 def _parser_stamp() -> str:
@@ -1212,14 +1240,14 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
         pass
     # Машинам без KBB — предварительная цена продажи по вашей базе (KBB ÷ MMR той же модели), а не MMR × 1.3.
     learning = kbb_learning.load()
-    fb_market.attach(rows, costs)                    # Facebook Marketplace (Muse): цены похожих объявлений — в цену продажи
-    cargurus.attach(rows, costs)                     # CarGurus (Claude в Chrome): IMV и конкуренты в 50 милях — в цену продажи
-    liquidity.attach_mmr(rows)                       # MMR, вписанный в окне, — в расчёт (у кого своего нет)
-    carfax.attach(rows, vin_features.engine)         # Carfax — до расчёта: ДТП, владельцы, аренда — скидка; рама, титул — стоп
+    _safe("Facebook", fb_market.attach, rows, costs)   # Facebook Marketplace (Muse): цены похожих объявлений — в цену продажи
+    _safe("CarGurus", cargurus.attach, rows, costs)    # CarGurus (Claude в Chrome): IMV и конкуренты в 50 милях — в цену продажи
+    _safe("MMR", liquidity.attach_mmr, rows)           # MMR, вписанный в окне, — в расчёт (у кого своего нет)
+    _safe("Carfax", carfax.attach, rows, vin_features.engine)   # Carfax — до расчёта: ДТП, владельцы, аренда — скидка; рама, титул — стоп
     # нет похожих в базе KBB — по вашим итогам продаж CarMax той же модели
     history = results.load_history()
     apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs, learning["learned"], history))
-    liquidity.attach(rows, history)                  # ликвидность: ваши итоги торгов по модели + MMR ÷ KBB
+    _safe("ликвидность", liquidity.attach, rows, history)   # ликвидность: ваши итоги торгов по модели + MMR ÷ KBB
     # Civic, Corolla, Accord, Camry, CT 200h с брендированным титулом — не рассматриваем вовсе: ни в списке, ни на осмотре, ни на телефоне.
     rows = [r for r in rows if not r.get("branded_hidden")]
     goal_bids(rows, costs)                           # ставка на 15% прибыли — под потолком (10%)
@@ -1762,6 +1790,18 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
             self.wfile.write(body)
 
         def do_GET(self) -> None:
+            try:
+                self._get()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:  # noqa: BLE001 — ошибка запроса: в журнал и ответ окну, программа работает дальше
+                log_error("GET " + self.path[:80], exc)
+                try:
+                    self._send(json.dumps({"error": f"{type(exc).__name__}: {exc}"[:400]}, ensure_ascii=False).encode("utf-8"), status=500)
+                except OSError:
+                    pass
+
+        def _get(self) -> None:
             url = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             num = lambda key: int(q[key]) if q.get(key, "").isdigit() else None
@@ -1920,7 +1960,8 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                            "near": near_places(places, costs_now), "passed_total": passed_total, "returned_total": returned_total, "buyable_total": buyable_total, "rejected_total": rejected_total, "removed_total": removed_total, "vin_search": vin_q,
                            "days": sorted(day_counts.items()), "day": q.get("day", ""), "arrived_total": arrived_total, "bids_total": bids_total, "nottake_total": nottake_total, "nottake_bids": nottake_bids, "take_total": take_total, "take_nobid": take_nobid, "nophoto_total": nophoto_total, "kbb_learning": kbb_learning.summary(kbb_learning.load()["learned"]), "place": q.get("place", ""), "popular_total": sum(1 for r in all_rows if r.get("popular")),
                            "group_total": {g: sum(1 for r in all_rows if r.get("group") == g) for g in GROUPS},
-                           "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "carfax_login": load_carfax_login(), "photos_status": PHOTOS_STATUS,
+                           "folders": [str(f) for f in folders], "hidden_total": hidden_total, "version": PROGRAM_VERSION, "carfax_status": CARFAX_STATUS, "carfax_login": load_carfax_login(),
+                           "errors": [m for t, m in _RECENT_ERRORS if time.time() - t < 1800][-3:], "photos_status": PHOTOS_STATUS,
                            "kbb_week": {**cached("kbb_week", 120, lambda: kbb_week_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""))), "status": KBB_WEEK_STATUS},
                            "fb_market": cached("fb_market", 60, lambda: {k: v for k, v in fb_market.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now).items() if k in ("due", "total", "last_answer", "listings")}),
                            "cargurus": cached("cargurus", 60, lambda: {k: v for k, v in cargurus.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now).items() if k in ("due", "total", "last_answer", "listings")}),
@@ -2645,6 +2686,7 @@ def main(argv: list[str] | None = None) -> int:
                 + [p for f in folders if Path(f).is_dir() for p in Path(f).iterdir()
                    if p.is_file() and p.suffix.lower() in (".csv", ".txt") and re.search(r"cargurus|fb_market", p.name, re.I)
                    and p.stat().st_mtime > time.time() - 72 * 3600]
+                + ([ERRORS_PATH] if ERRORS_PATH.exists() and ERRORS_PATH.stat().st_mtime > time.time() - 72 * 3600 else [])   # журнал ошибок
                 # + полные отчёты Carfax (data/carfax/text) — копия в вашем закрытом репозитории
                 + [p for p in (sorted(carfax.TEXT_DIR.glob("*.txt.gz")) if carfax.TEXT_DIR.is_dir() else []) if p.stat().st_mtime > time.time() - 72 * 3600])
     address = f"http://127.0.0.1:{args.port}"
@@ -2727,7 +2769,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <label>Пароль<input id="vrppass" type="password" autocomplete="new-password" placeholder="пусто — оставить прежний"></label><button>Сохранить</button></form>
 <div id="vrpstate" class="muted" style="margin-top:6px">—</div></div>
 <div class="muted">Одна машина — все аукционы. Файлы из закладки «💾 Сохранить для анализа» подхватываются сами.</div>
-<div id="cflogin" class="cflogin" hidden></div>
+<div id="cflogin" class="cflogin" hidden></div><div id="progerr" class="cflogin" hidden></div>
 <div class="card"><form id="f" class="top" onsubmit="event.preventDefault();refresh();loadLinks()">
 <label>Машина<input id="q" class="w-q" placeholder="Honda Civic" autofocus></label>
 <span id="modelbtns" class="modelbtns"></span>
@@ -2932,7 +2974,9 @@ async function loadStatus(){try{const s=await (await fetch('/api/load_status')).
  else $('stat').textContent='⏳ Считаю список…'}catch(e){}}
 function loadWatch(on){loadOn=on;clearTimeout(loadTimer);loadTimer=null;if(on){const tick=()=>{loadStatus();loadTimer=setTimeout(tick,2000)};loadTimer=setTimeout(tick,2500)}}
 async function refresh(){if(refreshBusy){refreshAgain=true;return}refreshBusy=true;const my=++refreshNo;loadWatch(true);
- try{const r=await fetch('/api/rows?'+params());const d=await r.json();if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
+ try{const r=await fetch('/api/rows?'+params());const d=await r.json();
+  if(d.error&&!d.rows){$('stat').textContent='⚠ Ошибка программы: '+d.error+' — подробности в data/errors.log (уходят Claude при «Отправке Claude»)';return}
+  if(my===refreshNo){lastData=d;render(d)}}catch(e){$('stat').textContent='Нет связи с программой: '+e}
  finally{loadWatch(false);refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh()}}}
 /* «📄 Carfax» у машины: расширение откроет отчёт на Carfax Online (carfaxonline.com/vhr/<VIN>) с вашим входом в Chrome
    на Mac, текст отчёта придёт в программу сам. Ход (открывается, нужен вход, получен, не вышло) — под машиной. */
@@ -2952,7 +2996,8 @@ const CF_TEXT={sent:'⏳ Carfax: открываю Carfax Online…',opened:'⏳ 
  error:'⚠ Carfax не получен',done:'✓ Carfax получен'};
 function cfStatus(x){const s=CF[x.vin];if(!s||Date.now()/1000-s.at>3600||(s.status==='done'&&x.carfax))return'';
  return `<div class="${/^(login|manual|error)$/.test(s.status)?'neg':'muted'}">${esc(CF_TEXT[s.status]||s.status)}${s.note?': '+esc(s.note):''}</div>`}
-function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);drawKbbWeek(d);drawCarfaxAuto(d);drawFb(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
+function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}
+ {const e=$('progerr');if(e){const list=d.errors||[];e.hidden=!list.length;e.innerHTML=list.length?`⚠ <b>Часть расчёта не сработала</b> — программа работает дальше без неё: ${list.map(esc).join(' · ')}. Подробности — в data/errors.log (уходит Claude при «Отправке Claude»).`:''}}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);drawKbbWeek(d);drawCarfaxAuto(d);drawFb(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
 if(nearOn&&d.near){const want=(d.near.places||[]).map(([p])=>p).join('|');if(want&&want!==place){setPlace(want,true);return}}
 {const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'),nearOn);return}}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button> `+nearBtn(d)+

@@ -625,6 +625,36 @@ class CarGurusTest(unittest.TestCase):
             self.assertIn(part, app.PAGE)
 
 
+class SafetyTest(unittest.TestCase):
+    """Сбой дополнения (Carfax, CarGurus, Facebook, ликвидность) не роняет список; ошибка — в журнал и в окно."""
+
+    def test_optional_step_failure_keeps_list(self) -> None:
+        from unittest import mock
+        tmp = Path(tempfile.mkdtemp())
+        pages = tmp / "pages"
+        pages.mkdir()
+        shutil.copy(FIXTURES / "carmax_list_detailed_table.html", pages / "CarMax_Search_test.html") if (FIXTURES / "carmax_list_detailed_table.html").exists() else None
+        app._RECENT_ERRORS.clear()
+        with mock.patch.object(app, "ERRORS_PATH", tmp / "errors.log"), \
+             mock.patch.object(app.carfax, "attach", side_effect=ValueError("плохая запись Carfax")):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([pages], COSTS, app.PageCache()))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                d = json.loads(urllib.request.urlopen(base + "/api/rows?hours=100000&passed=1").read())
+                self.assertIn("rows", d)                                                    # список есть
+                self.assertTrue(any("Carfax: ValueError: плохая запись Carfax" in e for e in d["errors"]))
+                self.assertIn("плохая запись Carfax", (tmp / "errors.log").read_text(encoding="utf-8"))
+                with mock.patch.object(app, "find_pages", side_effect=RuntimeError("сломалось")):
+                    with self.assertRaises(urllib.error.HTTPError) as err:
+                        urllib.request.urlopen(base + "/api/rows?hours=24")
+                    self.assertEqual(err.exception.code, 500)
+                    self.assertIn("RuntimeError: сломалось", json.loads(err.exception.read())["error"])
+            finally:
+                server.shutdown()
+        self.assertIn('id="progerr"', app.PAGE)
+
+
 class PhoneAppSigningTest(unittest.TestCase):
     """Приложение на телефон: одна постоянная подпись — новая версия ставится поверх, адрес Mac и токен не пропадают."""
 

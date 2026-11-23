@@ -302,16 +302,25 @@ def import_files(folders: list[Path], src: Source = FB) -> int:
     return done
 
 
-def comps(row: dict, listings: list[dict], cfg: dict, now: float) -> list[dict]:
+def _index(listings: list[dict], cfg: dict, now: float) -> dict[tuple[str, str], list[dict]]:
+    """Свежие объявления по (марка, слово модели): «Toyota Sienna LE» — под ("toyota", "sienna"), ("toyota", "le") …"""
+    fresh = now - float(cfg["max_age_days"]) * 86400
+    out: dict[tuple[str, str], list[dict]] = {}
+    for x in listings:
+        if float(x.get("at") or 0) < fresh:
+            continue
+        x_make = (str(x.get("make", "")).lower().split() or [""])[0]
+        for word in set(re.findall(r"[a-z0-9\-]+", f"{x.get('make', '')} {x.get('model', '')}".lower())):
+            out.setdefault((x_make, word), []).append(x)
+    return out
+
+
+def comps(row: dict, listings: list[dict], cfg: dict, now: float, index: dict | None = None) -> list[dict]:
     """Похожие объявления: та же марка и модель, год ±1, пробег ±25 тыс. (мало — ±40 тыс.), не старше max_age_days."""
     make, model, year, miles = (str(row.get("make", "")).lower().split() or [""])[0], _model(row.get("model", "")), _num(row.get("year")), _num(row.get("odometer_miles"))
-    fresh = now - float(cfg["max_age_days"]) * 86400
-
-    def same_car(x: dict) -> bool:
-        x_make = (str(x.get("make", "")).lower().split() or [""])[0]
-        words = re.findall(r"[a-z0-9\-]+", f"{x.get('make', '')} {x.get('model', '')}".lower())
-        return (not x_make or x_make == make) and model in words
-    base = [x for x in listings if float(x.get("at") or 0) >= fresh and same_car(x) and abs(int(x["year"]) - year) <= 1]
+    index = _index(listings, cfg, now) if index is None else index
+    pool = index.get((make, model), []) + index.get(("", model), [])         # у объявления без марки — только по модели
+    base = [x for x in pool if abs(int(x["year"]) - year) <= 1]
     for spread in (25000, 40000):
         near = [x for x in base if not miles or not x.get("miles") or abs(int(x["miles"]) - miles) <= spread]
         if len(near) >= int(cfg["min_listings"]):
@@ -325,6 +334,7 @@ def attach(rows: list[dict], costs: dict, now: float | None = None, src: Source 
     cfg = config(costs, src)
     now = time.time() if now is None else now
     listings = load(src)["listings"]
+    index = _index(listings, cfg, now)
     p = src.prefix
     for row in rows:
         row[f"{p}_median_usd"] = row[f"{p}_n"] = row[f"{p}_note"] = row[f"{p}_links"] = ""
@@ -332,7 +342,7 @@ def attach(rows: list[dict], costs: dict, now: float | None = None, src: Source 
             row[f"{p}_imv_usd"] = row[f"{p}_days"] = ""
         if not listings or not row.get("model"):
             continue
-        found = comps(row, listings, cfg, now)
+        found = comps(row, listings, cfg, now, index)
         if len(found) < int(cfg["min_listings"]):
             continue
         med = statistics.median(x["price"] for x in found)
