@@ -581,6 +581,10 @@ class CarGurusTest(unittest.TestCase):
             cargurus.attach(rows, costs, now=1_800_000_200)
             self.assertEqual((rows[0]["cg_imv_usd"], rows[0]["cg_n"], rows[0]["cg_days"]), ("14400", "5", "30"))
             self.assertIn("IMV $14,400", rows[0]["cg_note"])
+            links = json.loads(rows[0]["cg_links"])                                        # номера 1 … 5 — ссылки на объявления
+            self.assertEqual(len(links), 5)
+            self.assertEqual(links[0]["u"], "https://cg.example/1")                          # ближе всех по пробегу (121,000 ↔ 120,000)
+            self.assertIn("121,000 mi · $14,800 · IMV $14,200 · good deal", links[0]["t"])
         # цена продажи: CarGurus IMV 14,400 × 0,9 = 12,960; вместе с Facebook 11,750 × 0,93 = 10,927 — среднее 11,944, вес 50%
         from lot_analyzer.bid import BidInput, calculate
         only_cg = calculate(BidInput(auction="CarMax", kbb_private_party=13000, cg_price=14400), costs)
@@ -617,7 +621,7 @@ class CarGurusTest(unittest.TestCase):
         self.assertIn('type="file"', app.PAGE)
         self.assertIn("function srcFile(s,f)", app.PAGE)
         self.assertIn("ondrop=", app.PAGE)
-        for part in ("🅲 CarGurus (Claude в Chrome)", "📋 Задание для CarGurus", "🅲 CG"):
+        for part in ("🅲 CarGurus (Claude в Chrome)", "📋 Задание для CarGurus", "🅲 CG", "function cmpLinks(raw)"):
             self.assertIn(part, app.PAGE)
 
 

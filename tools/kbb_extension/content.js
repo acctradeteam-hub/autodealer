@@ -254,6 +254,22 @@ window.lotAnalyzerAuto = true;
   /* Автопилот в расширении переходит по страницам KBB; где остановился — хранится в имени вкладки (la-run=…). */
   var resume = /^la-run=(.+)$/.exec(window.name || '');
   /* Расширение «Lot Analyzer KBB» запускает этот код само на каждой странице kbb.com — работаем, только если есть машины из окна. */
+  /* KBB-автопилот не нашёл цену — вкладка оставлена на странице этой машины: подсказка сверху, что выбрать руками. */
+  var laManualBanner = function () {
+    var info = null;
+    try { info = JSON.parse(sessionStorage.getItem('la-kbb-manual') || 'null'); } catch (e) { info = null; }
+    if (!info || auction !== 'KBB' || document.getElementById('la-kbb-manual')) { return; }
+    var escH = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+    var box = document.createElement('div');
+    box.id = 'la-kbb-manual';
+    box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#fff7d6;color:#3a2a00;border-bottom:2px solid #d4a017;padding:10px 14px;font:14px/1.4 -apple-system,Arial,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.15)';
+    box.innerHTML = '<b>Lot Analyzer: KBB не нашёлся сам — посчитайте руками.</b> ' + escH(info.car) + ', пробег ' + Number(info.mi || 0).toLocaleString('en-US') +
+      ' миль, ZIP 92620: выберите комплектацию → Private Party (Sell it yourself) → Good. Цену впишите в окно программы (поле «KBB PP») или сохраните страницу цены закладкой «💾 Сохранить для анализа».' +
+      (info.failed && info.failed.length > 1 ? '<br><small>Не нашлось и для: ' + info.failed.slice(1).map(escH).join('; ') + '</small>' : '') + ' <button type="button" style="margin-left:8px">Скрыть</button>';
+    box.querySelector('button').onclick = function () { try { sessionStorage.removeItem('la-kbb-manual'); } catch (e) { void e; } box.remove(); };
+    (document.body || document.documentElement).appendChild(box);
+  };
+  if (auction === 'KBB' && !laMatch && !resume) { setTimeout(laManualBanner, 800); }
   if (window.lotAnalyzerAuto && !(auction === 'KBB' && (laMatch || resume))) { return; }
   if (auction === 'KBB' && !laMatch && !resume && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
     say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB: 15 + 5 + 5 + 5 лучших» — и нажмите закладку на открывшейся вкладке.', 12000);
@@ -413,7 +429,7 @@ window.lotAnalyzerAuto = true;
       /* Старые строки CarMax: «Model» + трим «X 75D» → модель «Model X». EUV, Plug-in — у KBB отдельные модели. */
       var bmw = /^bmw$/i.test(car.mk || '') ? bmwSeries(car.md, car.t)
         : /^mercedes(-benz)?$/.test(slugOf(car.mk)) ? mbClass(car.md, car.t, car.y) : null;
-      if (bmw) { car.md = bmw.md; car.t = bmw.t; }               // «535» + «I» → «5 Series» / «535i»; «C300» → «c-class» / «C 300»
+      if (bmw) { car.md = bmw.md; car.t = bmw.t; }               /* «535» + «I» → «5 Series» / «535i»; «C300» → «c-class» / «C 300» */
       if (/^model$/i.test(car.md) && /^[3sxy]\b/i.test(car.t || '')) { car.md = 'Model ' + car.t.charAt(0).toUpperCase(); car.t = car.t.slice(1).trim(); }
       var lead = /^(euv|plug[- ]?in(?: hybrid)?|prime|electric)\b/i.exec(car.t || '');
       if (lead) { car.md = car.md + ' ' + lead[1]; car.t = car.t.slice(lead[0].length).trim(); }
@@ -423,6 +439,7 @@ window.lotAnalyzerAuto = true;
         md + '-ev', md.split('-')[0] + (hybrid ? '-hybrid' : '-ev')]).filter(function (m, i, all) { return m && all.indexOf(m) === i; });
       var trims = [];
       var modelSlug = '';
+      var fallback = null;
       for (var n = 0; n < models.length && !trims.length; n++) {
         var path = '/' + slugOf(car.mk) + '/' + models[n] + '/' + car.y + '/';
         var html = location.pathname === path ? document.documentElement.outerHTML : await getText(path + query).catch(function () { return ''; });
@@ -430,14 +447,24 @@ window.lotAnalyzerAuto = true;
         /* Гибрид, EUV, Plug-in, Prime, Electric не подменяем другой версией: страница должна быть именно этой модели
            (в адресе модели или в названиях комплектаций). Иначе ищем дальше. */
         var must = (/(hybrid|euv|plug|prime|electric)/i.exec(car.md + ' ' + car.t) || [])[1];
-        if (must && trims.length && models[n].indexOf(must.toLowerCase()) < 0 && !trims.some(function (t) { return new RegExp(must, 'i').test(t.name); })) { trims = []; }
+        if (must && trims.length && models[n].indexOf(must.toLowerCase()) < 0 && !trims.some(function (t) { return new RegExp(must, 'i').test(t.name); })) {
+          if (!fallback && /^hybrid$/i.test(must)) { fallback = { slug: models[n], trims: trims }; }
+          trims = [];
+        }
         modelSlug = models[n];
       }
-      if (!trims.length) { throw new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную'); }
+      /* Гибрид, которого на KBB нет отдельной моделью (Sienna и Venza с 2021 года бывают только гибридом): берём саму модель. */
+      var hybridNote = '';
+      if (!trims.length && fallback) { trims = fallback.trims; modelSlug = fallback.slug; hybridNote = ' (на KBB гибрид — без отдельной модели, взята ' + fallback.slug + ')'; }
+      if (!trims.length) {
+        var notFound = new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную');
+        notFound.manual = '/' + slugOf(car.mk) + '/' + (models.filter(function (m) { return m.indexOf('hybrid') < 0; })[0] || md) + '/' + car.y + '/' + query;
+        throw notFound;
+      }
       var trim = pickTrim(trims, car.t);
       var byDefault = !trim;
       if (byDefault) { trim = baseTrim(trims); }
-      var trimLabel = trim.name + (byDefault ? ' (комплектация по умолчанию — у лота «' + (car.t || '?') + '», проверьте)' : '');
+      var trimLabel = trim.name + hybridNote + (byDefault ? ' (комплектация по умолчанию — у лота «' + (car.t || '?') + '», проверьте)' : '');
       /* Страница цены: пробуем несколько адресов, сохраняем только ту, где есть Private Party Good для пробега лота. */
       var base = '/' + slugOf(car.mk) + '/' + modelSlug + '/' + car.y + '/' + slugOf(trim.name) + '/';
       var tail = 'mileage=' + car.mi + '&zipcode=92620';
@@ -494,6 +521,7 @@ window.lotAnalyzerAuto = true;
           done.push(labelOf(current) + ' → ' + state.pending.trim + ': $' + shownPrice.toLocaleString('en-US'));
         } else {
           failed.push(labelOf(current) + ': ' + state.pending.trim + ' — на странице KBB нет Private Party для ' + current.mi + ' миль');
+          if (!state.manual) { state.manual = { car: current, path: location.pathname + location.search }; }
         }
         state.pending = null;
         state.i += 1;
@@ -511,7 +539,10 @@ window.lotAnalyzerAuto = true;
             return;
           }
           done.push(labelOf(car) + ' → ' + result);
-        } catch (e) { failed.push(labelOf(car) + ': ' + e.message); }
+        } catch (e) {
+          failed.push(labelOf(car) + ': ' + e.message);
+          if (!state.manual) { state.manual = { car: car, path: e.manual || ('/' + slugOf(car.mk) + '/' + slugOf(car.md).split('-')[0] + '/' + car.y + '/?intent=trade-in-sell&mileage=' + car.mi + '&zipcode=92620') }; }
+        }
         if (state.i < cars.length - 1) { await pause(2500 + Math.random() * 2000); }
       }
       say('KBB готово: ' + done.length + ' из ' + cars.length + '. Вернитесь в окно программы — цены уже там.' + (failed.length ? ' Не получилось: ' + failed.join('; ') : ''), 15000);
@@ -524,7 +555,15 @@ window.lotAnalyzerAuto = true;
       rep.download = 'KBB_report_' + stamp + '.html';
       document.body.appendChild(rep);
       rep.click();
-      /* Готово — вкладка KBB закрывается сама (через 4 секунды, чтобы файлы успели сохраниться). */
+      /* Не нашлось хотя бы для одной машины — вкладку НЕ закрываем: открываем страницу KBB этой машины (модель, год, пробег),
+         сверху — подсказка, что выбрать, чтобы посчитать руками. Всё нашлось — вкладка закрывается сама (через 4 секунды). */
+      if (state.manual) {
+        var fix = state.manual;
+        try { sessionStorage.setItem('la-kbb-manual', JSON.stringify({ car: labelOf(fix.car) + (fix.car.t ? ' ' + fix.car.t : ''), mi: fix.car.mi, failed: failed })); } catch (e) { void e; }
+        window.name = '';
+        setTimeout(function () { if (location.pathname + location.search !== fix.path) { location.href = fix.path; } else { laManualBanner(); } }, 4000);
+        return;
+      }
       setTimeout(function () {
         if (window.lotAnalyzerAuto && window.chrome && chrome.runtime && chrome.runtime.id) { chrome.runtime.sendMessage({ type: 'close' }); } else { window.close(); }
       }, 4000);

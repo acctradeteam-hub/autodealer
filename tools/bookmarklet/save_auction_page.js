@@ -247,6 +247,22 @@
   /* Автопилот в расширении переходит по страницам KBB; где остановился — хранится в имени вкладки (la-run=…). */
   var resume = /^la-run=(.+)$/.exec(window.name || '');
   /* Расширение «Lot Analyzer KBB» запускает этот код само на каждой странице kbb.com — работаем, только если есть машины из окна. */
+  /* KBB-автопилот не нашёл цену — вкладка оставлена на странице этой машины: подсказка сверху, что выбрать руками. */
+  var laManualBanner = function () {
+    var info = null;
+    try { info = JSON.parse(sessionStorage.getItem('la-kbb-manual') || 'null'); } catch (e) { info = null; }
+    if (!info || auction !== 'KBB' || document.getElementById('la-kbb-manual')) { return; }
+    var escH = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+    var box = document.createElement('div');
+    box.id = 'la-kbb-manual';
+    box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#fff7d6;color:#3a2a00;border-bottom:2px solid #d4a017;padding:10px 14px;font:14px/1.4 -apple-system,Arial,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.15)';
+    box.innerHTML = '<b>Lot Analyzer: KBB не нашёлся сам — посчитайте руками.</b> ' + escH(info.car) + ', пробег ' + Number(info.mi || 0).toLocaleString('en-US') +
+      ' миль, ZIP 92620: выберите комплектацию → Private Party (Sell it yourself) → Good. Цену впишите в окно программы (поле «KBB PP») или сохраните страницу цены закладкой «💾 Сохранить для анализа».' +
+      (info.failed && info.failed.length > 1 ? '<br><small>Не нашлось и для: ' + info.failed.slice(1).map(escH).join('; ') + '</small>' : '') + ' <button type="button" style="margin-left:8px">Скрыть</button>';
+    box.querySelector('button').onclick = function () { try { sessionStorage.removeItem('la-kbb-manual'); } catch (e) { void e; } box.remove(); };
+    (document.body || document.documentElement).appendChild(box);
+  };
+  if (auction === 'KBB' && !laMatch && !resume) { setTimeout(laManualBanner, 800); }
   if (window.lotAnalyzerAuto && !(auction === 'KBB' && (laMatch || resume))) { return; }
   if (auction === 'KBB' && !laMatch && !resume && !/Private Party|privateparty|Sell it yourself|valuations\(/i.test(document.documentElement.innerHTML)) {
     say('На этой странице KBB нет цены и нет машин из программы. Откройте KBB из окна программы: «получить KBB ↗» в строке машины или «KBB: 15 + 5 + 5 + 5 лучших» — и нажмите закладку на открывшейся вкладке.', 12000);
@@ -262,6 +278,55 @@
     var KBB_MODEL = { 'golf-electric': 'e-golf', 'bolt': 'bolt-ev', 'bolt-euv': 'bolt-euv', 'gti': 'golf-gti', 'golf-gti': 'golf-gti', 'e-golf': 'e-golf', 'leaf-plus': 'leaf', 'ioniq-electric': 'ioniq', 'niro-ev': 'niro-ev', 'kona-electric': 'kona-electric', 'clarity-plug-in-hybrid': 'clarity-plug-in-hybrid', 'prius-prime': 'prius-prime', 'rav4-prime': 'rav4-prime' };
     var KBB_EXTRA = { 'prius-plug-in-hybrid': 'prius-plug-in', 'prius-plug-in': 'prius-plug-in-hybrid' };
     var slugOf = function (text) { return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
+    /* BMW: на аукционах модель — номер («535» + трим «I», «M340» + «I», «330» + «Plug In Hybrid»), а на KBB модель —
+       серия («5 Series»), номер — комплектация («535i xDrive Sedan 4D»). Как kbb_page.bmw_series в программе. */
+    var bmwSeries = function (model, trim) {
+      var text = (String(model || '') + ' ' + String(trim || '')).replace(/\s+/g, ' ').trim();
+      var m = /^(m?)([1-8])(\d{2})\s*(li|xi|ci|is|i|d|e)?\b/i.exec(text);
+      if (!m) { return null; }
+      var rest = text.slice(m[0].length);
+      var plugRe = /plug[- ]?in(?:\s+hybrid)?|hybrid/ig;
+      var plug = new RegExp(plugRe.source, 'i').test(rest);
+      rest = rest.replace(plugRe, ' ').replace(/\s+/g, ' ').trim();
+      var head = (m[1] + m[2] + m[3]).toLowerCase();
+      var suffix = (m[4] || (plug ? 'e' : 'i')).toLowerCase();
+      var code = head + suffix + (suffix === 'xi' ? ' ' + head + 'i xDrive' : '');
+      var series = m[2] + '-series';
+      var models = /gran turismo|\bgt\b/i.test(rest) ? [series + '-gran-turismo', series] : /gran coupe/i.test(rest) ? [series + '-gran-coupe', series] : [series];
+      return { models: models, t: (code + ' ' + rest).trim(), md: m[2] + ' Series' };
+    };
+    /* Mercedes: на аукционах модель — «C300» + «Base», «GLE53» + «AMG Coupe Base», у Manheim «B C300W C 300»; на KBB
+       модель — класс («c-class», «gle», «mercedes-amg-gle-coupe»), «C 300» — комплектация. Как kbb_page.mercedes_class. */
+    var MB_CLASS = { a: ['a-class'], b: ['b-class'], c: ['c-class'], cla: ['cla', 'cla-class'], cle: ['cle'], clk: ['clk-class'],
+      cls: ['cls-class', 'cls'], e: ['e-class'], g: ['g-class'], gl: ['gl-class'], gla: ['gla', 'gla-class'], glb: ['glb'], glc: ['glc'],
+      gle: ['gle'], glk: ['glk-class'], gls: ['gls'], m: ['m-class'], ml: ['m-class'], r: ['r-class'], s: ['s-class'], sl: ['sl-class', 'sl'],
+      slc: ['slc', 'slc-class'], slk: ['slk-class'], eqb: ['mercedes-eq-eqb'], eqe: ['mercedes-eq-eqe'], eqs: ['mercedes-eq-eqs'] };
+    var MB_COUPE = { glc: 'glc-coupe', gle: 'gle-coupe' }, MB_SUV = { eqe: 'mercedes-eq-eqe-suv', eqs: 'mercedes-eq-eqs-suv' };
+    var MB_AMG = ['a', 'c', 'cla', 'cls', 'e', 'g', 'gla', 'glb', 'glc', 'gle', 'gls', 's', 'sl', 'slc', 'eqe', 'eqs'];
+    var mbClass = function (model, trim, year) {
+      var text = (String(model || '') + ' ' + String(trim || '')).replace(/\s+/g, ' ').trim();
+      if (/maybach|sprinter|metris/i.test(text)) { return null; }
+      if (/^amg\s+gt\b/i.test(text)) { return { models: ['mercedes-amg-gt'], t: text.slice(4), md: 'mercedes-amg-gt' }; }
+      var m = /(?:^|[^a-z0-9])(cla|cle|clk|cls|gla|glb|glc|gle|glk|gls|slc|slk|eqb|eqe|eqs|gl|ml|sl|a|b|c|e|g|m|r|s)\s*-?\s*(\d{2,3})(?!\d)(e|d|h)?(\+)?(?![a-z])/i.exec(text);
+      if (!m) { return null; }
+      var fam = m[1].toLowerCase(), num = m[2], y = parseInt(String(year || '').slice(0, 4), 10) || 0;
+      var rest = text.slice(m.index + m[0].length).replace(/plug[- ]?in(?:\s+hybrid)?/ig, ' ').replace(/\s+/g, ' ').trim();
+      var amg = num.length === 2 || /\bamg\b/i.test(text);
+      var base = MB_CLASS[fam].slice();
+      if (fam === 'cla' && y > 0 && y <= 2015) { base.reverse(); }
+      if (fam === 'cls' && y >= 2019) { base.reverse(); }
+      if (MB_COUPE[fam] && /\bcoupe\b/i.test(rest)) { base = [MB_COUPE[fam]].concat(base); }
+      if (MB_SUV[fam] && /\bsuv\b/i.test(rest)) { base = [MB_SUV[fam]].concat(base); }
+      var models = base;
+      if (amg && MB_AMG.indexOf(fam) >= 0) {
+        var pages = (fam === 'eqe' || fam === 'eqs') ? ['mercedes-amg-' + fam] : base.filter(function (b) { return b.indexOf('mercedes-') !== 0; }).map(function (b) { return 'mercedes-amg-' + b; });
+        models = (y >= 2016 || !y) ? pages.concat(base) : base.concat(pages);
+      }
+      models = models.filter(function (x, i, all) { return all.indexOf(x) === i; });
+      var label = (fam === 'ml' || fam === 'm') ? 'ML' : fam.toUpperCase();
+      var code = label + ' ' + num + (m[3] || '').toLowerCase() + (m[4] || '') + (amg && !/\bamg\b/i.test(rest) ? ' AMG' : '');
+      return { models: models, t: (code + ' ' + rest).trim(), md: models[0] };
+    };
     var styleWords = /^(sedan|sport|utility|suv|pickup|truck|hatchback|coupe|wagon|van|minivan|convertible|cab|crew|extended|regular|double|quad|super|supercrew|supercab|\d+d|awd|fwd|rwd|4wd|2wd)$/;
     var nextData = function (html) {
       var found = /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(html);
@@ -355,15 +420,19 @@
       /* Как модель называется на KBB: аукцион пишет «Bolt», KBB — «Bolt EV»; гибриды у KBB часто отдельной моделью
          («camry-hybrid»). Пробуем варианты по очереди, пока страница не покажет комплектации. */
       /* Старые строки CarMax: «Model» + трим «X 75D» → модель «Model X». EUV, Plug-in — у KBB отдельные модели. */
+      var bmw = /^bmw$/i.test(car.mk || '') ? bmwSeries(car.md, car.t)
+        : /^mercedes(-benz)?$/.test(slugOf(car.mk)) ? mbClass(car.md, car.t, car.y) : null;
+      if (bmw) { car.md = bmw.md; car.t = bmw.t; }               /* «535» + «I» → «5 Series» / «535i»; «C300» → «c-class» / «C 300» */
       if (/^model$/i.test(car.md) && /^[3sxy]\b/i.test(car.t || '')) { car.md = 'Model ' + car.t.charAt(0).toUpperCase(); car.t = car.t.slice(1).trim(); }
       var lead = /^(euv|plug[- ]?in(?: hybrid)?|prime|electric)\b/i.exec(car.t || '');
       if (lead) { car.md = car.md + ' ' + lead[1]; car.t = car.t.slice(lead[0].length).trim(); }
       var md = slugOf(car.md);
       var hybrid = /hybrid/i.test(car.md + ' ' + car.t);
-      var models = [KBB_MODEL[md] || '', (KBB_EXTRA[md] || '')].concat([hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
+      var models = bmw ? bmw.models : [KBB_MODEL[md] || '', (KBB_EXTRA[md] || '')].concat([hybrid && md.indexOf('hybrid') < 0 ? md + '-hybrid' : '', md, md.replace(/-/g, ''), md.split('-')[0],
         md + '-ev', md.split('-')[0] + (hybrid ? '-hybrid' : '-ev')]).filter(function (m, i, all) { return m && all.indexOf(m) === i; });
       var trims = [];
       var modelSlug = '';
+      var fallback = null;
       for (var n = 0; n < models.length && !trims.length; n++) {
         var path = '/' + slugOf(car.mk) + '/' + models[n] + '/' + car.y + '/';
         var html = location.pathname === path ? document.documentElement.outerHTML : await getText(path + query).catch(function () { return ''; });
@@ -371,14 +440,24 @@
         /* Гибрид, EUV, Plug-in, Prime, Electric не подменяем другой версией: страница должна быть именно этой модели
            (в адресе модели или в названиях комплектаций). Иначе ищем дальше. */
         var must = (/(hybrid|euv|plug|prime|electric)/i.exec(car.md + ' ' + car.t) || [])[1];
-        if (must && trims.length && models[n].indexOf(must.toLowerCase()) < 0 && !trims.some(function (t) { return new RegExp(must, 'i').test(t.name); })) { trims = []; }
+        if (must && trims.length && models[n].indexOf(must.toLowerCase()) < 0 && !trims.some(function (t) { return new RegExp(must, 'i').test(t.name); })) {
+          if (!fallback && /^hybrid$/i.test(must)) { fallback = { slug: models[n], trims: trims }; }
+          trims = [];
+        }
         modelSlug = models[n];
       }
-      if (!trims.length) { throw new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную'); }
+      /* Гибрид, которого на KBB нет отдельной моделью (Sienna и Venza с 2021 года бывают только гибридом): берём саму модель. */
+      var hybridNote = '';
+      if (!trims.length && fallback) { trims = fallback.trims; modelSlug = fallback.slug; hybridNote = ' (на KBB гибрид — без отдельной модели, взята ' + fallback.slug + ')'; }
+      if (!trims.length) {
+        var notFound = new Error('на KBB не нашлось комплектаций (пробовал: ' + models.join(', ') + ') — впишите KBB вручную');
+        notFound.manual = '/' + slugOf(car.mk) + '/' + (models.filter(function (m) { return m.indexOf('hybrid') < 0; })[0] || md) + '/' + car.y + '/' + query;
+        throw notFound;
+      }
       var trim = pickTrim(trims, car.t);
       var byDefault = !trim;
       if (byDefault) { trim = baseTrim(trims); }
-      var trimLabel = trim.name + (byDefault ? ' (комплектация по умолчанию — у лота «' + (car.t || '?') + '», проверьте)' : '');
+      var trimLabel = trim.name + hybridNote + (byDefault ? ' (комплектация по умолчанию — у лота «' + (car.t || '?') + '», проверьте)' : '');
       /* Страница цены: пробуем несколько адресов, сохраняем только ту, где есть Private Party Good для пробега лота. */
       var base = '/' + slugOf(car.mk) + '/' + modelSlug + '/' + car.y + '/' + slugOf(trim.name) + '/';
       var tail = 'mileage=' + car.mi + '&zipcode=92620';
@@ -435,6 +514,7 @@
           done.push(labelOf(current) + ' → ' + state.pending.trim + ': $' + shownPrice.toLocaleString('en-US'));
         } else {
           failed.push(labelOf(current) + ': ' + state.pending.trim + ' — на странице KBB нет Private Party для ' + current.mi + ' миль');
+          if (!state.manual) { state.manual = { car: current, path: location.pathname + location.search }; }
         }
         state.pending = null;
         state.i += 1;
@@ -452,7 +532,10 @@
             return;
           }
           done.push(labelOf(car) + ' → ' + result);
-        } catch (e) { failed.push(labelOf(car) + ': ' + e.message); }
+        } catch (e) {
+          failed.push(labelOf(car) + ': ' + e.message);
+          if (!state.manual) { state.manual = { car: car, path: e.manual || ('/' + slugOf(car.mk) + '/' + slugOf(car.md).split('-')[0] + '/' + car.y + '/?intent=trade-in-sell&mileage=' + car.mi + '&zipcode=92620') }; }
+        }
         if (state.i < cars.length - 1) { await pause(2500 + Math.random() * 2000); }
       }
       say('KBB готово: ' + done.length + ' из ' + cars.length + '. Вернитесь в окно программы — цены уже там.' + (failed.length ? ' Не получилось: ' + failed.join('; ') : ''), 15000);
@@ -465,7 +548,15 @@
       rep.download = 'KBB_report_' + stamp + '.html';
       document.body.appendChild(rep);
       rep.click();
-      /* Готово — вкладка KBB закрывается сама (через 4 секунды, чтобы файлы успели сохраниться). */
+      /* Не нашлось хотя бы для одной машины — вкладку НЕ закрываем: открываем страницу KBB этой машины (модель, год, пробег),
+         сверху — подсказка, что выбрать, чтобы посчитать руками. Всё нашлось — вкладка закрывается сама (через 4 секунды). */
+      if (state.manual) {
+        var fix = state.manual;
+        try { sessionStorage.setItem('la-kbb-manual', JSON.stringify({ car: labelOf(fix.car) + (fix.car.t ? ' ' + fix.car.t : ''), mi: fix.car.mi, failed: failed })); } catch (e) { void e; }
+        window.name = '';
+        setTimeout(function () { if (location.pathname + location.search !== fix.path) { location.href = fix.path; } else { laManualBanner(); } }, 4000);
+        return;
+      }
       setTimeout(function () {
         if (window.lotAnalyzerAuto && window.chrome && chrome.runtime && chrome.runtime.id) { chrome.runtime.sendMessage({ type: 'close' }); } else { window.close(); }
       }, 4000);

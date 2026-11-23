@@ -327,7 +327,7 @@ def attach(rows: list[dict], costs: dict, now: float | None = None, src: Source 
     listings = load(src)["listings"]
     p = src.prefix
     for row in rows:
-        row[f"{p}_median_usd"] = row[f"{p}_n"] = row[f"{p}_note"] = ""
+        row[f"{p}_median_usd"] = row[f"{p}_n"] = row[f"{p}_note"] = row[f"{p}_links"] = ""
         if src is not FB:
             row[f"{p}_imv_usd"] = row[f"{p}_days"] = ""
         if not listings or not row.get("model"):
@@ -351,3 +351,19 @@ def attach(rows: list[dict], costs: dict, now: float | None = None, src: Source 
                 row[f"{p}_days"] = f"{statistics.median(days):.0f}"
                 note += f"; в продаже ~{statistics.median(days):.0f} дн."
         row[f"{p}_note"] = note + f"; {src.agent} {time.strftime('%m/%d', time.localtime(newest))})"
+        row[f"{p}_links"] = json.dumps(links(row, found), ensure_ascii=False)
+
+
+def links(row: dict, found: list[dict], limit: int = 8) -> list[dict]:
+    """Объявления-конкуренты для окна (номера 1, 2, 3 … — каждый открывает своё объявление): ближе по пробегу и году — первыми."""
+    miles, year = _num(row.get("odometer_miles")), _num(row.get("year"))
+    near = sorted(found, key=lambda x: (abs(int(x.get("miles") or miles) - miles), abs(int(x["year"]) - year), x["price"]))
+    out = []
+    for x in near[:limit]:
+        parts = [f"{x['year']} {x.get('make', '')} {x.get('model', '')} {x.get('trim', '')}".replace("  ", " ").strip(),
+                 f"{int(x['miles']):,} mi" if x.get("miles") else "", f"${x['price']:,}",
+                 f"IMV ${int(x['imv']):,}" if x.get("imv") else "", f"{x['deal']} deal" if x.get("deal") else "",
+                 f"{x['days']} дн." if x.get("days") else "", x.get("city", ""), "дилер" if x.get("seller") == "dealer" else "частник"]
+        url = str(x.get("url") or "")
+        out.append({"u": url if url.startswith(("https://", "http://")) else "", "t": " · ".join(p for p in parts if p)})
+    return out
