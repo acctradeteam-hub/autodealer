@@ -685,6 +685,93 @@ class AgentAutoTest(unittest.TestCase):
         self.assertIn("muse\\.ai", auto)
 
 
+class ResaleTest(unittest.TestCase):
+    """«🔁 Перепродажи»: машины, купленные на торгах CarMax, в выгрузке поиска Manheim — кто купил, где выставил, наценка (синтетика)."""
+
+    HEADER = ("Inventory,Vin,Year,Make,Model,Trim,Interior Color,Exterior Color,Odometer Value,Odometer Units,Drivetrain,"
+              "Transmission Type,Engine Type,MMR,Condition Report Grade,Seller Name,Auction House,Pickup Location,Starts At,"
+              "Ends At,Lane,Run,Bid Amount,Buy Now Price,Event Sale Name,Seller Comments,Status,Notes")
+
+    def setUp(self) -> None:
+        from unittest import mock
+        from lot_analyzer import resale, results
+        self.rs, self.results = resale, results
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patches = [mock.patch.object(resale, "PATH", self.tmp / "resale.json"),
+                        mock.patch.object(results, "HISTORY_PATH", self.tmp / "auction_results.csv")]
+        for x in self.patches:
+            x.start()
+        self.dl = self.tmp / "dl"
+        self.dl.mkdir()
+        rec = lambda vin, date, auction, price, buyer, outcome="Sold": {
+            "key": f"{vin}-{date}-{auction}", "date": date, "auction": auction, "code": "", "lot": "A/3", "vin": vin, "year": "2018",
+            "make": "Toyota", "model": "Camry XLE", "miles": "179545", "cr": "", "mmr": "", "outcome": outcome, "price": price,
+            "source": "auction_all_x.csv", "remarks": "", "kbb": "", "buyer": buyer}
+        self.history = {r["key"]: r for r in (
+            rec("4T1B11HK9JU000001", "2026-11-16", "CarMax Oceanside", "8250", "WILLYS AUTO LLC"),
+            rec("5TDXK3DC1FS000002", "2026-11-16", "CarMax Murrieta", "7400", "JS AUTO SALES LLC"),
+            rec("JTDKN3DU0C5000003", "2026-11-16", "CarMax Murrieta", "3600", "WILLYS AUTO LLC"),       # на Manheim — раньше покупки
+            rec("5TDXK3DC1FS000002", "2026-11-27", "Manheim Riverside", "9300", ""),                   # продана на Manheim потом
+            rec("1HGCR2F35GA000004", "2026-11-17", "CarMax Pleasanton", "3500", "WILLYS AUTO LLC"))}  # на Manheim не нашлась
+        rows = [
+            'Simulcast,4T1B11HK9JU000001,2018,Toyota,Camry,XLE,Black,White,179900,mi,FWD,Automatic,"4 Cylinder",9800,3.1,'
+            '"Willys Auto, LLC","Manheim Southern California","CA - Manheim Southern California",2026-11-26T16:00:00Z,2026-11-27T06:59:59Z,7,41,,,,,Live,',
+            'Timed Sale,4T1B11HK9JU000001,2018,Toyota,Camry,XLE,Black,White,179900,mi,FWD,Automatic,"4 Cylinder",9800,3.1,'
+            '"Willys Auto, LLC","Manheim Southern California","CA - Manheim Southern California",2026-11-20T07:00:00Z,2026-11-28T07:00:00Z,,,9100,9950,,,Live,',
+            'Simulcast,5TDXK3DC1FS000002,2015,Toyota,Sienna,SE,Gray,Silver,219500,mi,FWD,Automatic,"6 Cylinder",8900,2.4,'
+            '"Fast Lane Wholesale","Manheim Riverside","CA - Manheim Riverside",2026-11-27T17:00:00Z,2026-11-28T06:59:59Z,3,12,,,,,Live,',
+            'Simulcast,JTDKN3DU0C5000003,2012,Toyota,Prius,Three,Gray,Blue,219000,mi,FWD,Automatic,"4 Cylinder",5200,2.0,'
+            '"Someone","Manheim California","CA - Manheim California",2026-11-02T16:00:00Z,2026-11-03T06:59:59Z,2,5,,,,,Live,',
+            'Simulcast,2T1BURHE0JC000099,2019,Toyota,Corolla,LE,Black,White,60000,mi,FWD,Automatic,"4 Cylinder",12000,,'
+            '"Other","Manheim California","CA - Manheim California",2026-11-26T16:00:00Z,2026-11-27T06:59:59Z,8,40,,,,,Live,']
+        self.export = self.dl / "manheim_search_1124.csv"
+        self.export.write_bytes(("\r".join([self.HEADER] + rows) + "\r").encode("utf-8"))
+        self.now = dt.datetime(2026, 11, 24, 12, 0).timestamp()
+        os.utime(self.export, (self.now, self.now))
+
+    def tearDown(self) -> None:
+        for x in self.patches:
+            x.stop()
+
+    def test_match_markup_and_page(self) -> None:
+        rs = self.rs
+        sm = rs.refresh([self.dl], self.history, now=self.now)
+        self.assertEqual((sm["cars"], sm["files"], sm["buys"]), (2, 1, 4))
+        found = {r["vin"]: r for r in rs.rows(rs.load())}
+        self.assertEqual(set(found), {"4T1B11HK9JU000001", "5TDXK3DC1FS000002"})   # Prius — на Manheim раньше покупки; Corolla — не с CarMax
+        camry = found["4T1B11HK9JU000001"]
+        self.assertTrue(camry["self"])                                        # «Willys Auto, LLC» на Manheim = WILLYS AUTO LLC на CarMax
+        self.assertEqual((camry["ask"], camry["ask_kind"], camry["markup"], camry["days"]), (9950, "Buy Now", 1700, 8))
+        self.assertEqual(len(camry["seen"]), 2)                               # живые торги и OVE
+        sienna = found["5TDXK3DC1FS000002"]
+        self.assertEqual((sienna["ask_kind"], sienna["markup"], sienna["self"]), ("продана", 1900, False))   # продана на Manheim $9,300
+        self.assertEqual(sienna["sellers"], ["Fast Lane Wholesale"])
+        willys = next(b for b in sm["by_buyer"] if b["buyer"] == "WILLYS AUTO LLC")
+        self.assertEqual((willys["found"], willys["bought"], willys["self"], willys["markup"]), (1, 3, 1, 1700))
+        # тот же файл второй раз не читается; новые итоги CarMax — сверка заново
+        mtime = (self.tmp / "resale.json").stat().st_mtime_ns
+        rs.refresh([self.dl], self.history, now=self.now)
+        self.assertEqual((self.tmp / "resale.json").stat().st_mtime_ns, mtime)
+        page = rs.page(rs.load(), rs.carmax_buys(self.history))
+        for part in ("Перепродажи", "WILLYS AUTO LLC", "сам на Manheim", "Buy Now $9,950", "+$1,700", "Fast Lane Wholesale", "16.11 Oceanside"):
+            self.assertIn(part, page)
+
+    def test_window_and_endpoint(self) -> None:
+        self.results.save_history(self.history)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.dl], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            page = urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/resale").read().decode("utf-8")
+        finally:
+            server.shutdown()
+        self.assertIn("WILLYS AUTO LLC", page)
+        self.assertIn("4T1B11HK9JU000001", page)
+        for part in ("function drawResale(d)", '<div id="rsl"', 'href="/resale"', "Перепродажи"):
+            self.assertIn(part, app.PAGE)
+        empty = self.rs.page({"files": {}, "cars": {}, "listed": 0}, {})
+        self.assertIn("Совпадений пока нет", empty)
+
+
 class LiquidityTest(unittest.TestCase):
     """Ликвидность лота: ваши итоги торгов по модели + MMR ÷ KBB; MMR можно вписать в окне."""
 

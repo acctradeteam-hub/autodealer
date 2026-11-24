@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs, transport_cost
 from .normalize import parse_money
 from .inspection import render_html
-from . import agent_auto, cargurus, fb_market, liquidity, vin_features
+from . import agent_auto, cargurus, fb_market, liquidity, resale, vin_features
 from . import analytics, carfax, inbox, inspection, kbb_learning, kbb_page, photo_wait, voice, review, schedule, kbb_site, manheim_csv, notes, popular, remote, results
 from .pages import read_page
 from .parsers import parse_page
@@ -49,7 +49,7 @@ GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
 EXTENSION_VERSION = "2.32"
-PROGRAM_VERSION = "2026-11-23.6"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+PROGRAM_VERSION = "2026-11-24.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -1965,7 +1965,9 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                            "kbb_week": {**cached("kbb_week", 120, lambda: kbb_week_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""))), "status": KBB_WEEK_STATUS},
                            "fb_market": cached("fb_market", 60, lambda: {k: v for k, v in fb_market.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now).items() if k in ("due", "total", "last_answer", "listings")}),
                            "cargurus": cached("cargurus", 60, lambda: {k: v for k, v in cargurus.task(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now).items() if k in ("due", "total", "last_answer", "listings")}),
-                           "agents": agent_auto.summary(),          # «🤖 Muse сам» / Claude в Chrome: идёт ли задание, последний итог
+                           "agents": agent_auto.summary(),
+                           # «🔁 Перепродажи»: машины, купленные на CarMax, в выгрузках поиска Manheim (resale.py)
+                           "resale": cached("resale:" + resale.stamp(folders), 600, lambda: _safe("Перепродажи", resale.refresh, folders, results.load_history())),          # «🤖 Muse сам» / Claude в Chrome: идёт ли задание, последний итог
                            "carfax_auto": cached("carfax_auto", 60, lambda: carfax_auto_summary(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now)),
                            "win_level": cached("win_level", 300, lambda: review.win_level(review.load(), results.load_history())),
                            "results_stats": {k: {"n": v["n"], "median": v["median"], "enough": v["enough"]}
@@ -2014,6 +2016,10 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     self._send(path.read_bytes(), "application/pdf")
                 else:
                     self._send(b"not found", "text/plain; charset=utf-8", status=404)
+            elif url.path == "/resale":                # «🔁 Перепродажи»: кто купил на CarMax и выставил на Manheim, наценка
+                history = results.load_history()
+                resale.refresh(folders, history)
+                self._send(resale.page(resale.load(), resale.carmax_buys(history)).encode("utf-8"), "text/html; charset=utf-8")
             elif url.path in ("/agent/cg", "/agent/fb"):   # Claude в Chrome (ярлык по расписанию): задание + поле ответа — agent_auto.py
                 s = url.path[-2:]
                 costs_now = load_costs(costs_path)
@@ -2749,6 +2755,7 @@ def main(argv: list[str] | None = None) -> int:
                    if p.is_file() and p.suffix.lower() in (".csv", ".txt") and re.search(r"cargurus|fb_market", p.name, re.I)
                    and p.stat().st_mtime > time.time() - 72 * 3600]
                 + ([ERRORS_PATH] if ERRORS_PATH.exists() and ERRORS_PATH.stat().st_mtime > time.time() - 72 * 3600 else [])   # журнал ошибок
+                + ([resale.PATH] if resale.PATH.exists() and resale.PATH.stat().st_mtime > time.time() - 72 * 3600 else [])   # перепродажи (сверка)
                 # + полные отчёты Carfax (data/carfax/text) — копия в вашем закрытом репозитории
                 + [p for p in (sorted(carfax.TEXT_DIR.glob("*.txt.gz")) if carfax.TEXT_DIR.is_dir() else []) if p.stat().st_mtime > time.time() - 72 * 3600])
     address = f"http://127.0.0.1:{args.port}"
@@ -2855,7 +2862,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <form onsubmit="event.preventDefault();saveLink()" style="margin-top:8px"><label>Аукцион<input id="la" placeholder="ACV"></label>
 <label>Ссылка из адресной строки<input id="lu" style="min-width:420px" placeholder="https://app.acvauctions.com/marketplace?..."></label><button>Запомнить</button></form></details>
 </div>
-<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="joinst" class="muted" style="margin:2px 0 4px"></div><div id="kbbweek" class="muted" style="margin:2px 0 4px"></div><div id="cfauto" class="muted" style="margin:2px 0 4px"></div><div id="fbm" class="muted" style="margin:2px 0 4px"></div><div id="cgm" class="muted" style="margin:2px 0 4px"></div><div id="mktbar" class="mktbar" hidden></div><div id="fbpanel" class="fbpanel" hidden></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
+<div class="card"><div id="places" class="tabs"><input id="picked" type="checkbox" hidden></div><div id="days" class="tabs"></div><div id="auto" class="muted" style="margin:2px 0 4px"></div><div id="joinst" class="muted" style="margin:2px 0 4px"></div><div id="kbbweek" class="muted" style="margin:2px 0 4px"></div><div id="cfauto" class="muted" style="margin:2px 0 4px"></div><div id="fbm" class="muted" style="margin:2px 0 4px"></div><div id="cgm" class="muted" style="margin:2px 0 4px"></div><div id="rsl" class="muted" style="margin:2px 0 4px"></div><div id="mktbar" class="mktbar" hidden></div><div id="fbpanel" class="fbpanel" hidden></div><div id="tabs" class="tabs"></div><div id="filters" class="muted" style="margin:4px 0"></div><div id="stat" class="muted">—</div><div class="wrap"><table><thead><tr>
 <th>Фото</th><th style="width:290px">Машина</th><th>Пробег</th><th title="Ваша оценка машины на осмотре — из приложения «Аукцион: заметки» (1–5 звёзд), и решение «Беру» / «Не беру»">Моя оценка</th><th title="Ваша ставка (proxy bid): впишите — сохранится, попадёт в заметку на CarMax («MP …»), прибыль при ней — под полем. Ниже — текущая ставка на сайте">Наша ставка</th><th class="kbbcell">KBB</th><th class="w110 sorth" onclick="sortHead()" title="Средняя цена покупки на аукционе: за сколько такая машина обычно уходит на этом аукционе (медиана по итогам торгов). Нажмите — сортировка по ней: от низкой к высокой, ещё раз — наоборот">Средняя покупка<br>на аукционе <span id="sortmark">⇅</span></th><th class="w110 sorth" onclick="sortProfit()" title="Нажмите — сортировка по прибыли при покупке по средней цене: сверху самая большая, одним списком; ещё раз — наоборот">Прибыль при покупке<br>по средней цене <span id="sortmark2">⇅</span></th><th>Потолок</th><th style="width:230px">Вердикт</th><th>Торги / итог</th></tr></thead>
 <tbody id="rows"></tbody></table></div></div>
 <div class="card muted" id="files"></div>
@@ -3059,7 +3066,7 @@ const CF_TEXT={sent:'⏳ Carfax: открываю Carfax Online…',opened:'⏳ 
 function cfStatus(x){const s=CF[x.vin];if(!s||Date.now()/1000-s.at>3600||(s.status==='done'&&x.carfax))return'';
  return `<div class="${/^(login|manual|error)$/.test(s.status)?'neg':'muted'}">${esc(CF_TEXT[s.status]||s.status)}${s.note?': '+esc(s.note):''}</div>`}
 function render(d){if(d.version&&d.version!=='__PROG_V__'){location.reload();return}
- {const e=$('progerr');if(e){const list=d.errors||[];e.hidden=!list.length;e.innerHTML=list.length?`⚠ <b>Часть расчёта не сработала</b> — программа работает дальше без неё: ${list.map(esc).join(' · ')}. Подробности — в data/errors.log (уходит Claude при «Отправке Claude»).`:''}}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);drawKbbWeek(d);drawCarfaxAuto(d);drawFb(d);drawMkt();setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
+ {const e=$('progerr');if(e){const list=d.errors||[];e.hidden=!list.length;e.innerHTML=list.length?`⚠ <b>Часть расчёта не сработала</b> — программа работает дальше без неё: ${list.map(esc).join(' · ')}. Подробности — в data/errors.log (уходит Claude при «Отправке Claude»).`:''}}if(d.carfax_status){for(const k in d.carfax_status)if(!CF[k]||CF[k].at<=d.carfax_status[k].at)CF[k]=d.carfax_status[k]}shown=d.rows;drawDays(d);drawKbbWeek(d);drawCarfaxAuto(d);drawFb(d);drawMkt();drawResale(d);setTimeout(showFilters,0);const gt=d.group_total||{};if($('sortmark'))$('sortmark').textContent=sortBy==='market'?'↑':sortBy==='market_desc'?'↓':'⇅';if($('sortmark2'))$('sortmark2').textContent=sortBy==='profit'?'↓':sortBy==='profit_asc'?'↑':'⇅';
 if(nearOn&&d.near){const want=(d.near.places||[]).map(([p])=>p).join('|');if(want&&want!==place){setPlace(want,true);return}}
 {const have=new Set((d.places||[]).map(([p])=>p)),keep=placeList().filter(p=>have.has(p));if(place&&have.size&&keep.join('|')!==place){setPlace(keep.join('|'),nearOn);return}}
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button> `+nearBtn(d)+
@@ -3161,6 +3168,12 @@ function carfaxLogin(){if(!hasExt()){toast('Войдите на Carfax Online в
 const SRC={fb:{key:'fb_market',title:'🛒 Facebook Marketplace (Muse)',agent:'Muse',task:'📋 Задание для Muse',ans:'📥 Ответ Muse',file:'fb_market'},
  cg:{key:'cargurus',title:'🅲 CarGurus (Claude в Chrome)',agent:'Claude в Chrome (вкладка CarGurus)',task:'📋 Задание для CarGurus',ans:'📥 Ответ CarGurus',file:'cargurus'}};
 const TASKS={};
+/* «🔁 Перепродажи»: машины с торгов CarMax в выгрузках Manheim — кто купил, где выставил, наценка (страница /resale). */
+function drawResale(d){const e=$('rsl'),r=d.resale;if(!e||!r)return;const link=t=>` · <a href="/resale" target="_blank" rel="noopener">${t} ↗</a>`;
+ if(r.cars){e.innerHTML=`🔁 <b>Перепродажи:</b> на Manheim нашлось машин с торгов CarMax: ${r.cars}`+(r.by_buyer.length?` (${r.by_buyer.slice(0,4).map(b=>esc(b.buyer)+' — '+b.found).join(', ')})`:'')+
+  (r.markup!=null?` · наценка ≈ ${money(r.markup)}`:'')+link('открыть');return}
+ e.innerHTML=r.files?`🔁 Перепродажи: в выгрузках Manheim (${r.files}) машин с торгов CarMax пока нет`+link('подробнее'):
+  `🔁 Перепродажи: выгрузите поиск Manheim в CSV (кнопка экспорта в результатах поиска) в «Загрузки» — программа сверит VIN с покупками на CarMax`+link('как')}
 /* «🛒 Рынок» у машины: отобранные машины (помнит этот браузер) — задание для Muse и CarGurus только по ним. */
 let MKT=[],MKT_CAR={};try{MKT=JSON.parse(localStorage.getItem('la-mkt')||'[]');MKT_CAR=JSON.parse(localStorage.getItem('la-mkt-car')||'{}')}catch(e){}
 function mktSave(){try{localStorage.setItem('la-mkt',JSON.stringify(MKT));localStorage.setItem('la-mkt-car',JSON.stringify(MKT_CAR))}catch(e){}drawMkt()}
