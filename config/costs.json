@@ -212,6 +212,8 @@
   "inspect_major_defects": true,
   "_carfax_auto": "Carfax сам: каждой машине, у которой есть KBB (вручную, пачкой, «KBB на неделю» — при любой цене), расширение по очереди открывает отчёт на Carfax Online (по одной, в фоне, не больше per_day за сутки). on: false — выключить.",
   "carfax_auto": {"on": true, "per_day": 300},
+  "_followup": "Повторный Carfax (followup.py): машины, купленные на CarMax этими дилерами, через after_days дней после покупки — Carfax ещё раз (очередью «Carfax сам», когда ваши машины обработаны), чтобы увидеть, что с ними стало: аукцион, продажа, регистрация, экспорт. since_days — брать покупки не старше; per_day — не больше повторных отчётов в сутки. Список дилеров можно менять на странице /followup.",
+  "followup": {"buyers": ["WILLYS AUTO", "JS AUTO SALES", "ARICAL AUTOS", "AUTO SALES EXIM"], "after_days": 21, "since_days": 45, "per_day": 20},
   "_no_photos": "Лоты без фото (заметка «No pictures», нулевые счётчики фото CarMax, hasImages=false у Manheim): по опыту владельца — конкурентов меньше, цена ниже (Civic 2015: закуп $4,500, продажа $8,300 за 5 дней). no_photo_market_discount — насколько ниже рынок для таких лотов; 0, пока результаты торгов это не подтвердят (признак копится в истории).",
   "no_photo_market_discount": 0.0,
   "_mmr_check": "Предупреждать, если потолок выше MMR × high или ниже MMR × low.",

@@ -772,6 +772,100 @@ class ResaleTest(unittest.TestCase):
         self.assertIn("Совпадений пока нет", empty)
 
 
+class FollowupTest(unittest.TestCase):
+    """«🔎 Повторный Carfax»: машины дилеров из списка через 21 день после CarMax — Carfax ещё раз, что стало после продажи (синтетика)."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+        from lot_analyzer import followup, results
+        self.fu, self.results = followup, results
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patches = [mock.patch.object(followup, "PATH", self.tmp / "followup.json"), mock.patch.object(carfax, "PATH", self.tmp / "carfax.json"),
+                        mock.patch.object(carfax, "TEXT_DIR", self.tmp / "text"), mock.patch.object(results, "HISTORY_PATH", self.tmp / "results.csv"),
+                        mock.patch.object(app, "CARFAX_AUTO_PATH", self.tmp / "carfax_auto.json"),
+                        mock.patch.object(app, "CARFAX_LOGIN_PATH", self.tmp / "carfax_login.json")]
+        for x in self.patches:
+            x.start()
+        app.CARFAX_STATUS.clear()
+        app.CARFAX_AUTO_RECENT.clear()
+        today = dt.date.today()
+        self.d = {k: (today - dt.timedelta(days=n)).isoformat() for k, n in (("A", 22), ("B", 4), ("C", 22), ("D", 60))}
+        rec = lambda vin, date, buyer: {"key": vin, "date": date, "auction": "CarMax Murrieta", "code": "", "lot": "A/7", "vin": vin, "year": "2015",
+                                        "make": "Toyota", "model": "Sienna SE", "miles": "198500", "cr": "", "mmr": "", "outcome": "Sold",
+                                        "price": "7400", "source": "x", "remarks": "", "kbb": "", "buyer": buyer}
+        self.history = {r["key"]: r for r in (rec("5TDXK3DC1FS00000A", self.d["A"], "WILLYS AUTO LLC"),
+                                               rec("5TDXK3DC1FS00000B", self.d["B"], "JS AUTO SALES LLC"),
+                                               rec("5TDXK3DC1FS00000C", self.d["C"], "OTHER MOTORS LLC"),          # не в списке
+                                               rec("5TDXK3DC1FS00000D", self.d["D"], "WILLYS AUTO LLC"))}          # слишком давно
+        self.costs = load_costs(COSTS)
+
+    def tearDown(self) -> None:
+        for x in self.patches:
+            x.stop()
+        app.CARFAX_STATUS.clear()
+        app.CARFAX_AUTO_RECENT.clear()
+
+    def report(self, carmax_day: str) -> str:
+        d0 = dt.date.fromisoformat(carmax_day)
+        f = lambda n: (d0 + dt.timedelta(days=n)).strftime("%m/%d/%Y")
+        return ("CARFAX Vehicle History Report for this 2015 Toyota Sienna SE. " * 8 + "\nDetailed History\n"
+                f"{f(-200)}  150,000  Toyota of Riverside  Riverside, CA  Vehicle serviced - Oil and filter changed\n"
+                f"{f(0)}  198,500  CarMax Auctions  Murrieta, CA  Sold at auction\n"
+                f"{f(9)}  198,520  Manheim Riverside  Riverside, CA  Offered for sale at auction\n"
+                f"{f(18)}  198,600  California Motor Vehicle Dept.  Riverside, CA  Title issued or updated - New owner reported\n")
+
+    def test_queue_result_reminder(self) -> None:
+        fu = self.fu
+        sm = fu.refresh(self.history, self.costs)
+        self.assertEqual((sm["cars"], sm["due"], sm["later"], sm["done"]), (2, 1, 1, 0))       # C — не наш дилер, D — давно
+        self.assertEqual(sm["next"], (dt.date.fromisoformat(self.d["B"]) + dt.timedelta(days=21)).isoformat())
+        self.results.save_history(self.history)
+        nxt = app.carfax_next([], self.costs)                       # ваших машин в очереди нет — повторный Carfax
+        self.assertEqual((nxt["vin"], nxt.get("followup")), ("5TDXK3DC1FS00000A", True))
+        self.assertIn("повторно", nxt["car"])
+        self.assertEqual(app.carfax_next([], self.costs)["vin"], "")             # по одной, с паузой
+        self.assertIsNotNone(carfax.save("5TDXK3DC1FS00000A", "https://www.carfaxonline.com/x", self.report(self.d["A"])))
+        sm = fu.refresh(self.history, self.costs)
+        self.assertEqual((sm["done"], sm["new"]), (1, 1))
+        car = fu.load()["cars"]["5TDXK3DC1FS00000A"]
+        self.assertEqual(len(car["events"]), 2)                                  # сама продажа на CarMax и старый сервис — не считаются
+        self.assertIn("аукцион Manheim Riverside", car["verdict"])
+        self.assertIn("новый владелец (CA)", car["verdict"])
+        self.assertIn("аукцион Manheim Riverside", sm["latest"][0]["verdict"])
+        page = fu.page(fu.load(), self.costs)
+        for part in ("WILLYS AUTO LLC", "Ждут проверки (1)", "JS AUTO SALES", "аукцион Manheim Riverside", "/carfax/5TDXK3DC1FS00000A", "🔁 ещё раз"):
+            self.assertIn(part, page)
+        fu.mark_viewed()
+        self.assertEqual(fu.refresh(self.history, self.costs)["new"], 0)
+        self.assertTrue(fu.again("5TDXK3DC1FS00000A"))
+        self.assertEqual(fu.refresh(self.history, self.costs)["due"], 1)
+        self.assertEqual(fu.set_buyers(remove="JS Auto Sales, LLC", costs=self.costs), ["WILLYS AUTO", "ARICAL AUTOS", "AUTO SALES EXIM"])
+        self.assertIn("DAMAS INC", fu.set_buyers(add="Damas Inc", costs=self.costs))
+
+    def test_endpoint_and_window(self) -> None:
+        self.results.save_history(self.history)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.tmp], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def post(body: dict, la: bool = True) -> dict:
+            req = urllib.request.Request(base + "/api/followup", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json", **({"X-LA": "1"} if la else {})})
+            return json.loads(urllib.request.urlopen(req).read())
+        try:
+            page = urllib.request.urlopen(base + "/followup").read().decode("utf-8")
+            self.assertIn("Повторный Carfax", page)
+            self.assertIn("5TDXK3DC1FS00000A", page)
+            with self.assertRaises(urllib.error.HTTPError):
+                post({"add": "DAMAS INC"}, la=False)
+            self.assertIn("DAMAS INC", post({"add": "DAMAS INC"})["buyers"])
+        finally:
+            server.shutdown()
+        self.assertEqual(self.costs["followup"]["after_days"], 21)
+        for part in ("function drawFollowup(d)", '<div id="fup"', 'href="/followup"', "Повторный Carfax"):
+            self.assertIn(part, app.PAGE)
+
+
 class LiquidityTest(unittest.TestCase):
     """Ликвидность лота: ваши итоги торгов по модели + MMR ÷ KBB; MMR можно вписать в окне."""
 
