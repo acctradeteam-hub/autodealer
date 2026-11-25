@@ -866,6 +866,94 @@ class FollowupTest(unittest.TestCase):
             self.assertIn(part, app.PAGE)
 
 
+class FlipTest(unittest.TestCase):
+    """«🔁 Опт на Manheim»: MMR машин CarMax по выгрузкам Manheim и потолок перепродажи на Manheim (синтетика)."""
+
+    HEADER = ResaleTest.HEADER
+
+    def setUp(self) -> None:
+        from unittest import mock
+        from lot_analyzer import flip, resale, results
+        self.fl, self.results = flip, results
+        self.tmp = Path(tempfile.mkdtemp())
+        self.patches = [mock.patch.object(flip, "OBS_PATH", self.tmp / "mmr_obs.json"), mock.patch.object(resale, "PATH", self.tmp / "resale.json"),
+                        mock.patch.object(results, "HISTORY_PATH", self.tmp / "results.csv")]
+        for x in self.patches:
+            x.start()
+        self.dl = self.tmp / "dl"
+        self.dl.mkdir()
+        rows = []
+        for i, (miles, mmr) in enumerate(((60000, 13000), (80000, 12000), (100000, 11000), (120000, 10000), (140000, 9000), (90000, 11600))):
+            rows.append(f'Simulcast,2T1BURHE0HC00{i:04d},2017,Toyota,Corolla,LE,Black,White,{miles},mi,FWD,Automatic,"4 Cylinder",{mmr},3.5,'
+                        f'"Dealer {i}","Manheim California","CA - Manheim California",2026-11-26T16:00:00Z,2026-11-27T06:59:59Z,8,{i + 1},,,,,Live,')
+        (self.dl / "manheim_export.csv").write_bytes(("\r".join([self.HEADER] + rows) + "\r").encode("utf-8"))
+        self.costs = load_costs(COSTS)
+
+    def tearDown(self) -> None:
+        for x in self.patches:
+            x.stop()
+
+    def test_estimate_and_flip(self) -> None:
+        fl = self.fl
+        obs = fl.refresh_obs([self.dl])
+        self.assertEqual(len(obs["cars"]), 6)
+        idx = fl.index(obs)
+        est, n, how = fl.estimate("2017", "Toyota", "Corolla LE", "LE", "100000", idx)
+        self.assertEqual((n, how), (6, "тот же год и комплектация"))
+        self.assertAlmostEqual(est, 11000, delta=600)
+        self.assertLess(fl.estimate("2017", "Toyota", "Corolla", "", "140000", idx)[0], fl.estimate("2017", "Toyota", "Corolla", "", "60000", idx)[0])
+        self.assertIsNone(fl.estimate("2017", "Toyota", "Corolla", "", "1", idx)[0])           # пробег не указан
+        self.assertIsNone(fl.estimate("2017", "Honda", "Civic", "", "90000", idx)[0])          # похожих нет
+        self.assertGreater(fl.estimate("2018", "Toyota", "Corolla", "SE", "100000", idx)[0], est)   # год ±1: на год новее — дороже
+        f = fl.flip(10000, "CarMax", self.costs, {}, price=8000)
+        self.assertEqual((f["ratio"], f["proceeds"], f["costs"]["Сбор продавца Manheim"]), (1.0, 10000, 275))
+        self.assertEqual(f["profit"], round(10000 - sum(f["costs"].values()) - 8000 - f["buy_fee"]))
+        g = fl.flip(10000, "CarMax", self.costs, {}, price=f["ceiling"])
+        self.assertGreaterEqual(g["profit"], 500 - 25)                                            # потолок — прибыль около $500
+        stats = {"Manheim California": {"bands": [[5000, 1.05], [10000, 0.99], [20000, 1.0]], "median": 1.0}}
+        self.assertEqual(fl.flip(8000, "CarMax", self.costs, stats)["ratio"], 0.99)               # «цена ÷ MMR» — по вашим итогам
+
+    def test_attach_backtest_page(self) -> None:
+        fl = self.fl
+        items = json.dumps([["Продажа", 14000], ["Ремонт (major engine defect)", -3000], ["Доставка с аукциона", -200]], ensure_ascii=False)
+        rows = [{"auction": "CarMax", "vin": "2T1BURHE0HC999991", "year": "2017", "make": "Toyota", "model": "Corolla", "trim": "LE",
+                 "odometer_miles": "100000", "market_estimate_usd": "8000", "calc_profit_items": "[]"},
+                {"auction": "CarMax", "vin": "2T1BURHE0HC999992", "year": "2017", "make": "Toyota", "model": "Corolla", "trim": "LE",
+                 "odometer_miles": "100000", "market_estimate_usd": "8000", "calc_profit_items": items},
+                {"auction": "CarMax", "vin": "2T1BURHE0HC999993", "year": "2017", "make": "Toyota", "model": "Corolla", "trim": "LE",
+                 "odometer_miles": "100000", "mmr_manual": "1", "mmr_adjusted_usd": "15000", "calc_profit_items": "[]"},
+                {"auction": "Manheim", "vin": "2T1BURHE0HC999994", "year": "2017", "make": "Toyota", "model": "Corolla", "odometer_miles": "100000"},
+                {"auction": "CarMax", "vin": "2T1BURHE0HC999995", "year": "2017", "make": "Toyota", "model": "Corolla", "trim": "LE",
+                 "odometer_miles": "100000", "market_estimate_usd": "8000", "calc_profit_items": "[]", "auction_notes": "Major transmission defect"}]
+        fl.attach(rows, self.costs, [self.dl], history={})
+        clean, recon, manual, manheim, notes = rows
+        self.assertIn("Ремонт по замечаниям CarMax $2,500", notes["flip_note"])                      # в расчёте ремонта нет — по замечаниям CarMax
+        self.assertTrue(clean["mmr_est_usd"] and clean["flip_ceiling_usd"] and clean["flip_profit_usd"])
+        self.assertAlmostEqual(int(clean["flip_ceiling_usd"]) - int(recon["flip_ceiling_usd"]), 3200, delta=100)   # ремонт и доставка — из расчёта (сбор CarMax ниже при меньшей цене)
+        self.assertIn("Ремонт по замечаниям CarMax $3,000", recon["flip_note"])
+        self.assertEqual(manual["flip_mmr_usd"], "15000")                                          # вписанный MMR главнее прикидки
+        self.assertIn("MMR вписан вами", manual["flip_note"])
+        self.assertEqual(manheim["flip_ceiling_usd"], "")                                          # только машины CarMax
+        today = dt.date.today().isoformat()
+        hist = {f"k{i}": {"key": f"k{i}", "date": today, "auction": "CarMax Chino", "vin": f"2T1BURHE0HC88888{i}", "year": "2017", "make": "Toyota",
+                          "model": "Corolla LE", "miles": "100000", "outcome": "Sold", "price": str(p), "buyer": "X", "lot": f"A/{i}"} for i, p in enumerate((7000, 9500, 12000, 4000))}
+        bt = fl.backtest(hist, self.costs, fl.load_obs())
+        self.assertEqual((bt["n"], bt["junk"], bt["ok"]), (3, 1, 1))                                 # $4,000 — дешевле половины MMR: не считаем
+        self.results.save_history(hist)
+        page = fl.page(hist, self.costs)
+        for part in ("Опт на Manheim", "есть ли смысл", "сбор продавца Manheim", "По площадкам CarMax", "Chino"):
+            self.assertIn(part, page)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([self.dl], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            self.assertIn("Опт на Manheim", urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/flip").read().decode("utf-8"))
+        finally:
+            server.shutdown()
+        self.assertEqual(self.costs["manheim_flip"]["min_profit_usd"], 500)
+        for part in ("function drawFlip(d)", '<div id="flp"', 'href="/flip"', "🔁 Manheim: до", "≈ MMR"):
+            self.assertIn(part, app.PAGE)
+
+
 class LiquidityTest(unittest.TestCase):
     """Ликвидность лота: ваши итоги торгов по модели + MMR ÷ KBB; MMR можно вписать в окне."""
 
