@@ -260,6 +260,26 @@ def matches(record: dict, row: dict[str, str], max_gap: int) -> bool:
     return abs(int(miles) - record["miles"]) <= max_gap
 
 
+class Index:
+    """Страницы KBB по VIN и по (год, марка): машине лота — только свои кандидаты. Раньше каждую машину сравнивали
+    со всеми страницами KBB подряд — 8,7 млн сравнений и 10 с на поиск по VIN за неделю. Ответ тот же: первая
+    подходящая страница в исходном порядке (свежие — первыми)."""
+
+    def __init__(self, records: list[dict]) -> None:
+        self.by_vin: dict[str, list] = {}
+        self.by_ym: dict[tuple, list] = {}
+        for i, rec in enumerate(records):
+            if rec.get("vin"):
+                self.by_vin.setdefault(rec["vin"], []).append((i, rec))
+            else:
+                self.by_ym.setdefault((str(rec.get("year", "")), rec.get("make", "")), []).append((i, rec))
+
+    def find(self, row: dict, max_gap: int) -> dict | None:
+        found = self.by_vin.get(row.get("vin") or "", []) + self.by_ym.get((str(row.get("year", "")), slug(row.get("make", ""))), [])
+        found.sort(key=lambda pair: pair[0])
+        return next((rec for _, rec in found if matches(rec, row, max_gap)), None)
+
+
 def describe(record: dict) -> str:
     text = f"{record['trim']}, {record['miles']:,} миль, ZIP {record['zip']}"
     return text + (f" ({record['note']})" if record.get("note") else "")

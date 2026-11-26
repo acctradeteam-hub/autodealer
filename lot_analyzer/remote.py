@@ -33,7 +33,7 @@ COOKIE = "la_auth"
 TOKEN_DAYS = 180
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
 # Кнопки окна, которые с телефона уходят расширению на Mac (те же, что окно на Mac шлёт расширению само).
-COMMANDS = {"auto-run", "kbbweek-run", "photos-start", "carfax-order", "join-run", "join-enable", "open-bg"}
+COMMANDS = {"auto-run", "kbbweek-run", "photos-start", "notes-bg", "carfax-order", "join-run", "join-enable", "open-bg"}
 OPEN_BG_PREFIXES = ("https://www.kbb.com/", "https://www.carmaxauctions.com/")
 # POST, которые окно на телефоне может делать: правки машин и ставок. Настройки и адреса расширения — только на Mac.
 REMOTE_POST = {"/api/bid", "/api/bids_ceiling", "/api/inspect", "/api/kbb", "/api/links", "/api/owners_scope", "/api/reject",

@@ -20,6 +20,7 @@ import re
 import statistics
 from pathlib import Path
 
+from . import csvcache
 from .market import HEAVY
 from .paths import DATA_DIR
 
@@ -50,22 +51,25 @@ def model_base(model: str) -> str:
 
 # ---------------------------------------------------------------- журнал KBB
 
-def load_kbb_log(path: Path | None = None) -> dict[str, dict]:
-    path = path or KBB_LOG_PATH
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8") as handle:
+def _read_kbb_log(path: Path) -> dict[str, dict]:
+    with path.open(encoding="utf-8", errors="replace") as handle:
         return {r["vin"]: {k: v or "" for k, v in r.items()} for r in csv.DictReader(handle) if r.get("vin")}
 
 
+def load_kbb_log(path: Path | None = None, shared: bool = False) -> dict[str, dict]:
+    """Журнал KBB. Разбирается один раз, пока файл не поменялся; файл пишется целиком (csvcache) — читатель больше
+    не видит полфайла (UnicodeDecodeError в /api/notes 25.11). shared=True — общий словарь, только для чтения."""
+    data = csvcache.load(path or KBB_LOG_PATH, _read_kbb_log)
+    return data if shared else csvcache.copy(data)
+
+
 def save_kbb_log(log: dict[str, dict], path: Path | None = None) -> None:
-    path = path or KBB_LOG_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    def fill(handle) -> None:
         writer = csv.DictWriter(handle, fieldnames=KBB_FIELDS, extrasaction="ignore")
         writer.writeheader()
         for rec in sorted(log.values(), key=lambda r: (r["date"], r["vin"])):
             writer.writerow(rec)
+    csvcache.write(path or KBB_LOG_PATH, fill)
 
 
 def record_kbb(rows: list[dict], log: dict[str, dict]) -> bool:
@@ -105,7 +109,9 @@ class OwnKbb:
         self.mmr_by_vin: dict[str, float] = {}
 
     def copy(self) -> "OwnKbb":
-        return self
+        clone = OwnKbb.__new__(OwnKbb)
+        clone.pairs, clone.mmr_by_vin = self.pairs, dict(self.mmr_by_vin)   # add_rows дописывает MMR — своя копия
+        return clone
 
     def add_rows(self, rows: list[dict]) -> None:
         for row in rows:
@@ -158,7 +164,7 @@ class PreKbb:
 
     def copy(self) -> "PreKbb":
         clone = PreKbb.__new__(PreKbb)
-        clone.by_mmr, clone.similar, clone.learn = self.by_mmr, self.similar.copy(), self.learn
+        clone.by_mmr, clone.similar, clone.learn = self.by_mmr.copy(), self.similar.copy(), self.learn
         clone.sales, clone.sales_factor = self.sales, self.sales_factor
         return clone
 

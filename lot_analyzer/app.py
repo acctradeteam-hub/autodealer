@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .bid import DEFAULT_COSTS_PATH, apply_to_rows, is_electric, load_costs, transport_cost
 from .normalize import parse_money
 from .inspection import render_html
-from . import agent_auto, cargurus, fb_market, flip, followup, liquidity, resale, vin_features
+from . import agent_auto, cargurus, csvcache, fb_market, flip, followup, liquidity, notes_bg, resale, vin_features
 from . import analytics, carfax, inbox, inspection, kbb_learning, kbb_page, photo_wait, voice, review, schedule, kbb_site, manheim_csv, notes, popular, remote, results
 from .pages import read_page
 from .parsers import parse_page
@@ -48,8 +48,8 @@ SHOW_ROWS = 600                              # в окне — первые 600 
 GROUPS = ("popular", "ev", "truck", "other")
 # Версия закладки (как LA_VERSION в tools/bookmarklet/save_auction_page.js): файлы старой закладки окно помечает.
 BOOKMARKLET_VERSION = "2026-10-07.1"
-EXTENSION_VERSION = "2.32"
-PROGRAM_VERSION = "2026-11-25.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
+EXTENSION_VERSION = "2.33"
+PROGRAM_VERSION = "2026-11-26.1"       # видно в окне; новая версия при запуске закрывает запущенную старую            # tools/kbb_extension/manifest.json — окно просит обновить старое
 LOGGER_STATUS: dict = {}              # запись торгов (расширение 2.20+): шаг, счётчики, файл итогов
 LOGGER_FILE = re.compile(r"^auction_all_\d{4}-\d\d-\d\d_\d{4}\.csv$")
 KBB_WEEK_PATH = DATA_DIR / "kbb_week.json"        # «KBB на неделю»: у каких машин KBB уже спрашивали и сколько раз
@@ -61,6 +61,7 @@ LOGGER_BACKUP_DIR = DATA_DIR / "auction_backup"   # резервная копи�
 PHOTOS_STATUS: dict = {}              # «📷 Проверить фото»: как идёт проверка карточек (сообщает расширение 2.18+)
 CARFAX_STATUS: dict = {}              # VIN → {status, note, at}: заказ Carfax кнопкой «📄 Carfax» (сообщает расширение)
 NOTES_REPORT: dict = {}               # последний отчёт расширения по сайтам (CarMax, Manheim): что записано в заметки
+NOTES_BG: dict = {}                   # «✍ Заметки фоном»: как идёт запись (сообщает расширение 2.33+, notes_bg.js)
 
 
 _SAVED_TIMES: dict[tuple, float] = {}
@@ -437,7 +438,7 @@ def mark_passed(rows: list[dict[str, str]], now: dt.datetime | None = None) -> N
     (день торгов закончился) или итог этой машины уже есть в базе после сохранения списка."""
     now = now or dt.datetime.now()
     history_by_vin: dict[str, str] = {}
-    for rec in results.load_history().values():
+    for rec in results.load_history(shared=True).values():
         if rec.get("outcome") == "нет итога":      # запись без итога (список к торгам) — не доказательство, что торги прошли
             continue
         if rec.get("vin") and rec.get("date", "") > history_by_vin.get(rec["vin"], ""):
@@ -549,17 +550,17 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
         del history[k]
     new = [rec for p in pages for rec in ((cache.kbb(p) or {}).get("results") or [])] + _sold_from_lists(rows)
     changed = results.merge(history, new) or bool(stale)
+    by_vin, by_ymm = results.index(history)
     # KBB, полученный кнопкой «KBB для проданных» (страница KBB с VIN проданной машины), — к её итогу.
     condition = (costs.get("kbb_page") or {}).get("condition", "good")
     for p in pages:
         page = cache.kbb(p)
         if not page or not page.get("vin") or not (page.get("private_party") or {}).get(condition):
             continue
-        for rec in history.values():
-            if rec.get("vin") == page["vin"] and not rec.get("kbb"):
+        for rec in by_vin.get(page["vin"], []):
+            if not rec.get("kbb"):
                 rec["kbb"] = str(page["private_party"][condition])
                 changed = True
-    by_vin, by_ymm = results.index(history)
     today = time.strftime("%Y-%m-%d")
     for row in rows:
         # Эта машина (VIN) уже была на торгах — по вашей базе: когда, где и чем кончилось.
@@ -594,12 +595,28 @@ def attach_results(rows: list[dict[str, str]], pages: list[Path], cache: PageCac
         row["auction_result_price"] = rec.get("price", "") if rec["outcome"] == "Sold" else ""
     if changed:
         results.save_history(history)
+    return _with_market(history, costs)
+
+
+_MARKET_MEMO: dict = {}
+
+
+def _with_market(history: dict[str, dict], costs: dict) -> dict:
+    """Настройки с «рынком» площадок и поправкой гибридов по вашим итогам. Пересчёт — только когда итоги, журнал KBB
+    или настройки поменялись (раньше — на каждый поиск, ~0,5 с). history здесь — то же, что в файле (сохранено выше)."""
+    key = (csvcache.stamp(results.HISTORY_PATH), csvcache.stamp(analytics.KBB_LOG_PATH), json.dumps(costs, sort_keys=True, default=str))
+    hit = _MARKET_MEMO.get("v")
+    if hit and hit[0] == key and key[0] is not None:
+        return hit[1]
     own = {name: s for name, s in results.stats(history).items() if s["enough"]}
     # CarMax: своя доля «цена ÷ KBB» площадки (Chino, Oxnard …), когда своих продаж достаточно.
-    for place, extra in analytics.market_overrides(analytics.joined_sales(history, analytics.load_kbb_log())).items():
+    joined = analytics.joined_sales(history, analytics.load_kbb_log(shared=True))
+    for place, extra in analytics.market_overrides(joined).items():
         own[place] = {**own.get(place, {}), **extra}
-    costs = {**costs, "hybrid": {**(costs.get("hybrid") or {}), **analytics.hybrid_factor(analytics.joined_sales(history, analytics.load_kbb_log()), costs)}}
-    return {**costs, "market_by_location": own} if own else costs
+    costs = {**costs, "hybrid": {**(costs.get("hybrid") or {}), **analytics.hybrid_factor(joined, costs)}}
+    out = {**costs, "market_by_location": own} if own else costs
+    _MARKET_MEMO["v"] = (key, out)
+    return out
 
 
 OWNERS_PATH = DATA_DIR / "owners.json"                 # AutoCheck: VIN → {owners, note, date}
@@ -970,44 +987,29 @@ _ROWS_LOCKS: dict = {}
 _ROWS_GUARD = threading.Lock()
 
 
-_VIN_MEMO: dict = {}
-VIN_MEMO_SECONDS = 600
+_PREKBB: dict = {}               # прикидка KBB по базе (PreKbb): строится заново, только когда база поменялась
+
+
+def _pre_kbb(costs: dict, learned: dict) -> "analytics.PreKbb":
+    """Оценщик KBB по вашей базе — один на все поиски, пока журнал KBB, итоги и настройки те же (каждый поиск
+    строил его заново: 0,85 с). Каждому расчёту — своя копия: он дописывает в неё машины своего списка."""
+    key = (csvcache.stamp(analytics.KBB_LOG_PATH), csvcache.stamp(results.HISTORY_PATH),
+           json.dumps(learned, sort_keys=True, default=str), json.dumps(costs, sort_keys=True, default=str))
+    hit = _PREKBB.get("v")
+    if not hit or hit[0] != key:
+        hit = _PREKBB["v"] = (key, analytics.PreKbb(analytics.load_kbb_log(shared=True), costs, learned, results.load_history(shared=True)))
+    return hit[1].copy()
 
 
 def vin_rows(vin_q: str, folders: list[Path], cache: "PageCache", costs: dict) -> list[dict[str, str]]:
-    """Поиск по VIN (или его концу): сначала машины за неделю — посчитаны один раз на 10 минут, ответ мгновенный;
-    не нашлось — архив за 30 дней. Раньше каждый поиск заново считал все страницы за месяц — минуту и дольше,
-    и окно в это время ничего не показывало."""
+    """Поиск по VIN (или его концу): считается только машина с этим VIN — сначала за неделю, не нашлась — за 30 дней,
+    прошедшие торги тоже (полный расчёт). Раньше считались все машины недели (8 тыс., 17–37 с), а фоновый «прогрев»
+    повторял это каждые 90 секунд — и тормозил всё окно."""
     for hours in (168, 24 * 30):
-        found = [dict(r) for r in _vin_memo(hours, folders, cache, costs) if vin_q in str(r.get("vin", "")).upper()]
+        found = search_rows(find_pages(folders, hours), cache, costs, "", vin=vin_q, archive=True)
         if found:
             return found
     return []
-
-
-def _vin_memo(hours: int, folders: list[Path], cache: "PageCache", costs: dict) -> list[dict[str, str]]:
-    pages = find_pages(folders, hours)
-    key = (hours, tuple((str(p), p.stat().st_mtime if p.exists() else 0) for p in pages),
-           tuple(p.stat().st_mtime if p.exists() else 0 for p in (KBB_PATH, BIDS_PATH, results.HISTORY_PATH, analytics.KBB_LOG_PATH,
-                 FAVORITES_PATH, OWNERS_PATH, voice.LOCAL_PATH, voice.WINDOW_PATH, REJECTED_PATH, SITE_NOTES_PATH, PHOTOS_PATH, carfax.PATH, MANUAL_PATH,
-                 fb_market.PATH, liquidity.MMR_PATH, cargurus.PATH, flip.OBS_PATH)))
-    memo = _VIN_MEMO.get(hours)
-    if not memo or memo[0] != key or time.time() - memo[1] > VIN_MEMO_SECONDS:
-        memo = _VIN_MEMO[hours] = (key, time.time(), search_rows(pages, cache, costs, ""))
-    return memo[2]
-
-
-def warm_vin_search(folders: list[Path], cache: "PageCache", costs_path: Path, every: int = 90) -> None:
-    """В фоне: машины за неделю для поиска по VIN — посчитаны заранее, и первый поиск отвечает сразу."""
-    def loop():
-        time.sleep(15)                   # сначала — само окно
-        while True:
-            try:
-                _vin_memo(168, folders, cache, load_costs(costs_path))
-            except Exception:  # файл пишется / занят — в следующий раз
-                pass
-            time.sleep(every)
-    threading.Thread(target=loop, daemon=True).start()
 
 
 def search_rows(pages: list[Path], cache: PageCache, costs: dict, *args, **kwargs) -> list[dict[str, str]]:
@@ -1139,7 +1141,13 @@ def mark_inspect(vin: str, on: bool, car: str = "") -> bool:
 
 def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = "", year_from: int | None = None,
                 year_to: int | None = None, max_miles: int | None = None, kbb: float | None = None,
-                only_no_photos: bool = False, max_bid: float | None = None, _out: dict | None = None) -> list[dict[str, str]]:
+                only_no_photos: bool = False, max_bid: float | None = None, archive: bool = False, vin: str = "",
+                _out: dict | None = None) -> list[dict[str, str]]:
+    """Машины для окна. Прошедшие торги («архив») без archive=True полностью не считаются: у них — итог торгов,
+    KBB и «был раньше» (всё это идёт в базу итогов и журнал KBB, то есть в аналитику), но без расчёта ставки,
+    Carfax, рынка и ликвидности; в списке они с пометкой row["archived"]. Окно показывает их галочкой «🗄 Архив».
+    На 26.11: 7 тыс. из 8,2 тыс. машин недели — прошедшие торги; без них расчёт в 5–7 раз быстрее.
+    vin — только машины с этим VIN (или его концом)."""
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     latest: list[dict[str, str]] = []
@@ -1151,8 +1159,8 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     bids = load_bids()
     kbb_cfg = costs.get("kbb_page") or {}
     condition = kbb_cfg.get("condition", "good")
-    kbb_pages = [{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(saved_time(p)))}
-                 for p, r in ((p, cache.kbb(p)) for p in pages) if r and r.get("miles")]   # без пробега — не подставляем
+    kbb_pages = kbb_page.Index([{**r, "_date": time.strftime("%Y-%m-%d", time.localtime(saved_time(p)))}
+                                for p, r in ((p, cache.kbb(p)) for p in pages) if r and r.get("miles")])   # без пробега — не подставляем
     # Новые файлы первыми: дубликаты берутся из свежего. В конце — машины со звёздочкой на CarMax, которых нет в списках.
     favorites = load_favorites()
     lot_photos = load_photos()
@@ -1178,6 +1186,8 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
             seen.add(key)
             apply_lot_photos(row, lot_photos)  # фото на карточке лота появились раньше, чем в списке поиска
             latest.append(row)                 # самая свежая строка машины — для «Wait Pictures», даже если фильтр её не берёт
+            if vin and vin not in str(row.get("vin", "")).upper():
+                continue
             if not matches(row, query, year_from, year_to, max_miles):
                 continue
             if only_no_photos and row.get("no_photos") != "да":
@@ -1201,7 +1211,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
                 row["kbb_url"] = own.get("url", "")
                 row["kbb_date"] = own.get("date", "")
             elif not row.get("kbb_private_party_usd"):
-                page = next((r for r in kbb_pages if kbb_page.matches(r, row, int(kbb_cfg.get("max_miles_gap", 3000)))), None)
+                page = kbb_pages.find(row, int(kbb_cfg.get("max_miles_gap", 3000)))
                 if page and page["private_party"].get(condition):
                     row["kbb_private_party_usd"] = str(page["private_party"][condition])
                     row["kbb_entered"] = f"страница KBB: {kbb_page.describe(page)}"
@@ -1220,6 +1230,13 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
                 row["kbb_from_window_field"] = "1"           # не настоящий KBB этой машины — в базу не пишем
                 row["needs_review"] = "; ".join(x for x in (row.get("needs_review", ""), "KBB — из окна поиска, одинаковый для всех") if x)
             rows.append(row)
+    # Архив: торги прошли — дальше только то, что нужно базе итогов и журналу KBB (аналитика), без расчёта ставки.
+    mark_passed(rows)
+    archived = [] if archive else [r for r in rows if r.get("passed")]
+    if archived:
+        rows = [r for r in rows if not r.get("passed")]
+    if _out is not None:
+        _out["archived"] = len(archived)
     waits = photo_wait.load()
     if photo_wait.update(latest, waits):              # «Wait Pictures»: ждём фото — и отмечаем, когда появились
         try:
@@ -1227,12 +1244,12 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
         except OSError:
             pass
     kbb_log = analytics.load_kbb_log()
-    if analytics.record_kbb(rows, kbb_log):            # каждый настоящий KBB — в свою базу
+    if analytics.record_kbb(rows + archived, kbb_log):            # каждый настоящий KBB — в свою базу
         analytics.save_kbb_log(kbb_log)
-    costs = attach_results(rows, pages, cache, costs)
+    costs = attach_results(rows + archived, pages, cache, costs)
     if _out is not None:
         _out["costs"] = costs                          # с этими настройками считаем — для пересчёта одной машины (ставка)
-    lot_status_notes(rows)
+    lot_status_notes(rows + archived)
     mark_passed(rows)
     try:
         review.remember(rows)                       # прогноз до торгов — для «Разбора торгов» после них
@@ -1245,20 +1262,25 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     _safe("MMR", liquidity.attach_mmr, rows)           # MMR, вписанный в окне, — в расчёт (у кого своего нет)
     _safe("Carfax", carfax.attach, rows, vin_features.engine)   # Carfax — до расчёта: ДТП, владельцы, аренда — скидка; рама, титул — стоп
     # нет похожих в базе KBB — по вашим итогам продаж CarMax той же модели
-    history = results.load_history()
-    apply_to_rows(rows, costs, estimator=analytics.PreKbb(kbb_log, costs, learning["learned"], history))
+    history = results.load_history(shared=True)
+    apply_to_rows(rows, costs, estimator=_pre_kbb(costs, learning["learned"]))
     _safe("ликвидность", liquidity.attach, rows, history)   # ликвидность: ваши итоги торгов по модели + MMR ÷ KBB
     # Опт на Manheim: MMR машин CarMax (вписанный или прикидка по выгрузкам Manheim) и потолок перепродажи — flip.py
     _safe("Опт на Manheim", flip.attach, rows, costs, sorted({p.parent for p in pages}), history)
     # Civic, Corolla, Accord, Camry, CT 200h с брендированным титулом — не рассматриваем вовсе: ни в списке, ни на осмотре, ни на телефоне.
     rows = [r for r in rows if not r.get("branded_hidden")]
     goal_bids(rows, costs)                           # ставка на 15% прибыли — под потолком (10%)
-    if kbb_learning.update(rows, learning):          # прикидка → настоящий KBB: насколько ошиблись, поправка на будущее
+    # прикидка → настоящий KBB: насколько ошиблись, поправка на будущее. Запоминаем по полному списку окна: у поиска
+    # («corolla») прикидка чуть другая (другие похожие в списке) — и файл (1,7 МБ) переписывался на каждый поиск.
+    if kbb_learning.update(rows, learning) and not (query or vin or year_from or year_to or max_miles or kbb or only_no_photos or max_bid):
         try:
             kbb_learning.save(learning)
         except OSError:
             pass
     # Вкладки окна: популярные модели (Civic, Camry, RAV4 …), электромобили, пикапы, остальные; в каждой — сверху самые выгодные.
+    for r in archived:
+        r["archived"] = "1"
+    rows += archived
     for r in rows:
         r["place"] = place_of_row(r)
         r["popular"] = "да" if popular.is_popular(r, costs) else ""
@@ -1271,7 +1293,7 @@ def _search_rows(pages: list[Path], cache: PageCache, costs: dict, query: str = 
     voice.attach(rows)                               # надиктовано на аукционе — в окно, список на печать и Notes
     if max_bid:                              # дороже своего бюджета — не показываем; со ставкой и «Беру» с осмотра — всегда
         rows = [r for r in rows if float(r.get("calc_max_bid_usd") or 0) <= max_bid or parse_money(r.get("my_proxy_usd"))
-                or r.get("phone_take") == "Беру"]
+                or r.get("phone_take") == "Беру" or r.get("archived")]
     rejected, site_notes, manual = load_rejected(), load_site_notes(), load_manual()
     for r in rows:
         vin = r.get("vin", "").upper()
@@ -1834,7 +1856,7 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                     pages = find_pages(folders, float(q.get("hours") or 24))
                     rows = search_rows(pages, cache, load_costs(costs_path), q.get("q", ""), num("y1"), num("y2"), num("miles"),
                                        float(q["kbb"]) if q.get("kbb", "").replace(".", "").isdigit() else None,
-                                       only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"))
+                                       only_no_photos=q.get("nophoto") == "1", max_bid=num("maxbid"), archive=q.get("passed") == "1")
                 # Фильтр «Major-дефекты»: только CarMax, по замечаниям аукциона (двигатель / коробка / оба / любой из двух / без них).
                 defect = q.get("defect", "")
                 if defect in ("engine", "trans", "both", "any", "none"):
@@ -2102,12 +2124,23 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 self._send(json.dumps(inbox.state(), ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes_report":
                 self._send(json.dumps(NOTES_REPORT, ensure_ascii=False).encode("utf-8"))
+            elif url.path == "/api/notes_queue":   # расширение: каким машинам вписать заметку на CarMax фоном (notes_bg.py)
+                costs_now = load_costs(costs_path)
+                answer = notes_bg.queue(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now)
+                _SLOW_CACHE["notes_bg"] = (time.time(), {k: answer[k] for k in ("pending", "written", "failed")} | {"enabled": answer["cfg"]["enabled"]})
+                self._send(json.dumps(answer, ensure_ascii=False).encode("utf-8"))
+            elif url.path == "/api/notes_bg":       # окно: «✍ Заметки на CarMax фоном» — сколько записано, сколько ждут, как идёт
+                costs_now = load_costs(costs_path)
+                counts = cached("notes_bg", 60, lambda: notes_bg.summary(search_rows(find_pages(folders, 168), cache, costs_now, ""), costs_now))
+                cfg = {k: v for k, v in notes_bg.config(costs_now).items() if k in ("every_min", "from_hour", "to_hour")}
+                self._send(json.dumps({**counts, "status": NOTES_BG, "cfg": cfg}, ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/notes":         # для расширения: тексты заметок (Notes) машинам с настоящим KBB
                 pages = find_pages(folders, float(q.get("hours") or 168))
                 rows = search_rows(pages, cache, load_costs(costs_path), "")
                 # Убранным из избранного CarMax заметку не пишем: запись в Notes вернула бы машину в избранное.
                 # Расширение 2.19+ (?ext=…) умеет убрать из Notes на CarMax строку «MP …» стёртой ставки.
-                self._send(json.dumps(notes.notes_for([r for r in rows if not r.get("favorite_removed")], clear_mp=bool(q.get("ext"))),
+                self._send(json.dumps(notes.notes_for([r for r in rows if not r.get("favorite_removed") and not r.get("archived")],
+                                                      clear_mp=bool(q.get("ext"))),
                                       ensure_ascii=False).encode("utf-8"))
             elif url.path == "/api/links":
                 self._send(json.dumps(search_links(q.get("q", ""), num("y1"), num("y2")), ensure_ascii=False).encode("utf-8"))
@@ -2509,6 +2542,25 @@ def make_handler(folders: list[Path], costs_path: Path, cache: PageCache):
                 data = json.loads(self.rfile.read(length) or b"{}")
                 self._send(json.dumps({"removed": remove_favorites(list(data.get("cars") or [])[:50])}).encode("utf-8"))
                 return
+            if urlparse(self.path).path in ("/api/notes_done", "/api/notes_bg_status"):   # расширение: заметки записаны / как идёт
+                if self.headers.get("X-LA") != "1":
+                    self._send(b"{}", status=403)
+                    return
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(min(length, 2_000_000)) or b"{}")
+                if urlparse(self.path).path == "/api/notes_done":
+                    saved = notes_bg.done(list(data.get("cars") or [])[:500])
+                    _SLOW_CACHE.pop("notes_bg", None)
+                    self._send(json.dumps({"ok": True, "saved": saved}).encode("utf-8"))
+                    return
+                NOTES_BG.clear()
+                NOTES_BG.update({k: (int(data[k]) if str(data.get(k, "")).isdigit() else 0) for k in ("total", "done", "written", "same", "failed")})
+                NOTES_BG.update({k: str(data.get(k) or "")[:300] for k in ("state", "why", "url", "title", "note", "current")})
+                NOTES_BG["at"] = time.time()
+                if NOTES_BG["state"] in ("done", "blocked", "closed", "error"):
+                    _SLOW_CACHE.pop("notes_bg", None)
+                self._send(b'{"ok":true}')
+                return
             if urlparse(self.path).path == "/api/notes_report":     # расширение: что оно сделало с Notes на CarMax
                 length = int(self.headers.get("Content-Length") or 0)
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -2782,7 +2834,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     from . import prewarm
     prewarm.start(find_pages(folders, 168), page_cache)         # первый разбор страниц — в фоне, на нескольких ядрах
-    warm_vin_search(folders, page_cache, Path(args.costs))     # поиск по VIN — без ожидания
     threading.Thread(target=prune_page_cache, daemon=True).start()   # старые разобранные страницы — с диска
     # Кнопка Start/Stop и камера по VIN (NHTSA) — для машин списка на осмотр, в фоне, раз в 15 минут, только новые VIN.
     vin_features.warm(lambda: inspection.inspection_rows([r for r in search_rows(find_pages(folders, 168), page_cache, load_costs(Path(args.costs)), "")
@@ -2899,7 +2950,7 @@ details.calc td{padding:2px 4px;border-bottom:1px dotted var(--line);white-space
 <button type="button" onclick="kbbTop()" title="Откроет kbb.com и сам получит KBB Private Party для лучших машин без KBB во всех вкладках: 15 популярных, по 5 электромобилей, пикапов и остальных">KBB: 15 + 5 + 5 + 5 лучших</button><button type="button" onclick="photosRun()" title="У машин CarMax «без фото» вкладка CarMax в фоне сама по очереди откроет карточки лотов (список CarMax пишет «Check back for images» дольше, чем на карточке уже есть фото): фото появились — отметка «нет фото» снимается. Не открывшиеся карточки — перепроверка в конце. Сама — после «Собрать аукцион…» и каждые 3 часа с 8 до 20. Около 5–10 секунд на машину, вкладка закроется сама; ход — в строке под кнопками">📷 Проверить фото</button> <button type="button" onclick="ownersRun()" title="Владельцы из AutoCheck для машин CarMax, что сейчас в списке (с вашими фильтрами — например «Мои ставки»), у которых их ещё не знаем; без фильтров — для лучших машин. Расширение открывает отчёты на фоновой вкладке CarMax, вкладка закроется сама">👤 Владельцы (AutoCheck)</button><button type="button" id="soldbtn" onclick="kbbSold()" title="Своя статистика: KBB для проданных за 14 дней популярных машин и Tesla Model 3 2022–2023 (по VIN из итогов торгов). Цена продажи ÷ KBB — в вашу базу">KBB для проданных</button>
 <button type="button" onclick="bidsCeiling()" title="Вписать ставку MP = потолок программы («МОЖНО до …», у Major defect — потолок «с дефектом»), вниз до шага ставки, всем машинам этого списка (с вашими фильтрами) — кроме «ПРОПУСТИТЬ» и прошедших торгов. Прежние ставки этих машин заменятся">MP = потолок</button><button type="button" onclick="voicePush()" title="Машины «Списка на осмотр» — на телефон, в приложение «Голосовые заметки» (через ваш закрытый репозиторий). Надиктованное вернётся сюда само">📱 На телефон</button><button type="button" onclick="window.open('/inspection?'+params(),'_blank')" title="Все лоты «Major … Defect» и без фото — одним списком для поездки на аукцион">Список на осмотр</button></form>
 <div class="links" id="links"></div>
-<div id="notesstate" class="muted" style="margin-top:6px"></div>
+<div id="notesstate" class="muted" style="margin-top:6px"></div><div id="notesbg" class="muted" style="margin-top:4px"></div>
 <details id="soldbox" style="margin-top:8px" ontoggle="if(this.open)loadSoldAll()"><summary id="soldsum">Проданные на торгах (из файлов итогов) — популярные и Tesla Model 3 2022–2023</summary>
 <div class="muted" style="margin:6px 0">Машины из файлов итогов торгов в «Загрузках» (например carmax_auction_results … .csv). Каждая стоит здесь 14 дней после торгов: до даты в колонке «В списке до» для неё можно запросить KBB кнопкой «KBB для проданных». Полученный KBB и цена продажи остаются в вашей базе навсегда.</div>
 <div class="wrap" style="max-height:420px;overflow:auto"><table><thead><tr><th>Торги</th><th>Аукцион</th><th>Лот</th><th>Машина</th><th>Пробег</th><th>Продана за</th><th>KBB</th><th>Продажа ÷ KBB</th><th>В списке до</th></tr></thead><tbody id="soldrows"><tr><td colspan="9" class="muted">—</td></tr></tbody></table></div></details>
@@ -3117,7 +3168,7 @@ if(nearOn&&d.near){const want=(d.near.places||[]).map(([p])=>p).join('|');if(wan
 $('places').innerHTML=`<span class="muted">Площадка:</span> <button type="button" class="tab${place?'':' on'}" onclick="setPlace('')">Все <span class="cnt">${(d.places||[]).reduce((a,[,n])=>a+n,0)}</span></button> `+nearBtn(d)+
  (d.places||[]).map(([p,n])=>`<button type="button" class="tab${placeList().includes(p)?' on':''}" onclick="togglePlace(this.dataset.p)" title="Нажмите ещё площадки — они добавятся в список; нажмите снова — уберётся" data-p="${esc(p)}">${esc(p)} <span class="cnt">${n}</span></button>`).join('')+
  `<label class="pickl" title="Только машины, которые вы отобрали: с KBB (вы его смотрели) или с вашей ставкой"><input id="picked" type="checkbox" onchange="setPicked(this.checked)"${$('picked')&&$('picked').checked?' checked':''}> только отобранные (KBB или ставка)</label>`+
- `<label class="pickl" title="Машины, чьи торги уже прошли (день торгов закончился), по умолчанию скрыты: отбирать нужно из тех, что ещё впереди"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> показать прошедшие торги (${d.passed_total||0})</label>`;
+ `<label class="pickl" title="Архив: машины, чьи торги уже прошли (день торгов закончился). Для поиска и отбора они не считаются — поэтому окно быстрое; галочка — показать их с полным расчётом (дольше, 5–10 с). Для аналитики (итоги торгов, доли от KBB, «был раньше», перепродажи) они используются всегда"><input type="checkbox" onchange="setPassed(this.checked)"${showPassed?' checked':''}> 🗄 архив: прошедшие торги (${d.passed_total||0})</label>`;
 if(!(gt[tab]>0)){const any=TABS.find(([g])=>gt[g]>0);if(any)tab=any[0]}
 $('tabs').innerHTML=TABS.map(([g,t])=>`<button type="button" class="tab${g===tab?' on':''}" onclick="setTab('${g}')">${t} <span class="cnt">${gt[g]||0}</span></button>`).join('')+
  (d.kbb_learning&&d.kbb_learning.n?`<div class="muted" style="margin:4px 0" title="Каждая машина, у которой была прикидка, а потом пришёл настоящий KBB, — урок для прикидки">Обучение KBB: уточнено ${d.kbb_learning.n} машин; прикидка ошибалась в среднем на ${d.kbb_learning.abs}% и была ${d.kbb_learning.bias>0?'выше':'ниже'} настоящего KBB на ${Math.abs(d.kbb_learning.bias)}%${d.kbb_learning.factor?` → прикидки теперь × ${d.kbb_learning.factor}`:' (поправка — от 5 уточнённых машин)'}</div>`:'')+
@@ -3432,7 +3483,7 @@ if(REMOTE)window.addEventListener('message',async e=>{if(e.source!==window||!e.d
  if(t==='ping'){const ext=(remoteSt&&remoteSt.ext)||{};if(ext.fresh)reply('pong',null,{v:ext.version});return}
  if(t==='auto-status'||t==='join-status'){const ext=(remoteSt&&remoteSt.ext)||{};const a=t==='auto-status'?ext.auto:ext.join;if(a)reply(t,a);return}
  if(t==='open-bg'&&!/^https:\/\/www\.(kbb|carmaxauctions)\.com\/.*#la(=|-owners|-photos)/.test(m.url||'')){window.open(m.url,'_blank');return}
- if(!['auto-run','kbbweek-run','photos-start','carfax-order','join-run','join-enable','open-bg'].includes(t))return;
+ if(!['auto-run','kbbweek-run','photos-start','notes-bg','carfax-order','join-run','join-enable','open-bg'].includes(t))return;
  try{const r=await fetch('/api/remote_cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:t,which:m.which||'',on:!!m.on,vin:m.vin||'',url:m.url||'',cars:m.cars||''})});
   const d=await r.json();toast(d.ok?'Отправлено на Mac: расширение выполнит в течение 30 секунд':'Не отправилось: '+(d.error||r.status),!d.ok);setTimeout(loadRemote,2000)}catch(err){toast('Нет связи с Mac: '+err,true)}});
 function pingExt(){window.postMessage({source:'lot-analyzer',type:'ping'},'*');if(extPong&&Date.now()-extPong>4000){extPong=0;extState()}}
@@ -3450,8 +3501,22 @@ async function loadNotesReport(){try{const all=await (await fetch('/api/notes_re
  const line=(site,r)=>{if(!r)return '';const field=site==='CarMax'?'полей Notes':'машин с кнопкой «Add Note»';
   return r.note?`Заметки ${site} (${r.at}): ${r.note}`:`Заметки ${site} (${r.at}): на странице ${field} ${r.fields}, машин, которым есть что вписать (KBB, ставка, прошлые торги), здесь ${r.ready}: `+(r.busy?'записываю… ':'')+`записано сейчас ${r.written}, уже было ${r.already}`+(r.busy?` (не уходите с вкладки ${site}, пока идёт запись)`:'')+(r.failed?`, не записалось ${r.failed} — обновите страницу ${site}`:'')};
  const lines=['CarMax','Manheim'].map(s=>line(s,all[s])).filter(Boolean);
- e.innerHTML=lines.length?lines.map(esc).join('<br>'):'Заметки на аукционах: KBB с датой пишется сам в Notes на открытой странице CarMax (вид «Detailed») и в «Add Note» машин в результатах поиска Manheim';
+ e.innerHTML=lines.length?lines.map(esc).join('<br>'):'Заметки на аукционах: KBB с датой пишется сам в Notes на открытой странице CarMax (вид «Detailed») — и фоном, без открытой страницы (строка ниже), — и в «Add Note» машин в результатах поиска Manheim';
  e.className='muted'+(['CarMax','Manheim'].some(s=>all[s]&&(all[s].failed||all[s].note))?' bad':'')}catch(e){}}
+/* «✍ Заметки на CarMax фоном»: расширение само открывает карточки лотов в фоновой вкладке и вписывает заметку —
+   сидеть на странице CarMax не нужно. Строка: сколько записано, сколько ждут, как идёт запись сейчас. */
+async function loadNotesBg(){const e=$('notesbg');if(!e)return;try{const d=await (await fetch('/api/notes_bg',{cache:'no-store'})).json(),s=d.status||{};
+ const t=s.at?new Date(s.at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'';
+ const run=s.state==='running'&&Date.now()/1000-s.at<180;
+ const now=run?` · <b>идёт запись: ${s.done||0} из ${s.total||0}</b>${s.current?' ('+esc(s.current)+')':''} — вкладка CarMax в фоне, закроется сама`:
+  s.state==='blocked'?` · <b class="neg">CarMax не пустил (${t}): ${esc(s.title||s.why||'')}</b> — войдите на carmaxauctions.com в этом Chrome`:
+  s.state==='done'&&s.total?` · последний проход ${t}: записано ${s.written||0}, уже было ${s.same||0}${s.failed?`, не вышло ${s.failed}`:''}`:
+  s.state==='error'?` · ${esc(s.note||'ошибка')} (${t})`:'';
+ e.innerHTML=`✍ <b>Заметки на CarMax фоном:</b> `+(d.enabled===false?'выключены (costs.json → notes_bg)':`записано ${d.written||0}, ждут ${d.pending||0}${d.failed?`, не вышло ${d.failed}`:''}`)+now+
+  (run?'':` <button type="button" class="btn sec" onclick="notesBgRun()" title="Расширение откроет карточки лотов CarMax в фоновой вкладке, впишет KBB, ставку (MP) и замечания в Notes и нажмёт Save — по одной машине, вкладка закроется сама. Машины — ваши: в избранном CarMax, со ставкой, «На осмотр», «Беру», с голосом (всем с KBB — costs.json → notes_bg.all_cars). Само — каждые 30 минут с 7 до 22, если есть что вписать. Ставок не ставит">✍ записать сейчас</button>`)}catch(err){}}
+function notesBgRun(){if(!hasExt()&&!REMOTE){toast('Расширение не подключено — обновите его (⟳) и эту страницу',true);return}
+ window.postMessage({source:'lot-analyzer',type:'notes-bg',id:Date.now()+'-'+Math.random()},'*');toast('Заметки: расширение открывает карточки CarMax в фоне');setTimeout(loadNotesBg,4000)}
+loadNotesBg();setInterval(loadNotesBg,15000);
 async function loadInbox(){try{showInbox(await (await fetch('/api/inbox')).json())}catch(e){}}
 function showVrp(d){$('vrpemail').value=$('vrpemail').value||d.email||'';$('vrpstate').textContent=d.saved?`Сохранено: ${d.email} · пароль сохранён`:'Не сохранено — при входе на сайт кнопка «📄 Carfax» попросит войти вас';
  $('vrpbtn').textContent=d.saved?'🔑 Вход Carfax ✓':'🔑 Вход Carfax'}

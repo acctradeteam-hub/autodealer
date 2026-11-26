@@ -18,6 +18,7 @@ import datetime as dt
 import re
 import statistics
 from pathlib import Path
+from . import csvcache
 from .paths import DATA_DIR
 
 HISTORY_PATH = DATA_DIR / "auction_results.csv"
@@ -612,22 +613,25 @@ def read_file(path: Path) -> list[dict]:
 
 # ---------------------------------------------------------------- история
 
-def load_history(path: Path | None = None) -> dict[str, dict]:
-    path = path or HISTORY_PATH
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8") as handle:
+def _read_history(path: Path) -> dict[str, dict]:
+    with path.open(encoding="utf-8", errors="replace") as handle:
         return {r["key"]: {k: v or "" for k, v in r.items()} for r in csv.DictReader(handle)}
 
 
+def load_history(path: Path | None = None, shared: bool = False) -> dict[str, dict]:
+    """Итоги торгов. Файл разбирается один раз, пока не поменялся (csvcache); shared=True — общий словарь без копии,
+    только для чтения (быстрее), иначе — своя копия, её можно менять и сохранять."""
+    data = csvcache.load(path or HISTORY_PATH, _read_history)
+    return data if shared else csvcache.copy(data)
+
+
 def save_history(records: dict[str, dict], path: Path | None = None) -> None:
-    path = path or HISTORY_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    def fill(handle) -> None:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, extrasaction="ignore")
         writer.writeheader()
         for rec in sorted(records.values(), key=lambda r: (r["date"], r["auction"], r["lot"], r["key"])):
             writer.writerow(rec)
+    csvcache.write(path or HISTORY_PATH, fill)
 
 
 def merge(history: dict[str, dict], new: list[dict]) -> bool:

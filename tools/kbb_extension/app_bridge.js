@@ -50,6 +50,14 @@
       try { chrome.runtime.sendMessage({ type: 'carfax-login' }); } catch (err) { /* связь умерла */ }
       return;
     }
+    /* «✍ Заметки на CarMax фоном»: фон сам откроет карточки лотов и впишет заметки (вкладка в фоне, закроется сама). */
+    if (e.data.type === 'notes-bg') {
+      var nid = String(e.data.id || '');
+      if (nid && document.documentElement.getAttribute('data-la-done') === nid) { return; }
+      if (nid) { document.documentElement.setAttribute('data-la-done', nid); }
+      try { chrome.runtime.sendMessage({ type: 'notes-bg', why: 'кнопка' }); } catch (err) { /* связь умерла */ }
+      return;
+    }
     /* «📷 Проверить фото»: фон сам откроет карточки лотов «без фото» на CarMax (вкладка в фоне, закроется сама). */
     if (e.data.type === 'photos-start') {
       /* Две живые связи в одной вкладке — одна проверка: первая отмечает запрос как выполненный. */

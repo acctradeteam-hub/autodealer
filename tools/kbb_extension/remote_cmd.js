@@ -24,6 +24,7 @@ function rcRun(cmd) {
   if (cmd.type === 'auto-run' && typeof autoRun === 'function') { autoRun(true, cmd.which === 'mon' || cmd.which === 'tue' ? cmd.which : ''); }
   else if (cmd.type === 'kbbweek-run' && typeof kwTick === 'function') { kwTick(true); }
   else if (cmd.type === 'photos-start' && typeof photosStart === 'function') { photosStart(null, 'с телефона'); }
+  else if (cmd.type === 'notes-bg' && typeof notesBgStart === 'function') { notesBgStart('с телефона'); }
   else if (cmd.type === 'carfax-order' && typeof laCarfaxOrder === 'function') { laCarfaxOrder(cmd.vin); }
   else if (cmd.type === 'join-run' && typeof joinRun === 'function') { joinRun(true); }
   else if (cmd.type === 'join-enable' && typeof joinGet === 'function') { joinGet(function (state) { state.enabled = !!cmd.on; joinPut(state); }); }

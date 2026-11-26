@@ -28,8 +28,11 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
+    """Целиком через временный файл: прочитав полфайла, load() вернул бы пустое обучение — и следующая запись его стёрла бы."""
     PATH.parent.mkdir(parents=True, exist_ok=True)
-    PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+    tmp = PATH.with_name(PATH.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+    tmp.replace(PATH)
 
 
 def _key(make: str, model: str) -> str:

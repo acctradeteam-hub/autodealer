@@ -68,7 +68,7 @@ class TestOneWindow(unittest.TestCase):
         shutil.rmtree(tmp)
 
     def test_one_car_across_auctions(self) -> None:
-        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "honda civic", 2013, 2016)
+        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "honda civic", 2013, 2016, archive=True)
         self.assertEqual({r["auction"] for r in rows}, {"ADESA", "CarMax"})
         self.assertTrue(all(r["make"] == "Honda" and r["model"] == "Civic" and 2013 <= int(r["year"]) <= 2016 for r in rows))
         self.assertTrue(all(r.get("calc_verdict") for r in rows))
@@ -78,7 +78,7 @@ class TestOneWindow(unittest.TestCase):
     def test_kbb_from_window_fills_only_missing(self) -> None:
         from lot_analyzer import analytics
         analytics.KBB_LOG_PATH.unlink(missing_ok=True)       # своя база KBB пустая: иначе KBB этих машин — из неё
-        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "toyota corolla", kbb=9000)
+        rows = app.search_rows(app.find_pages([self.tmp], 24), app.PageCache(), load_costs(COSTS), "toyota corolla", kbb=9000, archive=True)
         self.assertTrue(rows)
         self.assertTrue(all(r["kbb_private_party_usd"] == "9000" for r in rows))
         # Средняя цена покупки, прибыль по ней и потолок — у всех машин, и у «ПРОПУСТИТЬ» тоже.
@@ -2540,6 +2540,7 @@ class RemovedBidTest(unittest.TestCase):
     """Стёрли ставку в окне — «MP …» из Notes на CarMax (сохранённые страницы) её не возвращает; Notes чистит расширение."""
 
     def test_removed_bid_stays_removed(self) -> None:
+        from unittest import mock
         tmp = Path(tempfile.mkdtemp())
         shutil.copy(FIXTURES / "carmax_watchlist.html", tmp / "CarMax_Member_Dashboard_2026-09-29_1432.html")
         old_bids = app.BIDS_PATH.read_bytes() if app.BIDS_PATH.exists() else None
@@ -2557,8 +2558,14 @@ class RemovedBidTest(unittest.TestCase):
             self.assertEqual(rows()[vin]["my_proxy_usd"], "")                      # не вернулась со страницы
             saved = json.loads(app.BIDS_PATH.read_text(encoding="utf-8"))[vin]
             self.assertEqual((saved["usd"], saved["was"]), (None, float(mp)))
-            notes_new = json.loads(urllib.request.urlopen(base + "/api/notes?ext=2.19&hours=100000").read())
-            notes_old = json.loads(urllib.request.urlopen(base + "/api/notes?hours=100000").read())
+            # Торги машин образца (сентябрь) прошли: здесь — как будто они впереди (машинам архива заметки не пишутся — ниже).
+            upcoming = lambda rows, now=None: [r.update(passed="") for r in rows]
+            app._ROWS_MEMO.clear()                     # окно уже посчитало эти машины архивом
+            with mock.patch.object(app, "mark_passed", upcoming):
+                notes_new = json.loads(urllib.request.urlopen(base + "/api/notes?ext=2.19&hours=100000").read())
+                notes_old = json.loads(urllib.request.urlopen(base + "/api/notes?hours=100000").read())
+            app._ROWS_MEMO.clear()
+            self.assertNotIn(vin, json.loads(urllib.request.urlopen(base + "/api/notes?ext=2.19&hours=100000").read()))
             self.assertIn("MP —", notes_new.get(vin, ""))                          # расширению: убрать строку «MP …»
             self.assertNotIn("MP —", notes_old.get(vin, ""))                       # старое расширение записало бы её на сайт
             post({"vin": vin, "usd": "7000"})                                       # новая ставка — как обычно
@@ -3469,3 +3476,161 @@ class FastBidTest(unittest.TestCase):
         self.assertEqual(app.recalc_bid(vin, None)["my_proxy_usd"], "")
         self.assertIsNone(app.recalc_bid("1HGCV1F10JA999999", 1000.0))                    # машины нет в расчёте — окно обновится целиком
         self.assertIn("const i=d.row&&lastData?", app.PAGE)
+
+
+class SpeedArchiveTest(unittest.TestCase):
+    """Скорость (26.11): прошедшие торги — архив без полного расчёта, поиск по VIN — только эта машина,
+    страницы KBB — по индексу, файлы базы — разобраны один раз и пишутся целиком."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp())
+        shutil.copy(FIXTURES / "carmax_watchlist.html", cls.tmp / "CarMax_Member_Dashboard_2026-09-29_1430.html")   # торги в сентябре
+        shutil.copy(FIXTURES / "adesa_search_list.html", cls.tmp / "ADESA_ADESA_2026-09-29_1421.html")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmp)
+
+    def test_passed_lots_archived_without_calc(self) -> None:
+        pages = app.find_pages([self.tmp], 24)
+        box: dict = {}
+        rows = app._search_rows(pages, app.PageCache(), load_costs(COSTS), _out=box)
+        archived = [r for r in rows if r.get("archived")]
+        self.assertTrue(archived and all(r["passed"] for r in archived))
+        self.assertEqual(box["archived"], len(archived))
+        self.assertFalse(any(r.get("calc_max_bid_usd") or r.get("market_estimate_usd") for r in archived))   # ставка не считалась
+        self.assertTrue(all(r.get("calc_verdict") for r in rows if not r.get("archived")))
+        full = {r["vin"]: r for r in app.search_rows(pages, app.PageCache(), load_costs(COSTS), "", archive=True) if r.get("vin")}
+        self.assertFalse(any(r.get("archived") for r in full.values()))
+        self.assertTrue(all(full[r["vin"]].get("calc_verdict") for r in archived if r.get("vin")))   # галочка «🗄 архив» — полный расчёт
+        # KBB у машин архива — тот же (он идёт в журнал KBB и в итоги торгов — в аналитику)
+        for r in archived:
+            if r.get("vin"):
+                self.assertEqual(r.get("kbb_private_party_usd", ""), full[r["vin"]].get("kbb_private_party_usd", ""))
+
+    def test_vin_search_counts_only_that_car(self) -> None:
+        pages = app.find_pages([self.tmp], 24)
+        everything = [r for r in app.search_rows(pages, app.PageCache(), load_costs(COSTS), "", archive=True) if r.get("vin")]
+        vin = everything[0]["vin"]
+        found = app.vin_rows(vin[-8:], [self.tmp], app.PageCache(), load_costs(COSTS))
+        self.assertTrue(found)
+        self.assertTrue(all(r["vin"].endswith(vin[-8:]) for r in found))
+        self.assertTrue(all(r.get("calc_verdict") and not r.get("archived") for r in found))   # прошедшие — тоже, с расчётом
+        self.assertFalse(hasattr(app, "warm_vin_search"))                       # фоновый пересчёт всей недели каждые 90 с — убран
+
+    def test_kbb_index_same_as_full_scan(self) -> None:
+        from lot_analyzer import kbb_page
+        recs = [{"vin": "", "year": "2015", "make": "honda", "model": "civic", "miles": 80000, "n": 1},
+                {"vin": "19XFB2F58FE000001", "year": "2015", "make": "honda", "model": "civic", "miles": 50000, "n": 2},
+                {"vin": "", "year": "2015", "make": "honda", "model": "civic", "miles": 81000, "n": 3},
+                {"vin": "", "year": "2016", "make": "toyota", "model": "corolla", "miles": 40000, "n": 4},
+                {"vin": "", "year": "2015", "make": "honda", "model": "accord", "miles": 80500, "n": 5}]
+        index = kbb_page.Index(recs)
+        cars = [{"vin": "19XFB2F58FE000001", "year": "2015", "make": "Honda", "model": "Civic", "odometer_miles": "80,500"},
+                {"vin": "19XFB2F58FE000002", "year": "2015", "make": "Honda", "model": "Civic", "odometer_miles": "81,500"},
+                {"vin": "", "year": "2016", "make": "Toyota", "model": "Corolla", "odometer_miles": "41000"},
+                {"vin": "X", "year": "2015", "make": "Honda", "model": "Accord", "odometer_miles": "90000"}]
+        for car in cars:
+            slow = next((r for r in recs if kbb_page.matches(r, car, 3000)), None)
+            self.assertIs(index.find(car, 3000), slow)
+        self.assertEqual(index.find(cars[0], 3000)["n"], 1)      # первая подходящая в исходном порядке (свежие — первыми)
+
+    def test_base_files_cached_copied_and_written_whole(self) -> None:
+        from lot_analyzer import analytics, csvcache, results
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "auction_results.csv"
+        rec = {"key": "CarMax Chino|lot:1", "date": "2026-11-23", "auction": "CarMax Chino", "code": "", "lot": "1", "vin": "V1",
+               "year": "2015", "make": "Honda", "model": "Civic", "miles": "80000", "cr": "", "mmr": "", "outcome": "Sold", "price": "5000",
+               "source": "", "remarks": "", "kbb": ""}
+        results.save_history({rec["key"]: rec}, path)
+        first = results.load_history(path)
+        first[rec["key"]]["price"] = "1"                                         # своя копия — общий разбор не портится
+        self.assertEqual(results.load_history(path)[rec["key"]]["price"], "5000")
+        self.assertIs(results.load_history(path, shared=True), results.load_history(path, shared=True))   # файл не менялся — не разбирается
+        results.save_history({rec["key"]: {**rec, "price": "6000"}}, path)
+        self.assertEqual(results.load_history(path)[rec["key"]]["price"], "6000")   # поменялся — читается заново
+        self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["auction_results.csv"])   # временный файл не остался
+        log = tmp / "kbb_history.csv"
+        log.write_bytes("vin,date,kbb\nV1,2026-11-25,5000\nV2,2026-11-25,Пр".encode("utf-8")[:-1])   # обрыв посреди буквы
+        self.assertEqual(analytics.load_kbb_log(log)["V1"]["kbb"], "5000")      # не падает (раньше — UnicodeDecodeError)
+        self.assertIsNone(csvcache.stamp(tmp / "нет.csv"))
+        shutil.rmtree(tmp)
+
+
+class NotesBackgroundTest(unittest.TestCase):
+    """«✍ Заметки фоном» (26.11): очередь заметок для CarMax без открытой страницы и учёт записанного."""
+
+    def setUp(self) -> None:
+        from lot_analyzer import notes_bg
+        self.nb = notes_bg
+        self.old = notes_bg.PATH.read_bytes() if notes_bg.PATH.exists() else None
+        notes_bg.PATH.unlink(missing_ok=True)
+
+    def tearDown(self) -> None:
+        if self.old is None:
+            self.nb.PATH.unlink(missing_ok=True)
+        else:
+            self.nb.PATH.write_bytes(self.old)
+
+    def car(self, **kw) -> dict:
+        base = {"vin": "1HGCR2F30FA000001", "auction": "CarMax", "lot_url": "https://www.carmaxauctions.com/vehicledetail/70000001",
+                "year": "2015", "make": "Honda", "model": "Accord", "kbb_private_party_usd": "14380", "kbb_date": "2026-11-25",
+                "auction_notes": "Major engine defect", "sale_date": "Nov 30, 9:00am PT", "favorite": "1"}
+        return {**base, **kw}
+
+    def test_queue_done_and_changed_note(self) -> None:
+        costs = load_costs(COSTS)
+        rows = [self.car(), self.car(vin="1HGCR2F30FA000002", passed="торги прошли"), self.car(vin="1HGCR2F30FA000003", auction="Manheim"),
+                self.car(vin="1HGCR2F30FA000004", kbb_private_party_usd="", auction_notes="Prior rental"),     # своего ничего — не пишем
+                self.car(vin="1HGCR2F30FA000005", lot_url=""), self.car(vin="1HGCR2F30FA000006", rejected="да"),
+                self.car(vin="1HGCR2F30FA000007", archived="1"), self.car(vin="1HGCR2F30FA000008", favorite="")]   # не в избранном
+        q = self.nb.queue(rows, costs)
+        self.assertEqual([c["vin"] for c in q["cars"]], ["1HGCR2F30FA000001"])
+        everyone = {**costs, "notes_bg": {"all_cars": True}}                       # всем с KBB — по настройке
+        self.assertEqual([c["vin"] for c in self.nb.queue(rows, everyone)["cars"]], ["1HGCR2F30FA000001", "1HGCR2F30FA000008"])
+        self.assertEqual(q["cars"][0]["stock"], "70000001")
+        self.assertIn("KBB 14,380$", q["cars"][0]["note"])
+        self.nb.done([{"vin": "1HGCR2F30FA000001", "note": q["cars"][0]["note"], "ok": True}])
+        self.assertEqual(self.nb.queue(rows, costs)["cars"], [])                     # записано — второй раз не открываем
+        self.assertEqual(self.nb.queue([self.car(kbb_date="2026-11-26")], costs)["cars"], [])   # другая дата KBB — та же заметка
+        bid = self.car(my_proxy_usd="7000", my_bid_from_window="1")                  # вписали ставку — снова в очереди, первой
+        q = self.nb.queue([self.car(vin="1HGCR2F30FA000009"), bid], costs)
+        self.assertEqual([c["vin"] for c in q["cars"]], ["1HGCR2F30FA000001", "1HGCR2F30FA000009"])
+        self.assertIn("MP 7000", q["cars"][0]["note"])
+        for _ in range(3):                                                            # не вышло 3 раза — эту версию больше не пробуем
+            self.nb.done([{"vin": bid["vin"], "note": q["cars"][0]["note"], "ok": False, "why": "текст не встал"}], now=time.time() - 3 * 3600)
+        q2 = self.nb.queue([bid], costs)
+        self.assertEqual((q2["cars"], q2["failed"]), ([], 1))
+        self.assertEqual(json.loads(self.nb.PATH.read_text(encoding="utf-8"))[bid["vin"]]["n"], 3)
+
+    def test_endpoints_and_extension(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler([Path(tempfile.mkdtemp())], COSTS, app.PageCache()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        post = lambda path, body, la=True: urllib.request.urlopen(urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                                                                         headers={"Content-Type": "application/json", **({"X-LA": "1"} if la else {})}))
+        try:
+            q = json.loads(urllib.request.urlopen(base + "/api/notes_queue").read())
+            self.assertEqual((q["cars"], q["cfg"]["every_min"]), ([], 30))
+            with self.assertRaises(urllib.error.HTTPError):                          # чужая страница не может отметить «записано»
+                post("/api/notes_done", {"cars": [{"vin": "1HGCR2F30FA000001", "note": "KBB 1$", "ok": True}]}, la=False)
+            self.assertEqual(json.loads(post("/api/notes_done", {"cars": [{"vin": "1HGCR2F30FA000001", "note": "KBB 1$", "ok": True}]}).read())["saved"], 1)
+            post("/api/notes_bg_status", {"state": "blocked", "total": 3, "failed": 3, "title": "Sign in"})
+            st = json.loads(urllib.request.urlopen(base + "/api/notes_bg").read())
+            self.assertEqual((st["status"]["state"], st["status"]["failed"], st["cfg"]["from_hour"]), ("blocked", 3, 7))
+        finally:
+            server.shutdown()
+            app.NOTES_BG.clear()
+        self.assertIn("function loadNotesBg()", app.PAGE)
+        self.assertIn("type:'notes-bg'", app.PAGE)
+        ext = ROOT / "tools" / "kbb_extension"
+        self.assertEqual(json.loads((ext / "manifest.json").read_text(encoding="utf-8"))["version"], app.EXTENSION_VERSION)
+        self.assertIn("'notes_bg.js'", (ext / "background.js").read_text(encoding="utf-8"))
+        bg = (ext / "notes_bg.js").read_text(encoding="utf-8")
+        self.assertNotIn(".click(", bg)                                             # фон ничего на сайте не нажимает
+        js = (ext / "carmax_notes.js").read_text(encoding="utf-8")
+        self.assertIn("не пишу поверх", js)                                          # ваш текст не загрузился — не пишем
+        self.assertNotRegex(js, r"(?i)place ?bid|bid early")                         # ставок заметки не касаются
+        from lot_analyzer import remote
+        self.assertIn("notes-bg", remote.COMMANDS)
